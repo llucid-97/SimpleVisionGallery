@@ -1,0 +1,9 @@
+# Xcode/local build products
+.DS_Store
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcarchive
+*.ipa
+*.mobileprovision

@@ -1,0 +1,44 @@
+name: SimpleVisionGallery
+options:
+  bundleIdPrefix: com.llucid
+  deploymentTarget:
+    visionOS: "26.1"
+  xcodeVersion: "27.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  SimpleVisionGallery:
+    type: application
+    platform: visionOS
+    sources:
+      - path: SimpleVisionGallery
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.llucid.simplevisiongallery
+        PRODUCT_NAME: SimpleVisionGallery
+        INFOPLIST_FILE: SimpleVisionGallery/Info.plist
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "7"
+        SUPPORTS_MACCATALYST: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_EMIT_LOC_STRINGS: YES
+schemes:
+  SimpleVisionGallery:
+    build:
+      targets:
+        SimpleVisionGallery: all
+    run:
+      config: Debug
+    archive:
+      config: Release
