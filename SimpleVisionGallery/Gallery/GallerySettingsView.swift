@@ -6,6 +6,8 @@ struct GallerySettingsView: View {
     #if os(visionOS)
     @AppStorage(GalleryViewerPreferences.prefetchWindowKey)
     private var prefetchWindow = GalleryViewerPreferences.defaultPrefetchWindow
+    @AppStorage(GalleryViewerPreferences.backwardPrefetchWindowKey)
+    private var backwardPrefetchWindow = GalleryViewerPreferences.defaultBackwardPrefetchWindow
     #endif
 
     var body: some View {
@@ -36,7 +38,19 @@ struct GallerySettingsView: View {
                 }
                 .accessibilityIdentifier("svt-gallery-spatial-prefetch")
 
-                Text("Photos are prepared as spatial scenes; videos are preloaded. Set this to 0 to turn prefetch off. Larger windows use more memory.")
+                Stepper(value: $backwardPrefetchWindow,
+                    in: GalleryViewerPreferences.backwardPrefetchWindowRange) {
+                    HStack {
+                        Text("Keep previous items")
+                        Spacer()
+                        Text("\(backwardPrefetchWindow) items behind")
+                            .monospacedDigit()
+                            .foregroundStyle(LensLabTheme.mutedInk)
+                    }
+                }
+                .accessibilityIdentifier("svt-gallery-spatial-backward-prefetch")
+
+                Text("Photos are prepared as spatial scenes; videos are preloaded. Set either window to 0 to turn it off. All slideshow windows share a bounded preparation budget, so more open windows get smaller lookahead buffers.")
                     .font(.callout)
                     .foregroundStyle(LensLabTheme.mutedInk)
                     .fixedSize(horizontal: false, vertical: true)

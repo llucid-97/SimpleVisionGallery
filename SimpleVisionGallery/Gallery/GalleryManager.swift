@@ -458,6 +458,10 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         visibilityPreferences.isHidden(albumID: album.id, assetCount: album.assetCount)
     }
 
+    func isRecycleBin(album: GalleryAlbum) -> Bool {
+        GalleryRecycleBin.isRecycleBin(album)
+    }
+
     func setAutoHideEmptyAlbums(_ enabled: Bool) {
         visibilityPreferences.setAutoHideEmptyAlbums(enabled)
     }
@@ -783,6 +787,56 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }
     }
 
+    /// Select every asset in the current PhotoKit result, including pages not yet displayed.
+    func selectAllAssets() {
+        guard totalAssetCount > 0, assetFetchResult != nil else { return }
+        selectedIndexes = IndexSet(integersIn: 0..<totalAssetCount)
+        rangeAnchorIndex = nil
+        selectionFeedbackSignal += 1
+        showToast(.info, "All \(totalAssetCount) items selected")
+    }
+
+    func renameAlbum(_ album: GalleryAlbum, to title: String) async {
+        let newTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newTitle.isEmpty else {
+            showToast(.warning, "Enter an album name first.")
+            return
+        }
+        guard album.collection.canPerform(.rename) else {
+            handleOperationError(GalleryOperationError.albumNotRenamable(album.title), fallback: "Rename failed")
+            return
+        }
+        guard newTitle != album.title else { return }
+
+        do {
+            try await runOperation(message: "Renaming \(album.title)...") {
+                var staged = false
+                try await PHPhotoLibrary.shared().performChanges {
+                    guard let request = PHAssetCollectionChangeRequest(for: album.collection) else { return }
+                    request.title = newTitle
+                    staged = true
+                }
+                guard staged else { throw GalleryOperationError.changeRequestUnavailable }
+            }
+
+            let renamed = GalleryAlbum(
+                id: album.id,
+                title: newTitle,
+                assetCount: album.assetCount,
+                collection: PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [album.id], options: nil).firstObject ?? album.collection,
+                coverAsset: album.coverAsset
+            )
+            albums = sortedAlbums(albums.map { $0.id == album.id ? renamed : $0 })
+            if selectedAlbum?.id == album.id { selectedAlbum = renamed }
+            #if os(visionOS)
+            GalleryViewerStore.shared.updateAlbumTitle(id: album.id, title: newTitle)
+            #endif
+            showToast(.success, "Renamed album to \(newTitle)")
+        } catch {
+            handleOperationError(error, fallback: "Rename failed")
+        }
+    }
+
     func moveSelection(to destinationAlbum: GalleryAlbum) async {
         guard let sourceAlbum = selectedAlbum else { return }
         guard destinationAlbum.id != sourceAlbum.id else {
@@ -820,6 +874,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             #if os(visionOS)
             GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets)
             #endif
+            GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationAlbum.id)
             showToast(.success, "Moved \(assets.count) item\(assets.count == 1 ? "" : "s")")
         } catch {
             handleOperationError(error, fallback: "Move failed")
@@ -839,8 +894,8 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             guard sourceAlbum.collection.canPerform(.removeContent) else {
                 throw GalleryOperationError.sourceAlbumNotEditable(sourceAlbum.title)
             }
+            var placeholderIdentifier: String?
             try await runOperation(message: "Creating \(trimmedName)...") {
-                var placeholderIdentifier: String?
                 var didStageChange = false
                 try await PHPhotoLibrary.shared().performChanges {
                     guard let sourceRequest = PHAssetCollectionChangeRequest(for: sourceAlbum.collection) else {
@@ -861,6 +916,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             #if os(visionOS)
             GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets)
             #endif
+            if let placeholderIdentifier {
+                GalleryMoveHistory.shared.recordSuccessfulMove(to: placeholderIdentifier)
+            }
             showToast(.success, "Moved \(assets.count) item\(assets.count == 1 ? "" : "s") to \(trimmedName)")
         } catch {
             handleOperationError(error, fallback: "Move failed")
@@ -868,38 +926,48 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func removeSelectionFromCurrentAlbum() async {
-        guard let sourceAlbum = selectedAlbum else { return }
+        guard let selectedAlbum else {
+            showToast(.warning, "Choose an album first.")
+            return
+        }
+        guard !isRecycleBin(album: selectedAlbum) else {
+            showToast(.warning, "Use Delete Permanently inside Recycle Bin.")
+            return
+        }
+        _ = await recycleSelection()
+    }
+
+    /// Moves the current selection to Recycle Bin, or returns a frozen deletion review in the bin.
+    @discardableResult
+    func recycleSelection() async -> GalleryDeletionPlan? {
+        guard let sourceAlbum = selectedAlbum else { return nil }
+
+        if isRecycleBin(album: sourceAlbum) {
+            return prepareDeletionReview()
+        }
 
         do {
             let assets = try selectedAssets()
-            guard sourceAlbum.collection.canPerform(.removeContent) else {
-                throw GalleryOperationError.sourceAlbumNotEditable(sourceAlbum.title)
-            }
-            try await runOperation(message: "Removing \(assets.count) item\(assets.count == 1 ? "" : "s")...") {
-                var didStageChange = false
-                try await PHPhotoLibrary.shared().performChanges {
-                    guard let sourceRequest = PHAssetCollectionChangeRequest(for: sourceAlbum.collection) else {
-                        return
-                    }
-                    didStageChange = true
-                    sourceRequest.removeAssets(assets as NSFastEnumeration)
-                }
-
-                guard didStageChange else {
-                    throw GalleryOperationError.changeRequestUnavailable
-                }
+            try await runOperation(message: "Moving \(assets.count) item\(assets.count == 1 ? "" : "s") to Recycle Bin...") {
+                try await GalleryRecycleBin.move(assets, from: sourceAlbum.collection)
             }
             #if os(visionOS)
             GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets)
             #endif
-            showToast(.success, "Removed \(assets.count) item\(assets.count == 1 ? "" : "s") from album")
+            clearSelection(silent: true)
+            await loadAlbums()
+            showToast(.success, "Moved \(assets.count) item\(assets.count == 1 ? "" : "s") to Recycle Bin")
         } catch {
             handleOperationError(error, fallback: "Remove failed")
         }
+        return nil
     }
 
     func prepareDeletionReview() -> GalleryDeletionPlan? {
         do {
+            guard let selectedAlbum, isRecycleBin(album: selectedAlbum) else {
+                throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
+            }
             try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
             let assets = try selectedAssets()
             guard assets.count == selectedIndexes.count else {
@@ -925,12 +993,27 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             }
             try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
 
+            guard let sourceAlbum = selectedAlbum,
+                  let currentSource = PHAssetCollection.fetchAssetCollections(
+                    withLocalIdentifiers: [sourceAlbum.id], options: nil
+                  ).firstObject,
+                  GalleryRecycleBin.isRecycleBinTitle(currentSource.localizedTitle) else {
+                throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
+            }
+
             let assets = fetchAssets(withLocalIdentifiers: review.localIdentifiers)
             let liveCandidates = assets.map(Self.deletionCandidate(for:))
             guard review.matchesLiveCandidates(liveCandidates) else {
                 throw GalleryOperationError.deletionSelectionChanged(
                     expected: review.totalCount,
                     found: liveCandidates.count
+                )
+            }
+            let binMembership = PHAsset.fetchAssets(in: currentSource, options: nil)
+            guard assets.allSatisfy({ binMembership.index(of: $0) != NSNotFound }) else {
+                throw GalleryOperationError.deletionSelectionChanged(
+                    expected: review.totalCount,
+                    found: assets.filter { binMembership.index(of: $0) != NSNotFound }.count
                 )
             }
 
@@ -950,6 +1033,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
                     )
                 }
             }
+            #if os(visionOS)
+            GalleryViewerStore.shared.removeFromAllAlbums(assets: assets)
+            #endif
             showToast(
                 .success,
                 "Deleted \(review.totalCount) item\(review.totalCount == 1 ? "" : "s")"
@@ -1544,6 +1630,7 @@ private enum GalleryOperationError: LocalizedError {
     case albumCreationFailed
     case sourceAlbumNotEditable(String)
     case destinationAlbumNotEditable(String)
+    case albumNotRenamable(String)
     case changeRequestUnavailable
     case fullPhotoAccessRequiredForDeletion
     case invalidDeletionSnapshot
@@ -1551,6 +1638,7 @@ private enum GalleryOperationError: LocalizedError {
     case deletionSelectionChanged(expected: Int, found: Int)
     case deletionVerificationAccessChanged
     case deletionPostconditionFailed(requested: Int, survivors: Int)
+    case permanentDeleteOnlyInRecycleBin
 
     var errorDescription: String? {
         switch self {
@@ -1564,6 +1652,8 @@ private enum GalleryOperationError: LocalizedError {
             return "Photos does not allow removing items from \(title)."
         case .destinationAlbumNotEditable(let title):
             return "Photos does not allow adding items to \(title)."
+        case .albumNotRenamable(let title):
+            return "Photos does not allow renaming \(title)."
         case .changeRequestUnavailable:
             return "Photos could not prepare that album change. Nothing was changed."
         case .fullPhotoAccessRequiredForDeletion:
@@ -1590,6 +1680,8 @@ private enum GalleryOperationError: LocalizedError {
                 "Photos accepted the deletion request, but \(survivors) of \(requested) items "
                 + "still appear in the library. Gallery will not claim completion; "
                 + "review before retrying."
+        case .permanentDeleteOnlyInRecycleBin:
+            return "Permanent deletion is only available for items inside Recycle Bin."
         }
     }
 }

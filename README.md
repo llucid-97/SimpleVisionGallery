@@ -7,9 +7,11 @@ A standalone gallery for Apple Vision Pro. Open a supported photo and it becomes
 
 - Browse Photos albums, including large libraries, with paged media grids.
 - Swipe through the album in its current order.
-- Prepare upcoming items ahead of time; the spatial prefetch window defaults to three.
+- Prepare upcoming items ahead of time; the spatial prefetch window defaults to five ahead, with two previous items kept ready.
 - Show ordinary videos in 2D and spatial videos with their native depth.
 - Toggle a photo's spatial view, move items between albums, or send them to a recycle-bin album.
+- Rename albums, find them with typo-tolerant search, and reuse your three recent move destinations.
+- Select all items or a range; removal goes to the recycle bin. Delete permanently from inside the bin.
 - Keep a persistent video-loop setting.
 - Resize windows vertically while their width stays fixed.
 
@@ -28,6 +30,8 @@ xcodebuild -project SimpleVisionGallery.xcodeproj -scheme SimpleVisionGallery \
 For a signed headset build, select your Apple Developer team in Xcode's Signing & Capabilities tab. The bundle identifier is currently `com.llucid.simplevisiongallery`; finalize it with the release team before App Store registration.
 
 The simulator uses native image and video components with mono fixtures. Generated spatial scenes and stereo appearance need a headset check.
+
+For the next headset round, see [the short dogfooding guide](docs/dogfooding.md).
 
 ## App Store
 

@@ -44,7 +44,9 @@ struct GalleryView: View {
     @State private var showingMoveSheet = false
     @State private var showingSettings = false
     @State private var showingThumbnailSize = false
+    @State private var albumToRename: GalleryAlbum?
     @State private var albumVisibility: GalleryAlbumVisibility = .visible
+    @State private var albumSearch = ""
     @State private var isSelectingAlbums = false
     @State private var selectedAlbumIDs: Set<String> = []
     @State private var deletionReview: GalleryDeletionPlan?
@@ -70,6 +72,9 @@ struct GalleryView: View {
         }
         .sheet(isPresented: $showingSettings) {
             GallerySettingsView(manager: manager)
+        }
+        .sheet(item: $albumToRename) { album in
+            GalleryRenameAlbumSheet(album: album, manager: manager)
         }
         .alert(item: $deletionReview) { review in
             Alert(
@@ -133,6 +138,7 @@ struct GalleryView: View {
             }
         }
         .accessibilityIdentifier("svt-gallery")
+        .accessibilityElement(children: .contain)
     }
 
     private var pageHeader: some View {
@@ -146,7 +152,7 @@ struct GalleryView: View {
             thumbnailSizePopover
                 .presentationCompactAdaptation(.popover)
         }
-        .accessibilityIdentifier("svt-gallery-toolbar")
+        .accessibilityElement(children: .contain)
     }
 
     private func headerContents(compact: Bool) -> some View {
@@ -392,6 +398,7 @@ struct GalleryView: View {
                     .frame(minHeight: 26)
             }
             .buttonStyle(LensLabSecondaryButtonStyle())
+            .accessibilityIdentifier("gallery-grid-select-mode")
             .disabled(manager.isPerformingOperation)
         }
     #endif
@@ -404,6 +411,7 @@ struct GalleryView: View {
                 .frame(minHeight: 26)
         }
         .buttonStyle(LensLabPrimaryButtonStyle())
+        .accessibilityIdentifier("gallery-grid-move")
         .disabled(manager.isPerformingOperation)
     }
 
@@ -425,8 +433,12 @@ struct GalleryView: View {
                     }
                     Divider()
                 }
-                if manager.selectedCount > 0 {
-                    selectionMenuOptions
+                if manager.selectedAlbum != nil {
+                    if manager.selectedCount > 0 {
+                        selectionMenuOptions
+                    } else {
+                        selectAllMenuButton
+                    }
                     Divider()
                 }
                 Button("Refresh", systemImage: "arrow.clockwise") {
@@ -454,18 +466,31 @@ struct GalleryView: View {
             Button("Clear Selection", systemImage: "xmark.circle") {
                 manager.clearSelection()
             }
-            Button(role: .destructive) {
-                Task { await manager.removeSelectionFromCurrentAlbum() }
-            } label: {
-                Label("Remove from Album", systemImage: "rectangle.stack.badge.minus")
-            }
-            Button(role: .destructive) {
-                deletionReview = manager.prepareDeletionReview()
-            } label: {
-                Label("Delete from Library", systemImage: "trash")
+            selectAllMenuButton
+
+            if let album = manager.selectedAlbum {
+                Button(role: .destructive) {
+                    Task { deletionReview = await manager.recycleSelection() }
+                } label: {
+                    Label(
+                        manager.isRecycleBin(album: album) ? "Delete from Photos" : "Move to Recycle Bin",
+                        systemImage: "trash"
+                    )
+                }
+                .accessibilityIdentifier(
+                    manager.isRecycleBin(album: album) ? "gallery-grid-recycle-delete" : "gallery-grid-recycle"
+                )
             }
         }
         .disabled(manager.isPerformingOperation)
+    }
+
+    private var selectAllMenuButton: some View {
+        Button("Select All", systemImage: "checkmark.circle.fill") {
+            manager.selectAllAssets()
+        }
+        .accessibilityIdentifier("gallery-grid-select-all")
+        .disabled(manager.selectedCount == manager.totalAssetCount || manager.isPerformingOperation)
     }
 
     private var pageStatus: String {
@@ -563,8 +588,18 @@ struct GalleryView: View {
 
     private var albumGridView: some View {
         VStack(spacing: 14) {
-            if displayedAlbums.isEmpty {
-                albumEmptyState
+            GalleryAlbumSearchField(query: $albumSearch, accessibilityID: "gallery-album-search")
+
+            if filteredDisplayedAlbums.isEmpty {
+                if albumSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    albumEmptyState
+                } else {
+                    GalleryEmptyCard(
+                        icon: "magnifyingglass",
+                        title: "No Matching Albums",
+                        message: "Try another album name."
+                    )
+                }
             } else {
                 Group {
                     LazyVGrid(
@@ -572,7 +607,7 @@ struct GalleryView: View {
                             GridItem(.adaptive(minimum: 180, maximum: 250), spacing: 12, alignment: .top)
                         ], spacing: 12
                     ) {
-                        ForEach(displayedAlbums) { album in
+                        ForEach(filteredDisplayedAlbums) { album in
                             GalleryAlbumCard(
                                 id: album.id,
                                 title: album.title,
@@ -608,12 +643,24 @@ struct GalleryView: View {
                                         Label("Hide Album", systemImage: "eye.slash")
                                     }
                                 }
+                                if album.collection.canPerform(.rename) {
+                                    Button {
+                                        albumToRename = album
+                                    } label: {
+                                        Label("Rename Album", systemImage: "pencil")
+                                    }
+                                    .accessibilityIdentifier("gallery-album-rename")
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    private var filteredDisplayedAlbums: [GalleryAlbum] {
+        GalleryAlbumSearch.filter(displayedAlbums, query: albumSearch)
     }
 
     private var displayedAlbums: [GalleryAlbum] {
@@ -664,9 +711,9 @@ struct GalleryView: View {
         }
 
         #if os(macOS)
-            return "Open an album to view media. Right-click an album for Hide options."
+            return "Open an album to view media. Right-click an album for Hide and Rename options."
         #else
-            return "Open an album to view media. Pinch and hold an album for Hide options."
+            return "Open an album to view media. Pinch and hold an album for Hide and Rename options."
         #endif
     }
 
@@ -723,10 +770,10 @@ struct GalleryView: View {
     private var mediaInteractionHint: String {
         #if os(visionOS)
             return isSelectingMedia || manager.isSelectionMode
-                ? "Tap to select. Long pinch the first and last items to select a range."
-                : "Tap to open a slideshow. Long pinch to select items for batch actions."
+                ? "Tap to select. Long pinch the first item for a range start, then long pinch the end item."
+                : "Tap to open a slideshow. Long pinch to select items or start a range."
         #else
-            return "Click to select. Press and hold the first and last items to select a range."
+            return "Click to select. Press and hold the first item for a range start, then hold the end item."
         #endif
     }
 
@@ -745,7 +792,7 @@ struct GalleryView: View {
     }
 
     private func deletionConfirmationMessage(for review: GalleryDeletionPlan) -> String {
-        "This is not Remove from Album. Gallery will ask Photos to delete exactly "
+        "Gallery will ask Photos to delete exactly "
             + "\(review.totalCount) selected item\(review.totalCount == 1 ? "" : "s") "
             + "(\(review.mediaBreakdown)) from the full Photos library. No unselected item is included. "
             + "With iCloud Photos, the deletion syncs to your other devices. Photos normally moves deleted "
@@ -770,6 +817,22 @@ private struct GalleryAssetGrid: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            if let anchor = manager.rangeAnchorIndex {
+                Text("Range starts at item \(anchor + 1). Long pinch the end item to select through it.")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(LensLabTheme.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(LensLabTheme.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("gallery-range-anchor-status")
+            } else if manager.selectedCount > 0 {
+                Text("Long pinch the first item for a range start, then long pinch the end item.")
+                    .font(.caption)
+                    .foregroundStyle(LensLabTheme.mutedInk)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("gallery-range-selection-hint")
+            }
+
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(0..<manager.visibleAssetCount, id: \.self) { index in
                     if let asset = manager.asset(at: index) {
@@ -831,39 +894,38 @@ private struct GalleryAssetCell: View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
             .overlay {
-                ZStack(alignment: .topLeading) {
-                    GalleryThumbnail(asset: asset, manager: manager)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    if asset.mediaType == .video {
-                        GalleryAssetBadge(
-                            text: GalleryAssetCell.videoDurationText(asset.duration),
-                            icon: "video.fill",
-                            tint: LensLabTheme.previewSurface.opacity(0.82)
-                        )
-                        .padding(6)
-                    }
-
-                    if isSelected {
-                        ZStack {
-                            Circle()
-                                .fill(LensLabTheme.cyan)
-                                .frame(width: 28, height: 28)
-                            Image(systemName: "checkmark")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.white)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(6)
-                    }
-
-                    if hasRangeAnchor {
-                        GalleryAssetBadge(text: "Range start", icon: "flag.fill", tint: LensLabTheme.orange)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                            .padding(6)
-                    }
+                GalleryThumbnail(asset: asset, manager: manager)
+                    .clipped()
+            }
+            .clipped()
+            .overlay(alignment: .topLeading) {
+                if asset.mediaType == .video {
+                    GalleryAssetBadge(
+                        text: GalleryAssetCell.videoDurationText(asset.duration),
+                        icon: "video.fill",
+                        tint: LensLabTheme.previewSurface.opacity(0.82)
+                    )
+                    .padding(6)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .overlay(alignment: .topTrailing) {
+                if isSelected {
+                    ZStack {
+                        Circle()
+                            .fill(LensLabTheme.cyan)
+                            .frame(width: 28, height: 28)
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(6)
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                if hasRangeAnchor {
+                    GalleryAssetBadge(text: "Range start", icon: "flag.fill", tint: LensLabTheme.orange)
+                        .padding(6)
+                }
             }
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
@@ -872,6 +934,7 @@ private struct GalleryAssetCell: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .gesture(selectionGesture)
+            .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isButton)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityHint(mediaTapHint)
@@ -1050,7 +1113,11 @@ private struct GalleryAlbumCard<Cover: View>: View {
             isHovering = hovering
         }
         .accessibilityLabel("\(title), \(assetCount) items\(isSelected ? ", selected" : "")")
-        .accessibilityHint(isSelectionMode ? "Pinch to toggle album selection." : "Pinch to open album.")
+        .accessibilityHint(
+            isSelectionMode
+                ? "Pinch to toggle album selection. Pinch and hold for Rename and Hide actions."
+                : "Pinch to open album. Pinch and hold for Rename and Hide actions."
+        )
         .accessibilityIdentifier("svt-gallery-album-\(id)")
     }
 
@@ -1072,21 +1139,158 @@ private struct GalleryAlbumCard<Cover: View>: View {
     }
 }
 
+private struct GalleryAlbumSearchField: View {
+    @Binding var query: String
+    let accessibilityID: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(LensLabTheme.mutedInk)
+
+            TextField("Search albums", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Search albums")
+                .accessibilityIdentifier(accessibilityID)
+
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(LensLabTheme.mutedInk)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear album search")
+            }
+        }
+        .padding(10)
+        .lensLabCard()
+    }
+}
+
+private struct GalleryRenameAlbumSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var titleFieldIsFocused: Bool
+    let album: GalleryAlbum
+    @ObservedObject var manager: GalleryManager
+    @State private var title: String
+
+    init(album: GalleryAlbum, manager: GalleryManager) {
+        self.album = album
+        self.manager = manager
+        _title = State(initialValue: album.title)
+    }
+
+    private var normalizedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Rename Album")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(LensLabTheme.ink)
+
+            TextField("Album name", text: $title)
+                .textFieldStyle(.roundedBorder)
+                .focused($titleFieldIsFocused)
+                .accessibilityIdentifier("gallery-album-rename-title")
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(LensLabSecondaryButtonStyle())
+                    .accessibilityIdentifier("gallery-album-rename-cancel")
+                Button("Rename") {
+                    let renamedTitle = normalizedTitle
+                    Task {
+                        await manager.renameAlbum(album, to: renamedTitle)
+                        dismiss()
+                    }
+                }
+                .buttonStyle(LensLabPrimaryButtonStyle())
+                .disabled(
+                    normalizedTitle.isEmpty || normalizedTitle == album.title || manager.isPerformingOperation
+                )
+                .accessibilityIdentifier("gallery-album-rename-save")
+            }
+        }
+        .padding(24)
+        .frame(width: 460)
+        .background(LensLabTheme.card)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("gallery-album-rename-sheet")
+        .onAppear {
+            Task { @MainActor in
+                await Task.yield()
+                titleFieldIsFocused = true
+            }
+        }
+    }
+}
+
 private struct GalleryMoveSheet: View {
     @ObservedObject var manager: GalleryManager
     @Binding var isPresented: Bool
     @State private var newAlbumName = ""
     @State private var albumFilter = ""
 
+    private var recentDestinations: [GalleryAlbum] {
+        let recent = GalleryMoveHistory.shared.recentAlbums(
+            from: manager.albums,
+            excluding: manager.selectedAlbum?.id
+        )
+        return GalleryAlbumSearch.filter(recent, query: albumFilter)
+    }
+
     private var destinationAlbums: [GalleryAlbum] {
-        let availableAlbums = manager.albums.filter { $0.id != manager.selectedAlbum?.id }
-        let query = albumFilter.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            return availableAlbums
+        let recentIDs = Set(recentDestinations.map(\.id))
+        let available = manager.albums.filter {
+            $0.id != manager.selectedAlbum?.id && $0.collection.canPerform(.addContent)
         }
-        return availableAlbums.filter { album in
-            album.title.localizedCaseInsensitiveContains(query)
+        return GalleryAlbumSearch.filter(available, query: albumFilter)
+            .filter { !recentIDs.contains($0.id) }
+    }
+
+    private func destinationButton(_ album: GalleryAlbum, accessibilityPrefix: String) -> some View {
+        Button {
+            isPresented = false
+            Task {
+                await manager.moveSelection(to: album)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "rectangle.stack")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(LensLabTheme.cyan)
+                    .frame(width: 26)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(album.title)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(LensLabTheme.ink)
+                        .lineLimit(1)
+                    Text("\(album.assetCount) item\(album.assetCount == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(LensLabTheme.mutedInk)
+                }
+                Spacer()
+                Image(systemName: "arrow.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(LensLabTheme.mutedInk)
+            }
+            .padding(10)
+            .background(.white.opacity(0.36), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(LensLabTheme.cardLine.opacity(0.66), lineWidth: 1)
+            }
         }
+        .buttonStyle(.plain)
+        .disabled(manager.isPerformingOperation)
+        .accessibilityIdentifier(accessibilityPrefix + album.id)
     }
 
     var body: some View {
@@ -1113,6 +1317,20 @@ private struct GalleryMoveSheet: View {
                 .buttonStyle(LensLabSecondaryButtonStyle())
             }
 
+            GalleryAlbumSearchField(query: $albumFilter, accessibilityID: "gallery-move-album-search")
+
+            if !recentDestinations.isEmpty {
+                LensLabSection(title: "Recent Destinations", subtitle: "Your three latest successful moves.") {
+                    LazyVStack(spacing: 8) {
+                        ForEach(recentDestinations) { album in
+                            destinationButton(album, accessibilityPrefix: "gallery-recent-destination-")
+                        }
+                    }
+                    .accessibilityIdentifier("gallery-recent-destination")
+                    .accessibilityElement(children: .contain)
+                }
+            }
+
             LensLabSection(
                 title: "New Album", subtitle: "Create a destination album and move the selected media there."
             ) {
@@ -1137,26 +1355,6 @@ private struct GalleryMoveSheet: View {
             }
 
             LensLabSection(title: "Existing Albums", subtitle: "Filter by album name, then choose a destination.") {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(LensLabTheme.mutedInk)
-
-                    TextField("Filter albums", text: $albumFilter)
-                        .textFieldStyle(.roundedBorder)
-
-                    if !albumFilter.isEmpty {
-                        Button {
-                            albumFilter = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(LensLabTheme.mutedInk)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Clear album filter")
-                    }
-                }
-
                 if destinationAlbums.isEmpty {
                     Text(
                         albumFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1170,46 +1368,7 @@ private struct GalleryMoveSheet: View {
                     ScrollView(.vertical, showsIndicators: true) {
                         LazyVStack(spacing: 8) {
                             ForEach(destinationAlbums) { album in
-                                Button {
-                                    isPresented = false
-                                    Task {
-                                        await manager.moveSelection(to: album)
-                                    }
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: "rectangle.stack")
-                                            .font(.callout.weight(.semibold))
-                                            .foregroundStyle(LensLabTheme.cyan)
-                                            .frame(width: 26)
-
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(album.title)
-                                                .font(.callout.weight(.semibold))
-                                                .foregroundStyle(LensLabTheme.ink)
-                                                .lineLimit(1)
-
-                                            Text("\(album.assetCount) item\(album.assetCount == 1 ? "" : "s")")
-                                                .font(.caption)
-                                                .foregroundStyle(LensLabTheme.mutedInk)
-                                        }
-
-                                        Spacer()
-
-                                        Image(systemName: "arrow.right")
-                                            .font(.caption.weight(.bold))
-                                            .foregroundStyle(LensLabTheme.mutedInk)
-                                    }
-                                    .padding(10)
-                                    .background(
-                                        .white.opacity(0.36), in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    )
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .stroke(LensLabTheme.cardLine.opacity(0.66), lineWidth: 1)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(manager.isPerformingOperation)
+                                destinationButton(album, accessibilityPrefix: "gallery-move-destination-")
                             }
                         }
                     }

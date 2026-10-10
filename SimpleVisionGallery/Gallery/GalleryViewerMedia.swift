@@ -23,7 +23,8 @@ final class GalleryViewerMedia {
     private var generation = UUID()
     private var activeLoad: Task<Void, Never>?
     private var desiredPrefetchAssets: [PHAsset] = []
-    private var prefetched: [String: GalleryPrefetchedMedia] = [:]
+    private var prefetched: Set<String> = []
+    private let prefetchOwnerID = UUID()
     private var prefetchFailures: Set<String> = []
     private var prefetchCoordinator: Task<Void, Never>?
     private var prefetchTask: Task<GalleryPrefetchedMedia, Error>?
@@ -31,7 +32,6 @@ final class GalleryViewerMedia {
     private var prefetchPriority: GalleryPrefetchPriority?
     private var prefetchGeneration = UUID()
     private var memoryWarningObserver: GalleryNotificationToken?
-    private let prefetchPixelBudget = 20_000_000
     private var currentKey: String?
     private var playerObservation: NSKeyValueObservation?
     private var playerEndObserver: GalleryNotificationToken?
@@ -52,8 +52,20 @@ final class GalleryViewerMedia {
     func load(asset: PHAsset, spatialEnabled: Bool) async {
         let requestedKey = GallerySceneCache.key(for: asset)
         if currentKey != requestedKey { aspectRatio = nil }
+        if let oldKey = currentKey, desiredPrefetchAssets.contains(where: { GallerySceneCache.key(for: $0) == oldKey }) {
+            if let prepared, preparedKey == oldKey {
+                if GallerySceneCache.shared.retainPrefetched(.image(prepared), key: oldKey, owner: prefetchOwnerID) {
+                    prefetched.insert(oldKey)
+                }
+            } else if let oldVideo = player?.currentItem?.asset {
+                if GallerySceneCache.shared.retainPrefetched(.video(oldVideo), key: oldKey, owner: prefetchOwnerID) {
+                    prefetched.insert(oldKey)
+                }
+            }
+        }
         // Keep the speculative consumer alive until the foreground consumer joins.
-        let warmed = prefetched.removeValue(forKey: requestedKey)
+        let warmed = GallerySceneCache.shared.takePrefetched(key: requestedKey, owner: prefetchOwnerID)
+        prefetched.remove(requestedKey)
         let promoted = prefetchKey == requestedKey ? prefetchTask : nil
         if promoted != nil {
             prefetchPriority?.foreground = true
@@ -87,9 +99,9 @@ final class GalleryViewerMedia {
                             }
                             avAsset = warmed
                         } catch is CancellationError { throw CancellationError() }
-                        catch { avAsset = try await GalleryMediaRequest.video(asset) }
+                        catch { avAsset = try await GallerySceneCache.shared.video(for: asset, foreground: true) }
                     } else {
-                        avAsset = try await GalleryMediaRequest.video(asset)
+                        avAsset = try await GallerySceneCache.shared.video(for: asset, foreground: true)
                     }
                     var spatialVideo = asset.mediaSubtypes.contains(.spatialMedia)
                     if !spatialVideo {
@@ -136,14 +148,17 @@ final class GalleryViewerMedia {
                 } else {
                     let key = GallerySceneCache.key(for: asset)
                     let image: GalleryPreparedImage
-                    if case .image(let retained) = warmed {
+                    if case .image(let retained) = warmed,
+                       !spatialEnabled || retained.attemptedSpatial {
                         image = retained
                     } else if let promoted {
                         do {
                             guard case .image(let retained) = try await GalleryMediaRequest.value(of: promoted) else {
                                 throw GalleryMediaError.missingMedia
                             }
-                            image = retained
+                            image = !spatialEnabled || retained.attemptedSpatial
+                                ? retained
+                                : try await GallerySceneCache.shared.image(for: asset, spatial: true)
                         } catch is CancellationError { throw CancellationError() }
                         catch { image = try await GallerySceneCache.shared.image(for: asset, spatial: spatialEnabled) }
                     } else if self.preparedKey == key, let retained = self.prepared,
@@ -206,14 +221,20 @@ final class GalleryViewerMedia {
     }
 
     /// A small, ordered lookahead window. Each viewer prepares one item at a time.
-    func prefetch(assets: [PHAsset]) {
+    func prefetch(assets: [PHAsset], excludingCurrent: PHAsset? = nil, preserving: PHAsset? = nil) {
         var seen: Set<String> = []
-        desiredPrefetchAssets = Array(assets.prefix(10)).filter {
+        let itemShare = max(1, GalleryViewerPreferences.globalPrefetchItemBudget / GallerySceneCache.shared.prefetchOwnerCount)
+        let currentAssetKey = excludingCurrent.map(GallerySceneCache.key(for:)) ?? currentKey
+        desiredPrefetchAssets = Array(assets.prefix(itemShare)).filter {
             let key = GallerySceneCache.key(for: $0)
-            return key != currentKey && seen.insert(key).inserted
+            return key != currentAssetKey && seen.insert(key).inserted
         }
-        let wanted = Set(desiredPrefetchAssets.map(GallerySceneCache.key(for:)))
-        prefetched = prefetched.filter { wanted.contains($0.key) }
+        let orderedKeys = desiredPrefetchAssets.map(GallerySceneCache.key(for:))
+        let preservedKey = preserving.map(GallerySceneCache.key(for:))
+        let wanted = Set(orderedKeys).union(preservedKey.map { [$0] } ?? [])
+        prefetched.formIntersection(wanted)
+        GallerySceneCache.shared.updatePrefetchDemand(owner: prefetchOwnerID,
+            orderedKeys: preservedKey.map { [$0] + orderedKeys } ?? orderedKeys)
         prefetchFailures.formIntersection(wanted)
         if let prefetchKey, !wanted.contains(prefetchKey) { cancelPrefetchWork() }
         if wanted.isEmpty { cancelPrefetchWork() }
@@ -234,9 +255,8 @@ final class GalleryViewerMedia {
                     self.prefetchTask = nil
                     self.prefetchKey = nil
                     self.prefetchPriority = nil
-                    let used = self.prefetched.values.reduce(0) { $0 + $1.pixelCost }
-                    if used + result.pixelCost <= self.prefetchPixelBudget {
-                        self.prefetched[key] = result
+                    if GallerySceneCache.shared.retainPrefetched(result, key: key, owner: self.prefetchOwnerID) {
+                        self.prefetched.insert(key)
                     } else {
                         self.prefetchFailures.insert(key)
                     }
@@ -254,23 +274,24 @@ final class GalleryViewerMedia {
 
     private func nextPrefetchRequest() -> (String, Task<GalleryPrefetchedMedia, Error>)? {
         guard isSceneActive, !isLoading else { return nil }
-        let usedPixels = prefetched.values.reduce(0) { $0 + $1.pixelCost }
+        let usedPixels = GallerySceneCache.shared.retainedPixels(owner: prefetchOwnerID)
         for asset in desiredPrefetchAssets {
             let key = GallerySceneCache.key(for: asset)
-            guard prefetched[key] == nil, !prefetchFailures.contains(key) else { continue }
+            guard !GallerySceneCache.shared.hasPrefetched(key, owner: prefetchOwnerID),
+                  !prefetchFailures.contains(key) else { continue }
             // Ordinary photos are bounded to 2560px; spatial sources retain both views.
             let width = Double(asset.pixelWidth), height = Double(asset.pixelHeight)
             let scale = min(1, 2560 / max(1, max(width, height)))
             let pixelEstimate = asset.mediaType == .image
                 ? width * height * (asset.mediaSubtypes.contains(.spatialMedia) ? 2 : scale * scale) : 0
-            guard pixelEstimate <= Double(prefetchPixelBudget - usedPixels) else { continue }
-            let remainingPixels = prefetchPixelBudget - usedPixels
+            guard pixelEstimate <= Double(pixelBudgetPerViewer - usedPixels) else { continue }
+            let remainingPixels = pixelBudgetPerViewer - usedPixels
             let priority = GalleryPrefetchPriority()
             let task = Task(priority: .utility) { @MainActor in
                 try Task.checkCancellation()
                 if asset.mediaType == .video {
                     // Warming never creates a player or starts playback.
-                    return GalleryPrefetchedMedia.video(try await GalleryMediaRequest.video(asset))
+                    return GalleryPrefetchedMedia.video(try await GallerySceneCache.shared.video(for: asset, foreground: priority.foreground))
                 }
                 return GalleryPrefetchedMedia.image(
                     try await GallerySceneCache.shared.image(
@@ -284,6 +305,17 @@ final class GalleryViewerMedia {
             return (key, task)
         }
         return nil
+    }
+
+    private var pixelBudgetPerViewer: Int {
+        max(1, GalleryViewerPreferences.globalPrefetchPixelBudget / GallerySceneCache.shared.prefetchOwnerCount)
+    }
+
+    /// Pause speculative work while a sheet covers the media, retaining completed
+    /// preparations so the current item can return without a second generation.
+    func pausePrefetch(_ paused: Bool) {
+        if paused { cancelPrefetchWork() }
+        else { startPrefetchIfNeeded() }
     }
 
     private func cancelPrefetchWork() {
@@ -305,7 +337,7 @@ final class GalleryViewerMedia {
             resumePlaybackWhenActive = false
             startPrefetchIfNeeded()
         } else {
-            prefetch(assets: [])
+            cancelPrefetchWork()
             resumePlaybackWhenActive = player.map { $0.timeControlStatus != .paused } ?? false
             player?.pause()
         }
@@ -386,8 +418,21 @@ private final class GallerySceneCache {
         var consumers: Set<UUID>
         var foreground: Bool
     }
+    private struct PendingVideo {
+        var task: Task<AVAsset, Error>
+        var consumers: Set<UUID>
+        var foreground: Bool
+    }
     private var entries: [String: Entry] = [:]
     private var pending: [String: Pending] = [:]
+    private var pendingVideos: [String: PendingVideo] = [:]
+    private struct RetainedPrefetch {
+        var media: GalleryPrefetchedMedia
+        var owners: Set<UUID>
+        var access: UInt64
+    }
+    private var retainedPrefetch: [String: RetainedPrefetch] = [:]
+    private var demands: [UUID: [String]] = [:]
     private var clock: UInt64 = 0
     private var warningObserver: NSObjectProtocol?
     private let generationGate = GalleryGenerationGate()
@@ -413,6 +458,168 @@ private final class GallerySceneCache {
                 generationGate.promote(key: key)
             }
         }
+        let videoKey = Self.key(for: asset) + ":video"
+        if var item = pendingVideos[videoKey] {
+            item.foreground = true
+            pendingVideos[videoKey] = item
+            generationGate.promote(key: videoKey)
+        }
+    }
+
+    func video(for asset: PHAsset, foreground: Bool) async throws -> AVAsset {
+        let key = Self.key(for: asset) + ":video"
+        let consumer = UUID()
+        let task: Task<AVAsset, Error>
+        if var existing = pendingVideos[key] {
+            existing.consumers.insert(consumer)
+            existing.foreground = existing.foreground || foreground
+            if foreground { generationGate.promote(key: key) }
+            pendingVideos[key] = existing
+            task = existing.task
+        } else {
+            task = Task(priority: foreground ? .userInitiated : .utility) { @MainActor in
+                try await generationGate.acquire(key: key, foreground: pendingVideos[key]?.foreground ?? foreground)
+                defer { generationGate.release() }
+                try Task.checkCancellation()
+                return try await GalleryMediaRequest.video(asset)
+            }
+            pendingVideos[key] = PendingVideo(task: task, consumers: [consumer], foreground: foreground)
+        }
+        return try await withTaskCancellationHandler {
+            defer { releaseVideo(key: key, consumer: consumer) }
+            return try await GalleryMediaRequest.value(of: task)
+        } onCancel: {
+            Task { @MainActor in self.releaseVideo(key: key, consumer: consumer) }
+        }
+    }
+
+    private func releaseVideo(key: String, consumer: UUID) {
+        guard var item = pendingVideos[key], item.consumers.remove(consumer) != nil else { return }
+        if item.consumers.isEmpty {
+            item.task.cancel()
+            pendingVideos.removeValue(forKey: key)
+        } else {
+            pendingVideos[key] = item
+        }
+    }
+
+    func updatePrefetchDemand(owner: UUID, orderedKeys: [String]) {
+        if orderedKeys.isEmpty { demands.removeValue(forKey: owner) }
+        else { demands[owner] = orderedKeys }
+        for key in Array(retainedPrefetch.keys) where !orderedKeys.contains(key) {
+            guard var value = retainedPrefetch[key] else { continue }
+            value.owners.remove(owner)
+            if value.owners.isEmpty { retainedPrefetch.removeValue(forKey: key) }
+            else { retainedPrefetch[key] = value }
+        }
+        trimPrefetchRetentions()
+    }
+
+    var prefetchOwnerCount: Int { max(1, demands.count) }
+
+    func hasPrefetched(_ key: String, owner: UUID) -> Bool {
+        retainedPrefetch[key]?.owners.contains(owner) == true
+    }
+
+    func retainedPixels(owner: UUID) -> Int {
+        retainedPrefetch.values.filter { $0.owners.contains(owner) }
+            .reduce(0) { $0 + $1.media.pixelCost }
+    }
+
+    func retainPrefetched(_ media: GalleryPrefetchedMedia, key: String, owner: UUID) -> Bool {
+        guard demands[owner]?.contains(key) == true else { return false }
+        let ownerCount = max(1, demands.count)
+        let itemShare = max(1, GalleryViewerPreferences.globalPrefetchItemBudget / ownerCount)
+        let pixelShare = max(1, GalleryViewerPreferences.globalPrefetchPixelBudget / ownerCount)
+        let ownerItems = retainedPrefetch.values.filter { $0.owners.contains(owner) }
+        let alreadyOwns = retainedPrefetch[key]?.owners.contains(owner) == true
+        guard alreadyOwns || (ownerItems.count < itemShare
+            && ownerItems.reduce(0, { $0 + $1.media.pixelCost }) + media.pixelCost <= pixelShare) else { return false }
+        if var existing = retainedPrefetch[key] {
+            existing.owners.insert(owner)
+            existing.access = clock
+            retainedPrefetch[key] = existing
+            return true
+        }
+        let ownerPixels = ownerItems.reduce(0) { $0 + $1.media.pixelCost }
+        let prepared = uniquePreparedResults()
+        let resultKey = retainedResultKey(key, media: media)
+        let addsUniqueResult = prepared[resultKey] == nil
+        let globalPixels = prepared.values.reduce(0, +)
+        guard ownerItems.count < itemShare, ownerPixels + media.pixelCost <= pixelShare,
+              prepared.count + (addsUniqueResult ? 1 : 0) <= GalleryViewerPreferences.globalPrefetchItemBudget,
+              globalPixels + (addsUniqueResult ? media.pixelCost : 0) <= GalleryViewerPreferences.globalPrefetchPixelBudget else { return false }
+        retainedPrefetch[key] = RetainedPrefetch(media: media, owners: [owner], access: clock)
+        return true
+    }
+
+    func takePrefetched(key: String, owner: UUID) -> GalleryPrefetchedMedia? {
+        guard var value = retainedPrefetch[key], value.owners.remove(owner) != nil else { return nil }
+        let result = value.media
+        if value.owners.isEmpty { retainedPrefetch.removeValue(forKey: key) }
+        else { retainedPrefetch[key] = value }
+        return result
+    }
+
+    private func trimPrefetchRetentions() {
+        let ownerCount = max(1, demands.count)
+        let itemShare = max(1, GalleryViewerPreferences.globalPrefetchItemBudget / ownerCount)
+        let pixelShare = max(1, GalleryViewerPreferences.globalPrefetchPixelBudget / ownerCount)
+        for (owner, orderedKeys) in demands {
+            var usedItems = 0
+            var usedPixels = 0
+            var allowed: Set<String> = []
+            for key in orderedKeys {
+                guard let value = retainedPrefetch[key], value.owners.contains(owner),
+                      usedItems < itemShare, usedPixels + value.media.pixelCost <= pixelShare else { continue }
+                usedItems += 1
+                usedPixels += value.media.pixelCost
+                allowed.insert(key)
+            }
+            for key in orderedKeys where !allowed.contains(key) {
+                guard var value = retainedPrefetch[key], value.owners.remove(owner) != nil else { continue }
+                if value.owners.isEmpty { retainedPrefetch.removeValue(forKey: key) }
+                else { retainedPrefetch[key] = value }
+            }
+        }
+        trimGlobalPreparedResults()
+    }
+
+    private func retainedResultKey(_ key: String, media: GalleryPrefetchedMedia) -> String {
+        if case .image(let image) = media {
+            return key + (image.attemptedSpatial ? ":scene" : ":original")
+        }
+        return key + ":video"
+    }
+
+    /// Count a prepared image once when both the active LRU and a viewer's
+    /// speculative reservation point to the same component.
+    private func uniquePreparedResults() -> [String: Int] {
+        var result = entries.mapValues { $0.image.pixelCost }
+        for (key, retained) in retainedPrefetch {
+            let resultKey = retainedResultKey(key, media: retained.media)
+            if result[resultKey] == nil { result[resultKey] = retained.media.pixelCost }
+        }
+        return result
+    }
+
+    private func trimGlobalPreparedResults() {
+        func overBudget() -> Bool {
+            let results = uniquePreparedResults()
+            return results.count > GalleryViewerPreferences.globalPrefetchItemBudget
+                || results.values.reduce(0, +) > GalleryViewerPreferences.globalPrefetchPixelBudget
+        }
+        while overBudget() {
+            if let oldest = retainedPrefetch.min(by: { $0.value.access < $1.value.access })?.key,
+               let retained = retainedPrefetch[oldest] {
+                let resultKey = retainedResultKey(oldest, media: retained.media)
+                retainedPrefetch.removeValue(forKey: oldest)
+                entries.removeValue(forKey: resultKey)
+                continue
+            }
+            guard let oldest = entries.min(by: { $0.value.access < $1.value.access })?.key else { break }
+            entries.removeValue(forKey: oldest)
+        }
     }
 
     func image(for asset: PHAsset, spatial: Bool, foreground: Bool = true, pixelBudget: Int? = nil) async throws -> GalleryPreparedImage {
@@ -435,11 +642,11 @@ private final class GallerySceneCache {
         } else {
             let jobID = UUID()
             task = Task(priority: foreground ? .userInitiated : .utility) { @MainActor in
-                let data = try await GalleryMediaRequest.imageData(asset)
-                // Bound image decoding as well as generation across all open windows.
                 try await generationGate.acquire(key: key, foreground: pending[key]?.foreground ?? foreground)
                 defer { generationGate.release() }
                 try Task.checkCancellation()
+                // Bound PhotoKit fetch, decoding, and scene generation as one job.
+                let data = try await GalleryMediaRequest.imageData(asset)
                 do {
                     return try await Self.prepare(data: data, spatial: spatial) {
                         // Recheck after decoding; another viewer may have promoted
@@ -490,10 +697,7 @@ private final class GallerySceneCache {
     }
 
     private func trim() {
-        while entries.count > 3 || entries.values.reduce(0, { $0 + $1.image.pixelCost }) > 20_000_000 {
-            guard let oldest = entries.min(by: { $0.value.access < $1.value.access })?.key else { break }
-            entries.removeValue(forKey: oldest)
-        }
+        trimGlobalPreparedResults()
     }
 
     private static func prepare(data: Data, spatial: Bool, pixelBudget: () -> Int?) async throws -> GalleryPreparedImage {
@@ -554,7 +758,8 @@ private final class GallerySceneCache {
 /// A cancelled queued swipe leaves the queue immediately, without decoding its image.
 @MainActor
 private final class GalleryGenerationGate {
-    private var occupied = false
+    private var activeJobs = 0
+    private let maximumJobs = GalleryViewerPreferences.globalPreparationJobLimit
     private struct Waiter {
         var id: UUID
         var key: String
@@ -571,7 +776,7 @@ private final class GalleryGenerationGate {
 
     func acquire(key: String, foreground: Bool) async throws {
         try Task.checkCancellation()
-        if !occupied { occupied = true; return }
+        if activeJobs < maximumJobs { activeJobs += 1; return }
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -586,10 +791,12 @@ private final class GalleryGenerationGate {
         }
     }
     func release() {
-        if waiters.isEmpty { occupied = false }
-        else {
+        activeJobs = max(0, activeJobs - 1)
+        while activeJobs < maximumJobs, !waiters.isEmpty {
             let next = waiters.firstIndex(where: { $0.foreground }) ?? 0
-            waiters.remove(at: next).continuation.resume()
+            let waiter = waiters.remove(at: next)
+            activeJobs += 1
+            waiter.continuation.resume()
         }
     }
 }

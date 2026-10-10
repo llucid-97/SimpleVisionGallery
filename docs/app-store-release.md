@@ -19,7 +19,7 @@ Status: groundwork only. Apple Developer Program enrollment is pending. Revisit 
 - Spatial viewing is on by default. Eligible ordinary photos open as generated spatial scenes; existing spatial photos can display in spatial stereo. Supported photos can fall back to 2D if spatial generation is unavailable or fails.
 - Apple’s `Spatial3DImage.generate()` requires at least 320 pixels on the shortest side, no more than 16,384 pixels on the longest side, and an aspect ratio from 1:3 through 3:1. Generation can take a few seconds. See Apple’s [generation limits](https://developer.apple.com/documentation/realitykit/imagepresentationcomponent/spatial3dimage/generate()).
 - Users can open multiple slideshow windows and arrange two side by side. Videos play in the viewer and can be set to loop.
-- The viewer’s Recycle Bin moves media into an ordinary Photos album called “recycle bin”; it does not delete media from the library. The grid’s Delete from Library action is separate and asks Gallery and Photos to confirm the selected deletion.
+- The viewer’s Recycle Bin moves media into an ordinary Photos album called “recycle bin”; it does not delete media from the library. Grid removal also recycles; only inside the bin can users permanently delete selected items, with one Photos confirmation per batch and one in-app review.
 - Generated spatial scenes are temporary in-memory viewing content. Do not claim permanent conversion or bulk conversion.
 
 ## Pending publication details

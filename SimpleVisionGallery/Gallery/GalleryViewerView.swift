@@ -167,9 +167,13 @@ private struct GalleryViewerPane: View {
     @State private var spatialEnabled = true
     @State private var moveTarget: GalleryViewerMoveTarget?
     @State private var actionError: String?
+    @State private var pendingDelete: GalleryViewerDeleteTarget?
+    @State private var isDeletingFromPhotos = false
     @State private var loadedKey: GalleryViewerLoadKey?
     @AppStorage(GalleryViewerPreferences.prefetchWindowKey)
     private var prefetchWindow = GalleryViewerPreferences.defaultPrefetchWindow
+    @AppStorage(GalleryViewerPreferences.backwardPrefetchWindowKey)
+    private var backwardPrefetchWindow = GalleryViewerPreferences.defaultBackwardPrefetchWindow
     @AppStorage(GalleryViewerPreferences.loopVideosKey) private var loopVideos = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -182,20 +186,30 @@ private struct GalleryViewerPane: View {
         session.upcomingAssets(limit: GalleryViewerPreferences.boundedPrefetchWindow(prefetchWindow))
     }
 
-    private var upcomingKeys: [GalleryViewerLoadKey] {
-        upcomingAssets.map {
+    private var precedingAssets: [PHAsset] {
+        session.precedingAssets(limit: min(GalleryViewerPreferences.backwardPrefetchWindowRange.upperBound,
+            max(GalleryViewerPreferences.backwardPrefetchWindowRange.lowerBound, backwardPrefetchWindow)))
+    }
+
+    private var prefetchAssets: [PHAsset] { upcomingAssets + precedingAssets }
+
+    private var prefetchKeys: [GalleryViewerLoadKey] {
+        prefetchAssets.map {
             GalleryViewerLoadKey(assetID: $0.localIdentifier, modified: $0.modificationDate, spatial: true)
         }
     }
 
     private func refreshPrefetch() {
-        guard scenePhase == .active, moveTarget == nil else {
-            media.prefetch(assets: [])
+        guard moveTarget == nil else {
+            media.pausePrefetch(true)
+            return
+        }
+        guard scenePhase == .active else {
             return
         }
         // Keep a matching in-flight lookahead alive until load promotes it.
         guard loadedKey == loadKey, !media.isLoading else { return }
-        media.prefetch(assets: upcomingAssets)
+        media.prefetch(assets: prefetchAssets)
     }
 
     private var preferredMediaHeight: CGFloat {
@@ -266,6 +280,8 @@ private struct GalleryViewerPane: View {
             let requestedKey = loadKey
             loadedKey = nil
             actionError = nil
+            media.prefetch(assets: prefetchAssets, excludingCurrent: session.currentAsset,
+                preserving: session.currentAsset)
             if let asset = session.currentAsset {
                 await media.load(asset: asset, spatialEnabled: spatialEnabled)
             } else { media.cancel() }
@@ -282,21 +298,36 @@ private struct GalleryViewerPane: View {
             media.setVideoLooping(enabled)
         }
         .onChange(of: moveTarget?.assetID) { _, targetID in
+            media.pausePrefetch(targetID != nil)
             media.setSceneActive(scenePhase == .active && targetID == nil)
             refreshPrefetch()
         }
-        .onChange(of: upcomingKeys) { _, _ in refreshPrefetch() }
+        .onChange(of: pendingDelete?.assetID) { _, targetID in
+            if targetID == nil, !isDeletingFromPhotos {
+                media.setSceneActive(scenePhase == .active)
+                media.pausePrefetch(false)
+            }
+        }
+        .onChange(of: prefetchKeys) { _, _ in refreshPrefetch() }
         .onChange(of: session.currentAsset?.localIdentifier) { _, newID in
             if moveTarget?.assetID != newID { moveTarget = nil }
         }
         .sheet(item: $moveTarget) { target in
             GalleryViewerMoveSheet(sessionID: session.id, assetID: target.assetID)
         }
+        .alert(item: $pendingDelete) { target in
+            Alert(title: Text("Delete permanently from Photos?"),
+                message: Text("This item will be removed from the Photos library and cannot be recovered from the Recycle Bin."),
+                primaryButton: .destructive(Text("Delete Permanently")) {
+                    performPermanentDelete(assetID: target.assetID)
+                },
+                secondaryButton: .cancel())
+        }
     }
 
     @ViewBuilder
     private func mediaStage(height: CGFloat) -> some View {
-        if moveTarget != nil {
+        if moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos {
             // Remove the raised rendering surface while the sheet is presented;
             // the prepared scene stays in media and is restored when it closes.
             Color.clear
@@ -363,6 +394,7 @@ private struct GalleryViewerPane: View {
             Button {
                 if let assetID = session.currentAsset?.localIdentifier {
                     // Capture playback intent before dismantling the media surface.
+                    media.pausePrefetch(true)
                     media.setSceneActive(false)
                     moveTarget = GalleryViewerMoveTarget(assetID: assetID)
                 }
@@ -372,13 +404,23 @@ private struct GalleryViewerPane: View {
 
             Button {
                 guard let targetID = session.currentAsset?.localIdentifier else { return }
+                if isInRecycleBin {
+                    media.pausePrefetch(true)
+                    media.setSceneActive(false)
+                    pendingDelete = GalleryViewerDeleteTarget(assetID: targetID)
+                    return
+                }
                 Task {
                     do { try await store.recycle(session.id, expectedAssetID: targetID) }
                     catch { actionError = error.localizedDescription }
                 }
-            } label: { Label("Recycle", systemImage: "trash") }
-            .disabled(session.currentAsset == nil || store.isPerformingOperation || session.albumTitle.lowercased() == "recycle bin")
+            } label: {
+                Label(isInRecycleBin ? "Delete Permanently" : "Move to Recycle Bin",
+                    systemImage: isInRecycleBin ? "trash.slash" : "trash")
+            }
+            .disabled(session.currentAsset == nil || store.isPerformingOperation)
             .accessibilityIdentifier("gallery-viewer-recycle")
+            .accessibilityHint(isInRecycleBin ? "Permanently deletes this item from Photos after confirmation." : "Moves this item to the Recycle Bin album.")
 
             Button { store.next(session.id) } label: {
                 Label("Next", systemImage: "chevron.right")
@@ -391,9 +433,32 @@ private struct GalleryViewerPane: View {
         .controlSize(.large)
         .padding(.top, 18)
     }
+
+    private var isInRecycleBin: Bool {
+        GalleryRecycleBin.isRecycleBinTitle(session.albumTitle)
+    }
+
+    private func performPermanentDelete(assetID: String) {
+        isDeletingFromPhotos = true
+        media.pausePrefetch(true)
+        media.setSceneActive(false)
+        Task {
+            do { try await store.recycle(session.id, expectedAssetID: assetID) }
+            catch { actionError = error.localizedDescription }
+            isDeletingFromPhotos = false
+            pendingDelete = nil
+            media.setSceneActive(scenePhase == .active)
+            media.pausePrefetch(false)
+        }
+    }
 }
 
 private struct GalleryViewerMoveTarget: Identifiable {
+    let assetID: String
+    var id: String { assetID }
+}
+
+private struct GalleryViewerDeleteTarget: Identifiable {
     let assetID: String
     var id: String { assetID }
 }
@@ -408,10 +473,19 @@ private struct GalleryViewerMoveSheet: View {
     @State private var error: String?
 
     private var destinations: [GalleryAlbum] {
-        store.albums.filter {
+        let recentIDs = Set(query.isEmpty ? recentDestinations.map(\.id) : [])
+        return GalleryAlbumSearch.filter(store.albums.filter {
             $0.id != store.session(sessionID)?.albumID
-                && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query))
-        }
+                && $0.collection.canPerform(.addContent)
+                && !GalleryRecycleBin.isRecycleBin($0)
+                && !recentIDs.contains($0.id)
+        }, query: query)
+    }
+
+    private var recentDestinations: [GalleryAlbum] {
+        GalleryMoveHistory.shared.recentAlbums(from: store.albums,
+            excluding: store.session(sessionID)?.albumID)
+            .filter { !GalleryRecycleBin.isRecycleBin($0) }
     }
 
     var body: some View {
@@ -423,6 +497,16 @@ private struct GalleryViewerMoveSheet: View {
                         performMove { try await store.move(sessionID, toNewAlbumNamed: newAlbumName, expectedAssetID: assetID) }
                     }
                     .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPerformingOperation)
+                }
+                if query.isEmpty, !recentDestinations.isEmpty {
+                    Section("Recent destinations") {
+                        ForEach(recentDestinations) { album in
+                            Button(album.title) {
+                                performMove { try await store.move(sessionID, to: album, expectedAssetID: assetID) }
+                            }
+                            .disabled(store.isPerformingOperation)
+                        }
+                    }
                 }
                 Section("Move to album") {
                     ForEach(destinations) { album in
