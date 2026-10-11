@@ -1,3 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Simple Vision Gallery long shadow layer">
-  <path fill="#11656C" d="M180 160H800L1024 384V1004H404L180 780Z"/>
+  <!-- Sweep the outer rounded silhouette along (1,1). Diagonals start at the
+       corner tangents: (715+85/sqrt(2),245-85/sqrt(2)) and
+       (265-85/sqrt(2),695+85/sqrt(2)); continue to the canvas edges. -->
+  <path fill="#11656C" d="M265 160H715A85 85 0 0 1 775.104076400857 184.895923599143L1024 433.791847198287V1024H473.791847198287L204.895923599143 755.104076400857A85 85 0 0 1 180 695V245A85 85 0 0 1 265 160Z"/>
 </svg>
