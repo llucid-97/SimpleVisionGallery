@@ -5,6 +5,14 @@ import RealityKit
 import SwiftUI
 import UIKit
 
+private enum GalleryViewerLayout {
+    static let mediaVerticalPadding: CGFloat = 160
+    // Header, status line, stack spacing and outer window insets.
+    static let windowChromeHeight: CGFloat = 2 * mediaVerticalPadding + 108
+    static let maximumMediaHeight: CGFloat = 1500
+    static let maximumWindowHeight = maximumMediaHeight + windowChromeHeight
+}
+
 struct GalleryViewerWindowRoot: View {
     let value: GalleryViewerWindowValue?
     @ObservedObject private var store = GalleryViewerStore.shared
@@ -27,7 +35,7 @@ struct GalleryViewerWindowRoot: View {
                 let transport: CGFloat = asset.mediaType == .video ? 160 : 0
                 return max(minimumMediaHeight, paneWidth * CGFloat(asset.pixelHeight) / CGFloat(asset.pixelWidth) + transport)
             }.max() ?? minimumMediaHeight
-        return min(mediaHeight + 300, 1800)
+        return min(mediaHeight + GalleryViewerLayout.windowChromeHeight, GalleryViewerLayout.maximumWindowHeight)
     }
 
     var body: some View {
@@ -72,12 +80,13 @@ struct GalleryViewerWindowRoot: View {
                 // A fixed horizontal range keeps arranged slideshows aligned;
                 // height remains resizable for portrait photos and videos.
                 .frame(minWidth: windowWidth, idealWidth: windowWidth, maxWidth: windowWidth,
-                    minHeight: minimumMediaHeight + 300, idealHeight: preferredWindowHeight, maxHeight: 1800,
+                    minHeight: minimumMediaHeight + GalleryViewerLayout.windowChromeHeight,
+                    idealHeight: preferredWindowHeight, maxHeight: GalleryViewerLayout.maximumWindowHeight,
                     alignment: .top)
                 .background(GalleryViewerSceneAnchor(
                     initialSize: CGSize(width: windowWidth, height: preferredWindowHeight),
-                    minimumSize: CGSize(width: windowWidth, height: minimumMediaHeight + 300),
-                    maximumSize: CGSize(width: windowWidth, height: 1800)
+                    minimumSize: CGSize(width: windowWidth, height: minimumMediaHeight + GalleryViewerLayout.windowChromeHeight),
+                    maximumSize: CGSize(width: windowWidth, height: GalleryViewerLayout.maximumWindowHeight)
                 ) { scene in windows.attach(value, to: scene) })
                 .onAppear {
                     guard value.sessionIDs.contains(where: { store.session($0) != nil }) else {
@@ -227,7 +236,8 @@ private struct GalleryViewerPane: View {
             return Double(item.pixelWidth) / Double(item.pixelHeight)
         }
         guard let ratio = media.aspectRatio ?? assetRatio, ratio.isFinite, ratio > 0 else { return minimumMediaHeight }
-        return min(1500, max(minimumMediaHeight, width / ratio + (media.isSpatialVideo ? 160 : 0)))
+        return min(GalleryViewerLayout.maximumMediaHeight,
+            max(minimumMediaHeight, width / ratio + (media.isSpatialVideo ? 160 : 0)))
     }
 
     var body: some View {
@@ -276,7 +286,8 @@ private struct GalleryViewerPane: View {
             .frame(minHeight: minimumMediaHeight, idealHeight: preferredMediaHeight, maxHeight: .infinity)
             // Spatial content projects forward from the window. Leave clearance
             // for the header and bottom ornament even at a portrait aspect ratio.
-            .padding(.vertical, 96)
+            // The window height budget includes both insets so media keeps its room.
+            .padding(.vertical, GalleryViewerLayout.mediaVerticalPadding)
 
             if let actionError {
                 Text(actionError).font(.caption).foregroundStyle(.red).lineLimit(2)
