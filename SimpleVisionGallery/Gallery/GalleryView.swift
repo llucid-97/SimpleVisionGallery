@@ -43,6 +43,8 @@ struct GalleryView: View {
     @StateObject private var manager = GalleryManager()
     @State private var showingMoveSheet = false
     @State private var showingSettings = false
+    @State private var showingDesigns = false
+    @AppStorage(GalleryDesignDirection.preferenceKey) private var designPreference = "classic"
     @State private var showingThumbnailSize = false
     @State private var albumToRename: GalleryAlbum?
     @State private var albumVisibility: GalleryAlbumVisibility = .visible
@@ -70,6 +72,10 @@ struct GalleryView: View {
         .sheet(isPresented: $showingMoveSheet) {
             GalleryMoveSheet(manager: manager, isPresented: $showingMoveSheet)
         }
+        .sheet(isPresented: $showingDesigns) {
+            GalleryDesignPreviewPicker(selection: $designPreference)
+        }
+        .preferredColorScheme(designDirection.colorScheme)
         .sheet(isPresented: $showingSettings) {
             GallerySettingsView(manager: manager)
         }
@@ -112,7 +118,79 @@ struct GalleryView: View {
         }
     }
 
+    private var designDirection: GalleryDesignDirection {
+        GalleryDesignDirection(rawValue: designPreference) ?? .classic
+    }
+
+    @ViewBuilder
     private var content: some View {
+        if designDirection != .classic && manager.hasPhotoAccess {
+            switch designDirection {
+            case .prism: GalleryPrismDesign(context: designContext)
+            case .cinema: GalleryCinemaDesign(context: designContext)
+            case .archive: GalleryArchiveDesign(context: designContext)
+            case .classic: EmptyView()
+            }
+        } else {
+            classicContent
+        }
+    }
+
+    private var designContext: GalleryDesignContext {
+        GalleryDesignContext(
+            manager: manager, albums: filteredDisplayedAlbums, query: $albumSearch,
+            isSelectingAlbums: isSelectingAlbums, selectedAlbumIDs: selectedAlbumIDs,
+            actions: AnyView(designActions),
+            albumToolbar: AnyView(pageHeader), mediaContent: AnyView(albumDetailView),
+            emptyContent: AnyView(designEmptyContent),
+            cover: { AnyView(GalleryAlbumCover(album: $0, manager: manager)) },
+            openAlbum: { album in
+                if isSelectingAlbums { toggleAlbumSelection(album.id) }
+                else { Task { await manager.openAlbum(album) } }
+            },
+            renameAlbum: { albumToRename = $0 },
+            toggleVisibility: { album in
+                clearAlbumSelection()
+                if manager.isAlbumHidden(album) { manager.unhideAlbums(withIDs: [album.id]) }
+                else { manager.hideAlbums(withIDs: [album.id]) }
+            },
+            showDesigns: { showingDesigns = true }
+        )
+    }
+
+    private var designActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) {
+                visibilityMenu
+                albumSelectionButton
+                if isSelectingAlbums { albumVisibilityAction }
+                overflowMenu(compact: false)
+            }.fixedSize(horizontal: true, vertical: false)
+            Menu {
+                visibilityMenu
+                albumSelectionButton
+                if isSelectingAlbums { albumVisibilityAction }
+                Divider()
+                Button("Design Previews", systemImage: "paintpalette") { showingDesigns = true }
+                Button("Gallery Settings", systemImage: "gearshape") { showingSettings = true }
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await manager.loadAlbums() } }
+            } label: { Label("Album Actions", systemImage: "ellipsis") }
+            .buttonStyle(LensLabSecondaryButtonStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var designEmptyContent: some View {
+        if manager.isLoadingAlbums && manager.albums.isEmpty {
+            ProgressView("Loading Albums").frame(maxWidth: .infinity, minHeight: 240)
+        } else if !albumSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ContentUnavailableView.search(text: albumSearch)
+        } else {
+            albumEmptyState
+        }
+    }
+
+    private var classicContent: some View {
         VStack(spacing: 0) {
             pageHeader
                 .padding(.horizontal, 14)
@@ -201,7 +279,7 @@ struct GalleryView: View {
                     .controlSize(.small)
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 16) {
                 if manager.hasPhotoAccess && !compact {
                     if manager.selectedAlbum != nil {
                         sortMenu
@@ -219,6 +297,11 @@ struct GalleryView: View {
                             albumVisibilityAction
                         }
                     }
+                }
+                if !compact {
+                    Button("Designs", systemImage: "paintpalette") { showingDesigns = true }
+                        .buttonStyle(LensLabSecondaryButtonStyle())
+                        .accessibilityIdentifier("gallery-design-open")
                 }
                 overflowMenu(compact: compact)
             }
@@ -447,6 +530,9 @@ struct GalleryView: View {
                 .disabled(manager.isLoadingAlbums || manager.isPerformingOperation)
                 Divider()
             }
+            Button("Design Previews", systemImage: "paintpalette") { showingDesigns = true }
+                .accessibilityIdentifier("gallery-design-open-menu")
+            Divider()
             Button("Gallery Settings", systemImage: "gearshape") {
                 showingSettings = true
             }
@@ -523,36 +609,32 @@ struct GalleryView: View {
     }
 
     private var requestAccessView: some View {
-        LensLabSection(
-            title: "Photo Library Access", subtitle: "Grant full access before browsing and moving album media."
-        ) {
-            HStack(spacing: 14) {
-                GalleryPromptIcon(systemName: "photo.on.rectangle.angled", tint: LensLabTheme.cyan)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Access required")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(LensLabTheme.ink)
-
-                    Text(
-                        "Gallery needs read/write access to browse albums, create destination albums, and update selected items."
-                    )
-                    .font(.callout)
-                    .foregroundStyle(LensLabTheme.mutedInk)
-                }
-
-                Spacer(minLength: 12)
-
-                Button {
-                    Task {
-                        await manager.requestAuthorization()
-                    }
-                } label: {
-                    Label("Grant Access", systemImage: "lock.open")
-                }
-                .buttonStyle(LensLabPrimaryButtonStyle())
+        VStack(alignment: .leading, spacing: 24) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 48)).foregroundStyle(LensLabTheme.cyan)
+                .accessibilityHidden(true)
+            Text("Your Photos, With Depth")
+                .font(.largeTitle.weight(.semibold)).foregroundStyle(LensLabTheme.ink)
+            Text("Open photos as spatial scenes and enjoy more than one view at a time. Browse, move and rename your albums right here.")
+                .font(.title3).foregroundStyle(LensLabTheme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Label("Spatial views are created on your device. Your original photos stay untouched.", systemImage: "sparkles")
+                .font(.body).foregroundStyle(LensLabTheme.mutedInk)
+            Divider()
+            Text("Allow Full Access to browse all your albums and move items between them. Album changes are saved to your Photos library.")
+                .font(.body).foregroundStyle(LensLabTheme.mutedInk)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                Task { await manager.requestAuthorization() }
+            } label: {
+                Label("Choose Photos Access", systemImage: "photo.badge.checkmark")
+                    .frame(minHeight: 32)
             }
+            .buttonStyle(LensLabPrimaryButtonStyle())
+            .accessibilityIdentifier("gallery-choose-photos-access")
         }
+        .padding(32).frame(maxWidth: 780, alignment: .leading)
+        .lensLabCard(radius: 24).padding(.vertical, 24)
     }
 
     private var deniedAccessView: some View {
@@ -823,13 +905,15 @@ private struct GalleryAssetGrid: View {
                     .foregroundStyle(LensLabTheme.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                    .background(LensLabTheme.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .background(LensLabTheme.card, in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityIdentifier("gallery-range-anchor-status")
             } else if manager.selectedCount > 0 {
                 Text("Long pinch the first item for a range start, then long pinch the end item.")
                     .font(.caption)
                     .foregroundStyle(LensLabTheme.mutedInk)
+                    .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(LensLabTheme.card, in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityIdentifier("gallery-range-selection-hint")
             }
 
@@ -873,9 +957,11 @@ private struct GalleryAssetGrid: View {
             } else {
                 Text("\(manager.totalAssetCount) item\(manager.totalAssetCount == 1 ? "" : "s")")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(LensLabTheme.mutedInk)
-                    .frame(maxWidth: .infinity)
+                    .foregroundStyle(LensLabTheme.ink)
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 8)
+                    .background(LensLabTheme.card, in: Capsule())
+                    .frame(maxWidth: .infinity)
             }
         }
     }

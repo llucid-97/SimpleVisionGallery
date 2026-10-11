@@ -82,7 +82,6 @@ struct GallerySettingsView: View {
         .padding(24)
         .frame(minWidth: 480, idealWidth: 560)
         .background(LensLabTheme.card)
-        .preferredColorScheme(.light)
         .accessibilityIdentifier("svt-gallery-settings")
     }
 }
