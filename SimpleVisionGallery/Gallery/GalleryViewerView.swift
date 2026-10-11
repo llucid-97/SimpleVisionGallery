@@ -262,6 +262,7 @@ private struct GalleryViewerPane: View {
                     .simultaneousGesture(DragGesture(minimumDistance: 45).onEnded { drag in
                         if session.currentAsset?.mediaType == .video && drag.startLocation.y > geometry.size.height - 100 { return }
                         guard abs(drag.translation.width) > abs(drag.translation.height) * 1.4 else { return }
+                        actionError = nil
                         if drag.translation.width < 0 { store.next(session.id) }
                         else { store.previous(session.id) }
                     })
@@ -286,7 +287,6 @@ private struct GalleryViewerPane: View {
         .task(id: loadKey) {
             let requestedKey = loadKey
             loadedKey = nil
-            actionError = nil
             media.prefetch(assets: prefetchAssets, excludingCurrent: session.currentAsset,
                 preserving: session.currentAsset)
             if let asset = session.currentAsset {
@@ -374,7 +374,10 @@ private struct GalleryViewerPane: View {
 
     private var controls: some View {
         HStack(spacing: 52) {
-            Button { store.previous(session.id) } label: {
+            Button {
+                actionError = nil
+                store.previous(session.id)
+            } label: {
                 Label("Previous", systemImage: "chevron.left")
             }
             .disabled(!session.canGoPrevious)
@@ -414,6 +417,7 @@ private struct GalleryViewerPane: View {
 
             Button {
                 if let assetID = session.currentAsset?.localIdentifier {
+                    actionError = nil
                     // Capture playback intent before dismantling the media surface.
                     media.pausePrefetch(true)
                     media.setSceneActive(false)
@@ -425,6 +429,7 @@ private struct GalleryViewerPane: View {
 
             Button {
                 guard let targetID = session.currentAsset?.localIdentifier else { return }
+                actionError = nil
                 if isInRecycleBin {
                     media.pausePrefetch(true)
                     media.setSceneActive(false)
@@ -443,7 +448,10 @@ private struct GalleryViewerPane: View {
             .accessibilityIdentifier("gallery-viewer-recycle")
             .accessibilityHint(isInRecycleBin ? "Permanently deletes this item from Photos after confirmation." : "Moves this item to the Recycle Bin album.")
 
-            Button { store.next(session.id) } label: {
+            Button {
+                actionError = nil
+                store.next(session.id)
+            } label: {
                 Label("Next", systemImage: "chevron.right")
             }
             .disabled(!session.canGoNext)

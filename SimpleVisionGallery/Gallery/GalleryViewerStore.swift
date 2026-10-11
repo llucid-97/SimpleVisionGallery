@@ -30,6 +30,14 @@ nonisolated struct GalleryPlaylistIndex {
         return index(at: min(position(of: cursor), count - 1))
     }
 
+    /// Hand off to the same successor that committing a current-item removal would choose.
+    /// At the end of the playlist, use the previous item; a sole item leaves an empty viewer.
+    func cursorAfterRemoving(_ cursor: Int?) -> Int? {
+        guard let cursor, count > 1, !removed.contains(cursor) else { return nil }
+        let position = position(of: cursor)
+        return index(at: position + 1) ?? index(at: position - 1)
+    }
+
     mutating func remove(_ indexes: IndexSet) {
         removed.formUnion(indexes.intersection(IndexSet(integersIn: 0..<originalCount)))
     }
@@ -97,6 +105,13 @@ final class GalleryViewerSession: ObservableObject, Identifiable {
     fileprivate let playlist: GalleryViewerPlaylist
     @Published fileprivate(set) var cursor: Int?
     @Published fileprivate(set) var revision = 0
+    fileprivate var cursorGeneration = UUID()
+
+    fileprivate func setCursor(_ value: Int?) {
+        guard cursor != value else { return }
+        cursorGeneration = UUID()
+        cursor = value
+    }
 
     fileprivate init(playlist: GalleryViewerPlaylist, cursor: Int) {
         self.playlist = playlist
@@ -206,7 +221,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
               let next = session.playlist.index.index(at: session.playlist.index.position(of: cursor) + offset)
         else { return }
         objectWillChange.send()
-        session.cursor = next
+        session.setCursor(next)
     }
 
     func disposeSession(_ id: UUID) {
@@ -342,8 +357,24 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         }
 
         if recycling {
-            try await GalleryRecycleBin.move([asset], from: source)
-            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: GalleryRecycleBin.existingCollection()?.localIdentifier, removedAlbumID: source?.localIdentifier)
+            // Show the already-prepared successor as soon as the bin action starts.
+            // Membership still changes only after Photos commits the transaction.
+            let originalCursor = liveSession.cursor
+            liveSession.setCursor(liveSession.playlist.index.cursorAfterRemoving(originalCursor))
+            let handoffGeneration = liveSession.cursorGeneration
+            let binID: String
+            do {
+                binID = try await GalleryRecycleBin.move([asset], from: source)
+            } catch {
+                // A failed write must not undo navigation or a removal received meanwhile.
+                if sessions[id] === liveSession,
+                   liveSession.cursorGeneration == handoffGeneration,
+                   let originalCursor, !liveSession.playlist.index.removed.contains(originalCursor) {
+                    liveSession.setCursor(originalCursor)
+                }
+                throw error
+            }
+            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: binID, removedAlbumID: source?.localIdentifier)
             synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
                 recycling: true, removedFromSource: source != nil)
             if let source { removeFromAlbum(source.localIdentifier, assets: [asset]) }
@@ -419,13 +450,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 let sourceIndex = playlist.snapshot.fetch.index(of: asset)
                 if sourceIndex != NSNotFound { sourceRemovals.insert(sourceIndex) }
             }
-            var removed = sourceRemovals
-            if let order = playlist.snapshot.displayOrder, !sourceRemovals.isEmpty {
-                removed = IndexSet()
-                for (displayIndex, sourceIndex) in order.enumerated() where sourceRemovals.contains(sourceIndex) {
-                    removed.insert(displayIndex)
-                }
-            }
+            let removed = IndexSet(sourceRemovals.compactMap { playlist.displayIndex(forSource: $0) })
             applyRemovals(removed, to: playlist)
         }
     }
@@ -441,13 +466,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 if index != NSNotFound { sourceRemovals.insert(index) }
             }
             guard !sourceRemovals.isEmpty else { continue }
-            var displayRemovals = sourceRemovals
-            if let order = playlist.snapshot.displayOrder {
-                displayRemovals = IndexSet()
-                for (displayIndex, sourceIndex) in order.enumerated() where sourceRemovals.contains(sourceIndex) {
-                    displayRemovals.insert(displayIndex)
-                }
-            }
+            let displayRemovals = IndexSet(sourceRemovals.compactMap { playlist.displayIndex(forSource: $0) })
             applyRemovals(displayRemovals, to: playlist)
         }
     }
@@ -494,7 +513,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     private func notify(_ playlist: GalleryViewerPlaylist) {
         objectWillChange.send()
         for session in sessions.values where session.playlist === playlist {
-            session.cursor = playlist.index.survivingCursor(session.cursor)
+            session.setCursor(playlist.index.survivingCursor(session.cursor))
             session.revision += 1
         }
     }

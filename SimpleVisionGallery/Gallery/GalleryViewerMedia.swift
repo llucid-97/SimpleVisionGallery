@@ -74,7 +74,10 @@ final class GalleryViewerMedia {
             prefetchKey = nil
         }
         cancelCurrent(releaseImage: preparedKey != requestedKey)
-        cancelPrefetchWork()
+        // A promoted request becomes foreground work; detach its old coordinator.
+        // Otherwise keep preparing the still-wanted following scene while a warm
+        // current scene is presented. Demand changes already cancel obsolete work.
+        if promoted != nil { cancelPrefetchWork() }
         desiredPrefetchAssets.removeAll { GallerySceneCache.key(for: $0) == requestedKey }
         currentKey = requestedKey
         GallerySceneCache.shared.promote(asset: asset)
