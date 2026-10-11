@@ -8,27 +8,17 @@
 import SwiftUI
 
 enum LensLabTheme {
-    private static var direction: GalleryDesignDirection {
-        GalleryDesignDirection(rawValue: UserDefaults.standard.string(forKey: GalleryDesignDirection.preferenceKey) ?? "classic") ?? .classic
-    }
-    static var cyan: Color { direction.accent }
+    static var cyan: Color { GalleryAppearance.accent }
     static let orange = Color(red: 240 / 255, green: 120 / 255, blue: 34 / 255)
     static let blue = Color(red: 45 / 255, green: 159 / 255, blue: 232 / 255)
     static let green = Color(red: 51 / 255, green: 181 / 255, blue: 102 / 255)
     static let red = Color(red: 214 / 255, green: 74 / 255, blue: 74 / 255)
 
-    static var ink: Color { direction == .cinema ? .white : Color(red: 38 / 255, green: 35 / 255, blue: 31 / 255) }
-    static var mutedInk: Color { direction == .cinema ? Color.white.opacity(0.76) : Color(red: 110 / 255, green: 103 / 255, blue: 93 / 255) }
-    static var card: Color {
-        switch direction {
-        case .classic: Color(red: 245 / 255, green: 241 / 255, blue: 234 / 255)
-        case .prism: .white.opacity(0.78)
-        case .cinema: Color(red: 0.08, green: 0.10, blue: 0.15)
-        case .archive: Color(red: 0.96, green: 0.97, blue: 0.98)
-        }
-    }
-    static var primaryButtonInk: Color { direction == .cinema ? Color(red: 0.10, green: 0.12, blue: 0.17) : .white }
-    static var secondaryButtonSurface: Color { direction == .cinema ? .white.opacity(0.10) : .white.opacity(0.55) }
+    static let ink = Color.white
+    static let mutedInk = Color.white.opacity(0.76)
+    static let card = Color(red: 0.08, green: 0.10, blue: 0.15)
+    static var primaryButtonInk: Color { GalleryAppearance.accentForeground }
+    static let secondaryButtonSurface = Color.white.opacity(0.10)
     static let cardLine = Color(red: 207 / 255, green: 198 / 255, blue: 184 / 255)
 
     static let shellWarm = Color(red: 181 / 255, green: 172 / 255, blue: 157 / 255)

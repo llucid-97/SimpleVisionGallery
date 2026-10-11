@@ -40,10 +40,10 @@ struct GalleryCinemaDesign: View {
         VStack(spacing: 22) {
             Image(systemName: "viewfinder")
                 .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(CinemaPalette.amber)
+                .foregroundStyle(CinemaPalette.accent)
                 .frame(width: 52, height: 52)
-                .background(CinemaPalette.amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 17))
-                .accessibilityLabel("Gallery Cinema")
+                .background(CinemaPalette.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 17))
+                .accessibilityLabel("Simple Vision Gallery")
 
             Button {
                 context.manager.closeAlbum()
@@ -60,13 +60,13 @@ struct GalleryCinemaDesign: View {
 
             Spacer(minLength: 12)
 
-            Button(action: context.showDesigns) {
+            Button(action: context.showSettings) {
                 if compact {
-                    Label("Designs", systemImage: "slider.horizontal.3")
+                    Label("Settings", systemImage: "gearshape")
                         .labelStyle(.iconOnly)
                         .frame(maxWidth: .infinity, minHeight: 60)
                 } else {
-                    Label("Designs", systemImage: "slider.horizontal.3")
+                    Label("Settings", systemImage: "gearshape")
                         .labelStyle(.titleAndIcon)
                         .frame(maxWidth: .infinity, minHeight: 60)
                 }
@@ -74,8 +74,8 @@ struct GalleryCinemaDesign: View {
             .font(.callout.weight(.medium))
             .buttonStyle(.plain)
             .foregroundStyle(CinemaPalette.secondaryText)
-            .accessibilityLabel("Open gallery designs")
-            .accessibilityIdentifier("gallery-cinema-designs")
+            .accessibilityLabel("Open gallery settings")
+            .accessibilityIdentifier("gallery-cinema-settings")
             .frame(minWidth: 60, minHeight: 60)
             .hoverEffect(.lift)
         }
@@ -89,7 +89,7 @@ struct GalleryCinemaDesign: View {
     private func railItem(symbol: String, title: String, selected: Bool, compact: Bool) -> some View {
         HStack(spacing: 10) {
             if selected {
-                Capsule().fill(CinemaPalette.amber).frame(width: 3, height: 22)
+                Capsule().fill(CinemaPalette.accent).frame(width: 3, height: 22)
             } else {
                 Color.clear.frame(width: 3, height: 22)
             }
@@ -231,7 +231,7 @@ struct GalleryCinemaDesign: View {
     private var loadingState: some View {
         VStack(spacing: 14) {
             ProgressView()
-                .tint(CinemaPalette.amber)
+                .tint(CinemaPalette.accent)
                 .controlSize(.large)
             Text(context.manager.loadingMessage ?? "Finding your collections…")
                 .font(.callout)
@@ -273,7 +273,7 @@ private enum CinemaPalette {
     static let divider = Color.white.opacity(0.08)
     static let primaryText = Color(red: 248 / 255, green: 246 / 255, blue: 242 / 255)
     static let secondaryText = Color(red: 195 / 255, green: 192 / 255, blue: 204 / 255)
-    static let amber = Color(red: 255 / 255, green: 197 / 255, blue: 105 / 255)
+    static var accent: Color { GalleryAppearance.accent }
     static let lavender = Color(red: 205 / 255, green: 190 / 255, blue: 255 / 255)
 }
 
@@ -299,13 +299,13 @@ private extension GalleryCinemaDesign {
                             .padding(.horizontal, 11)
                             .padding(.vertical, 8)
                             .foregroundStyle(CinemaPalette.background)
-                            .background(CinemaPalette.amber, in: Capsule())
+                            .background(CinemaPalette.accent, in: Capsule())
                             .padding(12)
                     }
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: 17, style: .continuous)
-                        .stroke(isSelected ? CinemaPalette.amber : CinemaPalette.cardLine, lineWidth: isSelected ? 2 : 1)
+                        .stroke(isSelected ? CinemaPalette.accent : CinemaPalette.cardLine, lineWidth: isSelected ? 2 : 1)
                 }
 
                 HStack(alignment: .firstTextBaseline, spacing: 12) {

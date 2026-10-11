@@ -43,8 +43,7 @@ struct GalleryView: View {
     @StateObject private var manager = GalleryManager()
     @State private var showingMoveSheet = false
     @State private var showingSettings = false
-    @State private var showingDesigns = false
-    @AppStorage(GalleryDesignDirection.preferenceKey) private var designPreference = "classic"
+    @AppStorage(GalleryAppearance.accentColorKey) private var accentRGB = GalleryAppearance.defaultAccentRGB
     @State private var showingThumbnailSize = false
     @State private var albumToRename: GalleryAlbum?
     @State private var albumVisibility: GalleryAlbumVisibility = .visible
@@ -72,10 +71,8 @@ struct GalleryView: View {
         .sheet(isPresented: $showingMoveSheet) {
             GalleryMoveSheet(manager: manager, isPresented: $showingMoveSheet)
         }
-        .sheet(isPresented: $showingDesigns) {
-            GalleryDesignPreviewPicker(selection: $designPreference)
-        }
-        .preferredColorScheme(designDirection.colorScheme)
+        .preferredColorScheme(.dark)
+        .tint(GalleryAppearance.accent(for: accentRGB))
         .sheet(isPresented: $showingSettings) {
             GallerySettingsView(manager: manager)
         }
@@ -118,19 +115,10 @@ struct GalleryView: View {
         }
     }
 
-    private var designDirection: GalleryDesignDirection {
-        GalleryDesignDirection(rawValue: designPreference) ?? .classic
-    }
-
     @ViewBuilder
     private var content: some View {
-        if designDirection != .classic && manager.hasPhotoAccess {
-            switch designDirection {
-            case .prism: GalleryPrismDesign(context: designContext)
-            case .cinema: GalleryCinemaDesign(context: designContext)
-            case .archive: GalleryArchiveDesign(context: designContext)
-            case .classic: EmptyView()
-            }
+        if manager.hasPhotoAccess {
+            GalleryCinemaDesign(context: designContext)
         } else {
             classicContent
         }
@@ -154,7 +142,7 @@ struct GalleryView: View {
                 if manager.isAlbumHidden(album) { manager.unhideAlbums(withIDs: [album.id]) }
                 else { manager.hideAlbums(withIDs: [album.id]) }
             },
-            showDesigns: { showingDesigns = true }
+            showSettings: { showingSettings = true }
         )
     }
 
@@ -171,7 +159,6 @@ struct GalleryView: View {
                 albumSelectionButton
                 if isSelectingAlbums { albumVisibilityAction }
                 Divider()
-                Button("Design Previews", systemImage: "paintpalette") { showingDesigns = true }
                 Button("Gallery Settings", systemImage: "gearshape") { showingSettings = true }
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await manager.loadAlbums() } }
             } label: { Label("Album Actions", systemImage: "ellipsis") }
@@ -297,11 +284,6 @@ struct GalleryView: View {
                             albumVisibilityAction
                         }
                     }
-                }
-                if !compact {
-                    Button("Designs", systemImage: "paintpalette") { showingDesigns = true }
-                        .buttonStyle(LensLabSecondaryButtonStyle())
-                        .accessibilityIdentifier("gallery-design-open")
                 }
                 overflowMenu(compact: compact)
             }
@@ -530,9 +512,6 @@ struct GalleryView: View {
                 .disabled(manager.isLoadingAlbums || manager.isPerformingOperation)
                 Divider()
             }
-            Button("Design Previews", systemImage: "paintpalette") { showingDesigns = true }
-                .accessibilityIdentifier("gallery-design-open-menu")
-            Divider()
             Button("Gallery Settings", systemImage: "gearshape") {
                 showingSettings = true
             }
@@ -1002,7 +981,7 @@ private struct GalleryAssetCell: View {
                             .frame(width: 28, height: 28)
                         Image(systemName: "checkmark")
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(LensLabTheme.primaryButtonInk)
                     }
                     .padding(6)
                 }
@@ -1138,7 +1117,7 @@ private struct GalleryAlbumCard<Cover: View>: View {
                                         .frame(width: 30, height: 30)
                                     Image(systemName: "checkmark")
                                         .font(.caption.weight(.bold))
-                                        .foregroundStyle(.white)
+                                        .foregroundStyle(LensLabTheme.primaryButtonInk)
                                 }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                                 .padding(8)

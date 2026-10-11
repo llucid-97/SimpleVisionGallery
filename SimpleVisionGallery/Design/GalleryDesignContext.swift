@@ -16,7 +16,7 @@ struct GalleryDesignContext {
     let openAlbum: (GalleryAlbum) -> Void
     let renameAlbum: (GalleryAlbum) -> Void
     let toggleVisibility: (GalleryAlbum) -> Void
-    let showDesigns: () -> Void
+    let showSettings: () -> Void
 
     var hasOpenAlbum: Bool { manager.selectedAlbum != nil }
 }

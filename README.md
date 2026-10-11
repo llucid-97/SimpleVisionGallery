@@ -13,6 +13,7 @@ A standalone gallery for Apple Vision Pro. Open a supported photo and it becomes
 - Rename albums, find them with typo-tolerant search, and reuse your three recent move destinations.
 - Select all items or a range; removal goes to the recycle bin. Delete permanently from inside the bin.
 - Keep a persistent video-loop setting.
+- Browse in the Cinema layout and choose your accent colour in Gallery Settings.
 - Resize windows vertically while their width stays fixed.
 
 Spatial scenes are viewing experiences generated on the headset. Photos that Apple's scene API cannot convert show their original image. Scene preparation is bounded and in memory; this app does not scan and convert your entire library at launch or create permanent converted files.
@@ -35,7 +36,7 @@ For the next headset round, see [the short dogfooding guide](docs/dogfooding.md)
 
 ## App Store
 
-Developer Program enrollment is pending. See [the release checklist](docs/app-store-release.md), [listing draft](docs/app-store-listing.md), and [privacy policy draft](docs/privacy-policy.md). Public URLs, account/team, final icon review, pricing and distribution signing must be settled before submission.
+Paid Developer Program signing is available for headset dogfooding. See [the release checklist](docs/app-store-release.md), [listing draft](docs/app-store-listing.md), and [privacy policy draft](docs/privacy-policy.md). Public URLs, account/team, final icon review, pricing and distribution signing must be settled before submission.
 
 ## Origin
 
