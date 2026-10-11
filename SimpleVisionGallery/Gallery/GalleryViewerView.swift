@@ -12,6 +12,7 @@ struct GalleryViewerWindowRoot: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.pushWindow) private var pushWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @State private var moveTarget: GalleryViewerMoveTarget?
 
     private var paired: Bool { value?.sessionIDs.count == 2 }
     private var paneWidth: CGFloat { paired ? 500 : 700 }
@@ -37,6 +38,7 @@ struct GalleryViewerWindowRoot: View {
                         if let session = store.session(sessionID) {
                             GalleryViewerPane(
                                 session: session,
+                                moveTarget: $moveTarget,
                                 width: paneWidth,
                                 minimumMediaHeight: minimumMediaHeight,
                                 backingYaw: value.sessionIDs.count == 2
@@ -92,6 +94,9 @@ struct GalleryViewerWindowRoot: View {
             } else {
                 unavailableView.frame(width: 500, height: 450)
             }
+        }
+        .sheet(item: $moveTarget) { target in
+            GalleryViewerMoveSheet(sessionID: target.sessionID, assetID: target.assetID)
         }
         .persistentSystemOverlays(.visible)
     }
@@ -158,6 +163,7 @@ private struct GalleryViewerLoadKey: Equatable {
 
 private struct GalleryViewerPane: View {
     @ObservedObject var session: GalleryViewerSession
+    @Binding var moveTarget: GalleryViewerMoveTarget?
     let width: CGFloat
     let minimumMediaHeight: CGFloat
     let backingYaw: Double
@@ -168,7 +174,6 @@ private struct GalleryViewerPane: View {
     @ObservedObject private var store = GalleryViewerStore.shared
     @State private var media = GalleryViewerMedia()
     @State private var spatialEnabled = true
-    @State private var moveTarget: GalleryViewerMoveTarget?
     @State private var actionError: String?
     @State private var pendingDelete: GalleryViewerDeleteTarget?
     @State private var isDeletingFromPhotos = false
@@ -296,7 +301,11 @@ private struct GalleryViewerPane: View {
             loadedKey = requestedKey
             refreshPrefetch()
         }
-        .onDisappear { loadedKey = nil; media.cancel() }
+        .onDisappear {
+            loadedKey = nil
+            media.cancel()
+            if moveTarget?.sessionID == session.id { moveTarget = nil }
+        }
         .onChange(of: scenePhase, initial: true) { _, phase in
             media.setSceneActive(phase == .active && moveTarget == nil)
             refreshPrefetch()
@@ -304,23 +313,21 @@ private struct GalleryViewerPane: View {
         .onChange(of: loopVideos, initial: true) { _, enabled in
             media.setVideoLooping(enabled)
         }
-        .onChange(of: moveTarget?.assetID) { _, targetID in
+        .onChange(of: moveTarget?.id) { _, targetID in
             media.pausePrefetch(targetID != nil)
             media.setSceneActive(scenePhase == .active && targetID == nil)
             refreshPrefetch()
         }
         .onChange(of: pendingDelete?.assetID) { _, targetID in
             if targetID == nil, !isDeletingFromPhotos {
-                media.setSceneActive(scenePhase == .active)
-                media.pausePrefetch(false)
+                media.setSceneActive(scenePhase == .active && moveTarget == nil)
+                media.pausePrefetch(moveTarget != nil)
             }
         }
         .onChange(of: prefetchKeys) { _, _ in refreshPrefetch() }
         .onChange(of: session.currentAsset?.localIdentifier) { _, newID in
-            if moveTarget?.assetID != newID { moveTarget = nil }
-        }
-        .sheet(item: $moveTarget) { target in
-            GalleryViewerMoveSheet(sessionID: session.id, assetID: target.assetID)
+            if let target = moveTarget, target.sessionID == session.id,
+               target.assetID != newID { moveTarget = nil }
         }
         .alert(item: $pendingDelete) { target in
             Alert(title: Text("Delete permanently from Photos?"),
@@ -335,8 +342,8 @@ private struct GalleryViewerPane: View {
     @ViewBuilder
     private func mediaStage(height: CGFloat) -> some View {
         if moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos {
-            // Remove the raised rendering surface while the sheet is presented;
-            // the prepared scene stays in media and is restored when it closes.
+            // A move sheet belongs to the whole window: either raised surface
+            // could occlude it. Keep both prepared scenes for dismissal.
             Color.clear
         } else if session.currentAsset == nil {
             ContentUnavailableView("No items left", systemImage: "photo",
@@ -421,7 +428,7 @@ private struct GalleryViewerPane: View {
                     // Capture playback intent before dismantling the media surface.
                     media.pausePrefetch(true)
                     media.setSceneActive(false)
-                    moveTarget = GalleryViewerMoveTarget(assetID: assetID)
+                    moveTarget = GalleryViewerMoveTarget(sessionID: session.id, assetID: assetID)
                 }
             } label: { Label("Move", systemImage: "arrowshape.turn.up.right") }
             .disabled(session.currentAsset == nil || store.isPerformingOperation)
@@ -476,15 +483,16 @@ private struct GalleryViewerPane: View {
             catch { actionError = error.localizedDescription }
             isDeletingFromPhotos = false
             pendingDelete = nil
-            media.setSceneActive(scenePhase == .active)
-            media.pausePrefetch(false)
+            media.setSceneActive(scenePhase == .active && moveTarget == nil)
+            media.pausePrefetch(moveTarget != nil)
         }
     }
 }
 
 private struct GalleryViewerMoveTarget: Identifiable {
+    let sessionID: UUID
     let assetID: String
-    var id: String { assetID }
+    var id: String { "\(sessionID.uuidString):\(assetID)" }
 }
 
 private struct GalleryViewerDeleteTarget: Identifiable {
