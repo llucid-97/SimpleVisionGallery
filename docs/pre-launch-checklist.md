@@ -16,13 +16,14 @@ Gershom approved dogfood version 1.0.7. Version 1.0.8 passed Simulator checks an
 
 - [x] **Price:** Free.
 - [x] **Countries:** All countries.
+- [ ] **Proposed legal seller/developer:** Gershom Agim; confirm it matches the Apple Developer membership. Individual memberships use the legal name publicly. [Apple developer-name rules](https://developer.apple.com/help/app-store-connect/create-an-app-record/set-your-developer-name)
 - [x] **Public support email:** [agim.gershom@gmail.com](mailto:agim.gershom@gmail.com), temporary until a dedicated mailbox is ready.
 
 ## Do first — remaining owner details
 
-- [ ] **Seller identity and App Review contact:** confirm the public legal seller/developer name and provide the private App Review contact email and phone.
+- [ ] **Seller identity and App Review contact:** verify Gershom Agim against the membership and provide the private App Review contact email and phone.
 - [ ] **Public support and privacy pages:** choose hosting and publish the final privacy policy with the legal identity, effective date and contact details. Publish a public support page, and confirm both URLs work without signing in. The temporary support email is already in the app and policy draft. [Privacy requirements](https://developer.apple.com/help/app-store-connect/manage-app-information/manage-app-privacy/), [support contact requirement](https://developer.apple.com/app-store/review/guidelines/#safety)
-- [ ] **Trader status:** complete the status declaration shown in App Store Connect. If distributing as a trader in the EU, complete Apple's contact verification. [Apple's trader requirements](https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements/)
+- [ ] **Trader status:** complete the status declaration shown in App Store Connect. If distributing as a trader in the EU, complete Apple's contact verification. Apple publishes trader address, phone and email on the EU listing; individuals may use a verified P.O. Box for that public address. A free download alone does not decide trader status. [Apple's trader requirements](https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements/)
 
 ## Finish the release package — Codex, with owner checks
 

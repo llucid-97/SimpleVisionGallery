@@ -3,7 +3,7 @@
 
 **Draft for owner review.** The legal developer identity, effective date, and public URL are pending. The public support email below is temporary until a dedicated mailbox is ready.
 
-**Developer:** [PENDING — legal developer or seller name]
+**Developer:** Gershom Agim [owner-proposed; verify against Apple Developer membership before publishing]
 
 **Effective date:** [PENDING]
 

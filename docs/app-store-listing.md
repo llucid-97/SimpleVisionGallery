@@ -29,7 +29,7 @@ visionOS,spatial photos,photo gallery,3D photos,slideshow,videos
 
 ## Metadata to complete before release
 
-- Developer/seller display name
+- Proposed developer/seller name: Gershom Agim; verify against Apple Developer membership
 - Public support email: agim.gershom@gmail.com (temporary until a dedicated mailbox is ready)
 - Public support URL
 - Public privacy-policy URL
