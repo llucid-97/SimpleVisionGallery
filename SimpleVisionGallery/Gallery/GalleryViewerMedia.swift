@@ -279,11 +279,23 @@ final class GalleryViewerMedia {
             let key = GallerySceneCache.key(for: asset)
             guard !GallerySceneCache.shared.hasPrefetched(key, owner: prefetchOwnerID),
                   !prefetchFailures.contains(key) else { continue }
-            // Ordinary photos are bounded to 2560px; spatial sources retain both views.
+            // Ordinary photos are bounded to 2560px; undersized mono photos may
+            // be upscaled to the local 320px short-edge generation heuristic.
             let width = Double(asset.pixelWidth), height = Double(asset.pixelHeight)
-            let scale = min(1, 2560 / max(1, max(width, height)))
+            let previewScale = min(1, 2560 / max(1, max(width, height)))
+            var sourceScale = previewScale
+            let aspect = width / max(1, height)
+            let shortEdge = min(width, height) * sourceScale
+            if !asset.mediaSubtypes.contains(.spatialMedia),
+               shortEdge < 320,
+               aspect >= 1.0 / 3.0, aspect <= 3.0 {
+                sourceScale *= 320 / max(1, shortEdge)
+            }
             let pixelEstimate = asset.mediaType == .image
-                ? width * height * (asset.mediaSubtypes.contains(.spatialMedia) ? 2 : scale * scale) : 0
+                ? width * height * (
+                    (asset.mediaSubtypes.contains(.spatialMedia) ? 2 : sourceScale * sourceScale)
+                        + previewScale * previewScale
+                ) : 0
             guard pixelEstimate <= Double(pixelBudgetPerViewer - usedPixels) else { continue }
             let remainingPixels = pixelBudgetPerViewer - usedPixels
             let priority = GalleryPrefetchPriority()
@@ -737,7 +749,43 @@ private final class GallerySceneCache {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                result.status = "Could not create a spatial scene. Showing the original. \(error.localizedDescription)"
+                let firstError = error.localizedDescription
+                if decoded.canRetryGeneration,
+                   let retryPlan = decoded.retryPlan,
+                   GalleryRetryBudget.permits(
+                       sourcePixels: decoded.pixelCost,
+                       retryPixels: retryPlan.pixelCost,
+                       availablePixels: pixelBudget()
+                   ) {
+                    do {
+                        try Task.checkCancellation()
+                        let retrySource = try await decoded.makeRetrySource(retryPlan)
+                        try Task.checkCancellation()
+                        guard GalleryRetryBudget.permits(
+                            sourcePixels: decoded.pixelCost,
+                            retryPixels: retrySource.pixelCost,
+                            availablePixels: pixelBudget()
+                        ) else {
+                            throw GalleryMediaError.prefetchBudgetExceeded
+                        }
+                        let retry = try await ImagePresentationComponent.Spatial3DImage(imageSource: retrySource.source)
+                        try Task.checkCancellation()
+                        try await retry.generate()
+                        try Task.checkCancellation()
+                        result.component = ImagePresentationComponent(spatial3DImage: retry)
+                        result.spatialMode = .spatial3D
+                        result.pixelCost = retrySource.pixelCost + decoded.previewPixelCost
+                        return result
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch GalleryMediaError.prefetchBudgetExceeded {
+                        result.status = "Could not create a spatial scene. Showing the original. \(firstError)"
+                    } catch {
+                        result.status = "Could not create a spatial scene. Showing the original. \(error.localizedDescription)"
+                    }
+                } else {
+                    result.status = "Could not create a spatial scene. Showing the original. \(firstError)"
+                }
             }
         } else if spatial && !modes.contains(.spatialStereo) {
             result.status = "This photo's size or shape does not support spatial scenes."
@@ -805,7 +853,11 @@ private nonisolated struct GalleryDecodedImage: @unchecked Sendable {
     let source: CGImageSource
     let preview: UIImage
     let pixelCost: Int
+    let previewPixelCost: Int
     let canGenerate: Bool
+    let canRetryGeneration: Bool
+    let retryPlan: GalleryImageSizePlan?
+    private let thumbnail: CGImage
 
     init(data: Data) throws {
         guard let original = CGImageSourceCreateWithData(data as CFData, nil),
@@ -822,25 +874,123 @@ private nonisolated struct GalleryDecodedImage: @unchecked Sendable {
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(original, 0, options as CFDictionary) else {
             throw GalleryMediaError.invalidImage
         }
+        self.thumbnail = thumbnail
+        previewPixelCost = thumbnail.width * thumbnail.height
         preview = UIImage(cgImage: thumbnail)
         // Keep every channel and all camera metadata of multi-image HEIC sources.
         // The spatial-mode query is performed on the main actor before presentation.
         if CGImageSourceGetCount(original) > 1 {
             source = original
-            pixelCost = width * height * min(CGImageSourceGetCount(original), 2)
+            pixelCost = width * height * min(CGImageSourceGetCount(original), 2) + previewPixelCost
         } else {
+            let ratio = Double(width) / Double(height)
+            let shortEdge = min(thumbnail.width, thumbnail.height)
+            let spatialCandidate = ratio >= 1.0 / 3.0 && ratio <= 3.0
+            let spatialSource: CGImage
+            if spatialCandidate && shortEdge < 320 {
+                let scale = CGFloat(320) / CGFloat(shortEdge)
+                let targetWidth = max(1, Int((CGFloat(thumbnail.width) * scale).rounded()))
+                let targetHeight = max(1, Int((CGFloat(thumbnail.height) * scale).rounded()))
+                guard let context = CGContext(
+                    data: nil,
+                    width: targetWidth,
+                    height: targetHeight,
+                    bitsPerComponent: 8,
+                    bytesPerRow: 0,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                ) else { throw GalleryMediaError.invalidImage }
+                context.interpolationQuality = .high
+                context.draw(thumbnail, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+                guard let upscaled = context.makeImage() else { throw GalleryMediaError.invalidImage }
+                spatialSource = upscaled
+            } else {
+                spatialSource = thumbnail
+            }
             let resized = NSMutableData()
             guard let destination = CGImageDestinationCreateWithData(resized, UTType.png.identifier as CFString, 1, nil) else {
                 throw GalleryMediaError.invalidImage
             }
-            CGImageDestinationAddImage(destination, thumbnail, nil)
+            CGImageDestinationAddImage(destination, spatialSource, nil)
             guard CGImageDestinationFinalize(destination),
                   let bounded = CGImageSourceCreateWithData(resized, nil) else { throw GalleryMediaError.invalidImage }
             source = bounded
-            pixelCost = thumbnail.width * thumbnail.height
+            pixelCost = spatialSource.width * spatialSource.height + previewPixelCost
         }
         let ratio = Double(width) / Double(height)
-        canGenerate = min(thumbnail.width, thumbnail.height) >= 320 && ratio >= 1.0 / 3.0 && ratio <= 3.0
+        let supportsGenerationAspect = ratio >= 1.0 / 3.0 && ratio <= 3.0
+        canGenerate = supportsGenerationAspect
+            && (min(thumbnail.width, thumbnail.height) >= 320 || CGImageSourceGetCount(original) == 1)
+        canRetryGeneration = supportsGenerationAspect && CGImageSourceGetCount(original) == 1
+            && min(thumbnail.width, thumbnail.height) < 1024
+        retryPlan = canRetryGeneration
+            ? GalleryImageSizePlan(sourceWidth: thumbnail.width, sourceHeight: thumbnail.height, shortEdge: 1024, maximumLongEdge: 3072)
+            : nil
+    }
+
+    func makeRetrySource(_ plan: GalleryImageSizePlan) async throws -> GalleryGeneratedSource {
+        try Task.checkCancellation()
+        let image = thumbnail
+        let renderTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            return try Self.makeSource(from: image, plan: plan)
+        }
+        return try await withTaskCancellationHandler {
+            try await renderTask.value
+        } onCancel: {
+            renderTask.cancel()
+        }
+    }
+
+    private static func makeSource(from image: CGImage, plan: GalleryImageSizePlan) throws -> GalleryGeneratedSource {
+        guard let context = CGContext(
+            data: nil,
+            width: plan.width,
+            height: plan.height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw GalleryMediaError.invalidImage }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: plan.width, height: plan.height))
+        guard let upscaled = context.makeImage() else { throw GalleryMediaError.invalidImage }
+        let resized = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(resized, UTType.png.identifier as CFString, 1, nil) else {
+            throw GalleryMediaError.invalidImage
+        }
+        CGImageDestinationAddImage(destination, upscaled, nil)
+        guard CGImageDestinationFinalize(destination),
+              let source = CGImageSourceCreateWithData(resized, nil) else { throw GalleryMediaError.invalidImage }
+        return GalleryGeneratedSource(source: source, pixelCost: upscaled.width * upscaled.height)
+    }
+}
+
+private nonisolated struct GalleryImageSizePlan: Sendable {
+    let width: Int
+    let height: Int
+    var pixelCost: Int { width * height }
+
+    init?(sourceWidth: Int, sourceHeight: Int, shortEdge: Int, maximumLongEdge: Int) {
+        guard sourceWidth > 0, sourceHeight > 0, shortEdge > 0, maximumLongEdge >= shortEdge else { return nil }
+        let scale = min(
+            CGFloat(shortEdge) / CGFloat(min(sourceWidth, sourceHeight)),
+            CGFloat(maximumLongEdge) / CGFloat(max(sourceWidth, sourceHeight))
+        )
+        width = max(1, Int((CGFloat(sourceWidth) * scale).rounded()))
+        height = max(1, Int((CGFloat(sourceHeight) * scale).rounded()))
+    }
+}
+
+private nonisolated struct GalleryGeneratedSource: @unchecked Sendable {
+    let source: CGImageSource
+    let pixelCost: Int
+}
+
+private nonisolated enum GalleryRetryBudget {
+    static func permits(sourcePixels: Int, retryPixels: Int, availablePixels: Int?) -> Bool {
+        guard let availablePixels else { return true }
+        return sourcePixels >= 0 && retryPixels >= 0 && sourcePixels + retryPixels <= availablePixels
     }
 }
 

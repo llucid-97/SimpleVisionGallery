@@ -39,6 +39,8 @@ struct GalleryViewerWindowRoot: View {
                                 session: session,
                                 width: paneWidth,
                                 minimumMediaHeight: minimumMediaHeight,
+                                backingYaw: value.sessionIDs.count == 2
+                                    ? (sessionID == value.sessionIDs.first ? 10 : -10) : 0,
                                 ornamentAnchor: value.sessionIDs.count == 2
                                     ? UnitPoint3D(x: sessionID == value.sessionIDs.first ? 0.25 : 0.75, y: 1, z: 0.5)
                                     : .bottom,
@@ -158,6 +160,7 @@ private struct GalleryViewerPane: View {
     @ObservedObject var session: GalleryViewerSession
     let width: CGFloat
     let minimumMediaHeight: CGFloat
+    let backingYaw: Double
     let ornamentAnchor: UnitPoint3D
     let canArrange: Bool
     let arrange: () -> Void
@@ -249,7 +252,11 @@ private struct GalleryViewerPane: View {
             GeometryReader { geometry in
                 mediaStage(height: geometry.size.height)
                     .frame(width: width, height: geometry.size.height)
-                    .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
+                    .background {
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(.black.opacity(0.85))
+                            .rotation3DEffect(.degrees(backingYaw), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .contentShape(Rectangle())
                     .simultaneousGesture(DragGesture(minimumDistance: 45).onEnded { drag in
@@ -339,7 +346,7 @@ private struct GalleryViewerPane: View {
                 .tint(.white).foregroundStyle(.white)
         } else if let player = media.player, media.error == nil {
             if media.isSpatialVideo {
-                GallerySpatialVideoView(player: player)
+                GallerySpatialVideoView(player: player, faceActiveCamera: backingYaw != 0)
             } else {
                 GalleryNativeVideoPlayer(player: player)
             }
@@ -347,7 +354,7 @@ private struct GalleryViewerPane: View {
             Image(uiImage: image).resizable().scaledToFit()
                 .frame(width: width, height: height)
         } else if let entity = media.imageEntity {
-            GalleryRealityImage(entity: entity)
+            GalleryRealityImage(entity: entity, faceActiveCamera: backingYaw != 0)
         } else {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle").font(.largeTitle)
@@ -384,11 +391,25 @@ private struct GalleryViewerPane: View {
 
             if session.currentAsset?.mediaType == .video {
                 Button { loopVideos.toggle() } label: {
-                    Label(loopVideos ? "Stop looping video" : "Loop video", systemImage: "repeat")
+                    VStack(spacing: 2) {
+                        Image(systemName: "repeat")
+                            .font(.system(size: 21, weight: .semibold))
+                        Text(loopVideos ? "ON" : "OFF")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .frame(width: 52, height: 56)
+                    .foregroundStyle(loopVideos ? Color.black : Color.white)
+                    .background(loopVideos ? Color.white : Color.black.opacity(0.25),
+                        in: RoundedRectangle(cornerRadius: 12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(Color.white.opacity(loopVideos ? 1 : 0.45), lineWidth: 1)
+                    }
                 }
-                .tint(loopVideos ? .accentColor : .primary)
+                .accessibilityLabel("Loop video")
                 .accessibilityIdentifier("gallery-viewer-loop")
                 .accessibilityValue(loopVideos ? "On" : "Off")
+                .accessibilityAddTraits(loopVideos ? .isSelected : [])
             }
 
             Button {
@@ -560,6 +581,7 @@ private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
 
 private struct GalleryRealityImage: View {
     let entity: Entity
+    var faceActiveCamera: Bool = false
 
     var body: some View {
         GeometryReader3D { geometry in
@@ -582,6 +604,15 @@ private struct GalleryRealityImage: View {
             screen.x > 0, screen.y > 0 else { return }
         let bounds = content.convert(geometry.frame(in: .local), from: .local, to: content)
         let scale = min(bounds.extents.x / screen.x, bounds.extents.y / screen.y)
+        // Camera-facing RealityKit placement works in a window without reading
+        // a device/head transform or requesting spatial-tracking authorization.
+        if faceActiveCamera {
+            if entity.components[BillboardComponent.self] == nil {
+                entity.components.set(BillboardComponent())
+            }
+        } else {
+            entity.components.remove(BillboardComponent.self)
+        }
         entity.scale = SIMD3<Float>(scale, scale, 1)
         // Content coordinates avoid applying the pane offset twice and retain
         // the native surface's forward depth above the window backing.

@@ -7,6 +7,7 @@ import SwiftUI
 /// inside the gallery's fixed pane, including when two slideshows share a window.
 struct GallerySpatialVideoView: View {
     let player: AVPlayer
+    var faceActiveCamera: Bool = false
     @State private var videoEntity = Entity()
     @State private var position = 0.0
     @State private var duration = 0.0
@@ -105,6 +106,15 @@ struct GallerySpatialVideoView: View {
         let bounds = content.convert(geometry.frame(in: .local), from: .local, to: content)
         let scale = min(bounds.extents.x / size.x, bounds.extents.y / size.y)
         guard scale.isFinite, scale > 0 else { return }
+        // Keep the native video aimed at the active RealityKit camera as the
+        // viewer moves. RealityKit does not expose a billboard's final rotation.
+        if faceActiveCamera {
+            if videoEntity.components[BillboardComponent.self] == nil {
+                videoEntity.components.set(BillboardComponent())
+            }
+        } else {
+            videoEntity.components.remove(BillboardComponent.self)
+        }
         videoEntity.scale = SIMD3<Float>(repeating: scale)
         // Keep the RealityView's forward depth; scene Z=0 puts the native
         // media surface behind the window backing. Center in content space.
