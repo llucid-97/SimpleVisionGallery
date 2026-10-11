@@ -85,16 +85,22 @@ struct GalleryCinemaDesign: View {
 
     private func railItem(symbol: String, title: String, selected: Bool) -> some View {
         HStack(spacing: 10) {
-            Capsule().fill(selected ? CinemaPalette.accent : .clear).frame(width: 3, height: 22)
-            Image(systemName: symbol).font(.system(size: 18, weight: selected ? .semibold : .regular)).frame(width: 28)
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: selected ? .semibold : .regular))
+                .frame(width: 28)
             if sidebarExpanded {
                 Text(title).font(.callout.weight(selected ? .semibold : .regular)).lineLimit(2)
             }
         }
+        .padding(.horizontal, sidebarExpanded ? 20 : 0)
         .frame(maxWidth: .infinity, minHeight: 60, alignment: sidebarExpanded ? .leading : .center)
         .background(selected ? CinemaPalette.railSelected : .clear, in: RoundedRectangle(cornerRadius: 15))
-        .padding(.horizontal, sidebarExpanded ? 10 : 4)
-        .contentShape(RoundedRectangle(cornerRadius: 15))
+        .overlay(alignment: .leading) {
+            if selected {
+                Capsule().fill(CinemaPalette.accent).frame(width: 3, height: 22).padding(.leading, 10)
+            }
+        }
+        .contentShape([.interaction, .hoverEffect], RoundedRectangle(cornerRadius: 15))
     }
 
     private var albumLobby: some View {

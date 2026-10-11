@@ -12,12 +12,13 @@ struct GalleryHoverIcon: View {
             Image(systemName: symbol)
                 .font(.system(size: 19, weight: .medium))
                 .frame(width: 60, height: 60)
-                .contentShape(Rectangle())
+                .contentShape([.interaction, .hoverEffect], RoundedRectangle(cornerRadius: 15))
         }
         .buttonStyle(.plain)
         .galleryHoverLabel(title)
         .accessibilityLabel(title)
         .accessibilityIdentifier(identifier ?? "")
+        .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 15))
         .hoverEffect(.highlight)
     }
 }

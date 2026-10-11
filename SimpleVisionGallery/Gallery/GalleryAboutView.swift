@@ -8,8 +8,7 @@ struct GalleryAboutView: View {
     private var version: String {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "1.0.0"
-        let build = info["CFBundleVersion"] as? String ?? "?"
-        return "Version \(version) (\(build))"
+        return "Version \(version)"
     }
 
     var body: some View {

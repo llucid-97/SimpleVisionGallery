@@ -3,6 +3,10 @@
 
 Status: dogfooding on Pali with paid-team signing. Apple Developer Program enrollment is active. Pricing, public support details, and App Store submission remain pending. No App Store upload or submission has been made.
 
+## Version numbering
+
+Use the same three-part semantic version for both Apple version fields. Patch increments mark dogfood fixes, and there is no separate build counter.
+
 ## Release checklist
 
 - [x] Apple Developer Program membership is active; paid-team signing is configured for Pali.
