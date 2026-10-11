@@ -282,8 +282,7 @@ final class GalleryViewerMedia {
             // Ordinary photos are bounded to 2560px; undersized mono photos may
             // be upscaled to the local 320px short-edge generation heuristic.
             let width = Double(asset.pixelWidth), height = Double(asset.pixelHeight)
-            let previewScale = min(1, 2560 / max(1, max(width, height)))
-            var sourceScale = previewScale
+            var sourceScale = min(1, 2560 / max(1, max(width, height)))
             let aspect = width / max(1, height)
             let shortEdge = min(width, height) * sourceScale
             if !asset.mediaSubtypes.contains(.spatialMedia),
@@ -292,10 +291,7 @@ final class GalleryViewerMedia {
                 sourceScale *= 320 / max(1, shortEdge)
             }
             let pixelEstimate = asset.mediaType == .image
-                ? width * height * (
-                    (asset.mediaSubtypes.contains(.spatialMedia) ? 2 : sourceScale * sourceScale)
-                        + previewScale * previewScale
-                ) : 0
+                ? width * height * (asset.mediaSubtypes.contains(.spatialMedia) ? 2 : sourceScale * sourceScale) : 0
             guard pixelEstimate <= Double(pixelBudgetPerViewer - usedPixels) else { continue }
             let remainingPixels = pixelBudgetPerViewer - usedPixels
             let priority = GalleryPrefetchPriority()
@@ -753,7 +749,7 @@ private final class GallerySceneCache {
                 if decoded.canRetryGeneration,
                    let retryPlan = decoded.retryPlan,
                    GalleryRetryBudget.permits(
-                       sourcePixels: decoded.pixelCost,
+                       sourcePixels: decoded.pixelCost + decoded.previewPixelCost,
                        retryPixels: retryPlan.pixelCost,
                        availablePixels: pixelBudget()
                    ) {
@@ -762,7 +758,7 @@ private final class GallerySceneCache {
                         let retrySource = try await decoded.makeRetrySource(retryPlan)
                         try Task.checkCancellation()
                         guard GalleryRetryBudget.permits(
-                            sourcePixels: decoded.pixelCost,
+                            sourcePixels: decoded.pixelCost + decoded.previewPixelCost,
                             retryPixels: retrySource.pixelCost,
                             availablePixels: pixelBudget()
                         ) else {
@@ -774,7 +770,7 @@ private final class GallerySceneCache {
                         try Task.checkCancellation()
                         result.component = ImagePresentationComponent(spatial3DImage: retry)
                         result.spatialMode = .spatial3D
-                        result.pixelCost = retrySource.pixelCost + decoded.previewPixelCost
+                        result.pixelCost = retrySource.pixelCost
                         return result
                     } catch is CancellationError {
                         throw CancellationError()
@@ -795,6 +791,7 @@ private final class GallerySceneCache {
             if modes.contains(.spatialStereo) { result.spatialMode = .spatialStereo }
         } catch {
             result.fallback = decoded.preview
+            result.pixelCost = decoded.previewPixelCost
             result.status = "Showing a 2D preview. \(error.localizedDescription)"
         }
         try Task.checkCancellation()
@@ -875,13 +872,15 @@ private nonisolated struct GalleryDecodedImage: @unchecked Sendable {
             throw GalleryMediaError.invalidImage
         }
         self.thumbnail = thumbnail
+        // This thumbnail lives only during preparation unless the 2D fallback
+        // is retained. Native results retain the source/scene, not this UIImage.
         previewPixelCost = thumbnail.width * thumbnail.height
         preview = UIImage(cgImage: thumbnail)
         // Keep every channel and all camera metadata of multi-image HEIC sources.
         // The spatial-mode query is performed on the main actor before presentation.
         if CGImageSourceGetCount(original) > 1 {
             source = original
-            pixelCost = width * height * min(CGImageSourceGetCount(original), 2) + previewPixelCost
+            pixelCost = width * height * min(CGImageSourceGetCount(original), 2)
         } else {
             let ratio = Double(width) / Double(height)
             let shortEdge = min(thumbnail.width, thumbnail.height)
@@ -915,7 +914,7 @@ private nonisolated struct GalleryDecodedImage: @unchecked Sendable {
             guard CGImageDestinationFinalize(destination),
                   let bounded = CGImageSourceCreateWithData(resized, nil) else { throw GalleryMediaError.invalidImage }
             source = bounded
-            pixelCost = spatialSource.width * spatialSource.height + previewPixelCost
+            pixelCost = spatialSource.width * spatialSource.height
         }
         let ratio = Double(width) / Double(height)
         let supportsGenerationAspect = ratio >= 1.0 / 3.0 && ratio <= 3.0
