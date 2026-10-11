@@ -1,11 +1,11 @@
 <!-- Target audience: humans -->
-# Privacy policy draft — Simple Vision Gallery
+# Privacy policy — Simple Vision Gallery
 
-**Draft for owner review.** The legal developer identity, effective date, and public URL are pending. The public support email below is temporary until a dedicated mailbox is ready.
+**Developer:** Gershom Agim
 
-**Developer:** Gershom Agim [owner-proposed; verify against Apple Developer membership before publishing]
+**Effective date:** 11 October 2026
 
-**Effective date:** [PENDING]
+**Public policy:** https://llucid-97.github.io/simple-vision-gallery/privacy.html
 
 ## Photos, videos, and albums
 
@@ -29,7 +29,9 @@ You can change Photos access in visionOS Settings. You can turn off looping with
 
 ## Contact
 
-Questions or privacy requests: [agim.gershom@gmail.com](mailto:agim.gershom@gmail.com) (temporary support email).
+Questions or privacy requests: [agim.gershom@gmail.com](mailto:agim.gershom@gmail.com).
+
+If you email support, Gershom receives the information you include in your message and uses it to respond.
 
 ## Changes to this policy
 

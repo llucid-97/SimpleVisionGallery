@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Simple Vision Gallery white photo icon with a long shadow">
+<rect width="1024" height="1024" fill="#20B6AC"/>
+<g fill="#11656C"><path d="M265 160H715A85 85 0 0 1 775.104076400857 184.895923599143L1024 433.791847198287V1024H473.791847198287L204.895923599143 755.104076400857A85 85 0 0 1 180 695V245A85 85 0 0 1 265 160Z"/></g>
+<g fill="#FFFFFF"><path fill-rule="evenodd" d="M265 160 H715 A85 85 0 0 1 800 245 V695 A85 85 0 0 1 715 780 H265 A85 85 0 0 1 180 695 V245 A85 85 0 0 1 265 160 Z M275 225 H705 A35 35 0 0 1 740 260 V680 A35 35 0 0 1 705 715 H275 A35 35 0 0 1 240 680 V260 A35 35 0 0 1 275 225 Z"/><g><circle cx="625" cy="330" r="43"/><path d="M270 665 405 490 493 590 560 515 710 685H270Z"/></g></g>
+</svg>

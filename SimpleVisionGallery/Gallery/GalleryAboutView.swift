@@ -2,8 +2,8 @@ import SwiftUI
 
 struct GalleryAboutView: View {
     @Environment(\.dismiss) private var dismiss
-    private let repository = URL(string: "https://github.com/llucid-97/SimpleVisionGallery")!
-    private let issues = URL(string: "https://github.com/llucid-97/SimpleVisionGallery/issues")!
+    private let repository = URL(string: "https://github.com/llucid-97/simple-vision-gallery")!
+    private let issues = URL(string: "https://github.com/llucid-97/simple-vision-gallery/issues")!
     private let support = URL(string: "mailto:agim.gershom@gmail.com")!
 
     private var version: String {
@@ -47,7 +47,7 @@ struct GalleryAboutView: View {
                         .accessibilityIdentifier("gallery-about-issues")
                     Link(destination: repository) { Label("GitHub", systemImage: "chevron.left.forwardslash.chevron.right") }
                         .accessibilityIdentifier("gallery-about-github")
-                    Text("The GitHub repository is currently private. These links require an account with access.")
+                    Text("The public GitHub page hosts support information and issue reports.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
@@ -72,6 +72,11 @@ struct GalleryAboutView: View {
 private struct GalleryPrivacyView: View {
     var body: some View {
         List {
+            Section {
+                Text("Developer: Gershom Agim")
+                Text("Effective date: 11 October 2026").foregroundStyle(.secondary)
+                Link("Read the policy online", destination: URL(string: "https://llucid-97.github.io/simple-vision-gallery/privacy.html")!)
+            }
             Section("Your Photos Library") {
                 Text("Gallery uses Apple PhotoKit to show the photos, videos, and albums you allow it to access. Read and write access lets you create, rename, and organize albums and move items to Recycle Bin. You can change access in visionOS Settings.")
                 Text("Spatial scenes are generated on your device and kept in a limited memory cache. Gallery does not save permanent converted copies to Photos.")
@@ -86,6 +91,7 @@ private struct GalleryPrivacyView: View {
             }
             Section("Contact") {
                 Link("Questions or privacy requests: agim.gershom@gmail.com", destination: URL(string: "mailto:agim.gershom@gmail.com")!)
+                Text("If you email support, the developer receives the information you include and uses it to respond.")
             }
         }
         .navigationTitle("Privacy Policy")

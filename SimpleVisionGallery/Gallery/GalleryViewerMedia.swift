@@ -728,7 +728,9 @@ private final class GallerySceneCache {
             result.fallback = decoded.preview
         }
         try Task.checkCancellation()
-        result.status = "Spatial scenes need Apple Vision Pro. Showing the original in Simulator."
+        if spatial {
+            result.status = "Spatial scenes need Apple Vision Pro. Showing the original in Simulator."
+        }
         return result
         #else
         let modes = ImagePresentationComponent.supportedViewingModes(for: decoded.source)
