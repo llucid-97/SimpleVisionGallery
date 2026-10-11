@@ -29,10 +29,12 @@ private struct GalleryVisibilityMenu: View {
             .pickerStyle(.inline)
         } label: {
             Label("Visibility", systemImage: selection == .visible ? "eye" : "eye.slash")
-                .frame(minHeight: 26)
+                .labelStyle(.iconOnly)
+                .frame(width: 40, height: 40)
         }
         .buttonStyle(LensLabSecondaryButtonStyle())
-        .accessibilityLabel("Album Visibility")
+        .galleryHoverLabel("Visibility")
+        .accessibilityLabel("Visibility")
         .accessibilityIdentifier("svt-gallery-visibility")
         .help("Show albums or hidden albums")
     }
@@ -48,6 +50,8 @@ struct GalleryView: View {
     @State private var albumToRename: GalleryAlbum?
     @State private var albumVisibility: GalleryAlbumVisibility = .visible
     @State private var albumSearch = ""
+    @State private var mediaSearch = ""
+    @State private var reorderAlbumID: String?
     @State private var isSelectingAlbums = false
     @State private var selectedAlbumIDs: Set<String> = []
     @State private var deletionReview: GalleryDeletionPlan?
@@ -96,6 +100,11 @@ struct GalleryView: View {
         .sensoryFeedback(.warning, trigger: manager.warningFeedbackSignal)
         .sensoryFeedback(.error, trigger: manager.errorFeedbackSignal)
         .animation(.easeInOut(duration: 0.18), value: manager.toast)
+        .task(id: mediaSearch) {
+            guard manager.selectedAlbum != nil else { return }
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            await manager.setMediaSearchQuery(mediaSearch)
+        }
         .task {
             if manager.hasPhotoAccess && manager.albums.isEmpty {
                 await manager.loadAlbums()
@@ -106,6 +115,7 @@ struct GalleryView: View {
         }
         .onChange(of: manager.selectedAlbum?.id) {
             showingThumbnailSize = false
+            mediaSearch = ""
             #if os(visionOS)
                 isSelectingMedia = false
             #endif
@@ -133,7 +143,7 @@ struct GalleryView: View {
             emptyContent: AnyView(designEmptyContent),
             cover: { AnyView(GalleryAlbumCover(album: $0, manager: manager)) },
             openAlbum: { album in
-                if isSelectingAlbums { toggleAlbumSelection(album.id) }
+                if isSelectingAlbums && album.collection != nil { toggleAlbumSelection(album.id) }
                 else { Task { await manager.openAlbum(album) } }
             },
             renameAlbum: { albumToRename = $0 },
@@ -141,6 +151,22 @@ struct GalleryView: View {
                 clearAlbumSelection()
                 if manager.isAlbumHidden(album) { manager.unhideAlbums(withIDs: [album.id]) }
                 else { manager.hideAlbums(withIDs: [album.id]) }
+            },
+            selectSection: { section in
+                clearAlbumSelection()
+                Task { await manager.openLibrarySection(section) }
+            },
+            reorderAlbumID: reorderAlbumID,
+            beginReordering: { reorderAlbumID = $0.id },
+            cancelReordering: { reorderAlbumID = nil },
+            reorderAlbum: { movingID, targetID, after in
+                let others = filteredDisplayedAlbums.filter { $0.id != movingID }
+                let beforeID: String?
+                if after, let targetIndex = others.firstIndex(where: { $0.id == targetID }) {
+                    beforeID = targetIndex + 1 < others.count ? others[targetIndex + 1].id : nil
+                } else { beforeID = targetID }
+                manager.reorderAlbum(movingID: movingID, beforeID: beforeID)
+                reorderAlbumID = nil
             },
             showSettings: { showingSettings = true }
         )
@@ -152,6 +178,7 @@ struct GalleryView: View {
                 visibilityMenu
                 albumSelectionButton
                 if isSelectingAlbums { albumVisibilityAction }
+                mediaFilterMenu
                 overflowMenu(compact: false)
             }.fixedSize(horizontal: true, vertical: false)
             Menu {
@@ -161,7 +188,7 @@ struct GalleryView: View {
                 Divider()
                 Button("Gallery Settings", systemImage: "gearshape") { showingSettings = true }
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await manager.loadAlbums() } }
-            } label: { Label("Album Actions", systemImage: "ellipsis") }
+            } label: { Image(systemName: "ellipsis").frame(width: 40, height: 40) }
             .buttonStyle(LensLabSecondaryButtonStyle())
         }
     }
@@ -207,17 +234,88 @@ struct GalleryView: View {
     }
 
     private var pageHeader: some View {
-        ViewThatFits(in: .horizontal) {
-            headerContents(compact: false)
-            headerContents(compact: true)
+        Group {
+            if let album = manager.selectedAlbum {
+                mediaHeader(album: album)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    headerContents(compact: false)
+                    headerContents(compact: true)
+                }
+            }
         }
         .padding(12)
-        .lensLabCard()
         .popover(isPresented: $showingThumbnailSize, arrowEdge: .top) {
             thumbnailSizePopover
                 .presentationCompactAdaptation(.popover)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private func mediaHeader(album: GalleryAlbum) -> some View {
+        ViewThatFits(in: .horizontal) {
+            mediaHeaderRow(album: album, compact: false)
+            mediaHeaderRow(album: album, compact: true)
+        }
+    }
+
+    private func mediaHeaderRow(album: GalleryAlbum, compact: Bool) -> some View {
+        HStack(spacing: 12) {
+            GalleryHoverIcon(symbol: "chevron.left", title: "Albums", identifier: "svt-gallery-back-to-albums") {
+                manager.closeAlbum()
+            }
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search in \(album.title)", text: $mediaSearch)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("gallery-media-search")
+                if manager.isIndexingMediaSearch { ProgressView().controlSize(.small) }
+                if !mediaSearch.isEmpty {
+                    GalleryHoverIcon(symbol: "xmark.circle.fill", title: "Clear search") { mediaSearch = "" }
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(minWidth: 160, maxWidth: .infinity, minHeight: 68)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+            if !compact {
+                sortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort")
+                thumbnailSizeButton.labelStyle(.iconOnly).galleryHoverLabel("Thumbnail size")
+            }
+            #if os(visionOS)
+            mediaSelectionButton.labelStyle(.iconOnly).galleryHoverLabel(isSelectingMedia ? "Cancel selection" : "Select")
+            #endif
+            if manager.selectedCount > 0 {
+                moveSelectionButton.labelStyle(.iconOnly).galleryHoverLabel("Move")
+            }
+            mediaFilterMenu
+            if manager.isRecycleBin(album: album) {
+                GalleryHoverIcon(symbol: "trash", title: "Empty Recycle Bin", identifier: "gallery-empty-recycle-bin") {
+                    Task { deletionReview = await manager.prepareEntireRecycleBinDeletionReview() }
+                }
+                .disabled(album.assetCount == 0 || manager.isPerformingOperation)
+            }
+            overflowMenu(compact: compact)
+        }
+    }
+
+    private var mediaFilterMenu: some View {
+        Menu {
+            Picker("Media", selection: Binding(get: { manager.mediaFilter }, set: { filter in
+                Task { await manager.setMediaFilter(filter) }
+            })) {
+                ForEach(GalleryMediaFilter.allCases, id: \.self) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }.pickerStyle(.inline)
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+                .frame(width: 40, height: 40)
+        }
+        .buttonStyle(LensLabSecondaryButtonStyle())
+        .galleryHoverLabel("Filter media")
+        .accessibilityLabel("Filter media")
+        .accessibilityIdentifier("gallery-media-filter")
     }
 
     private func headerContents(compact: Bool) -> some View {
@@ -267,6 +365,18 @@ struct GalleryView: View {
             }
 
             HStack(spacing: 16) {
+                if let album = manager.selectedAlbum, manager.isRecycleBin(album: album) {
+                    Button(role: .destructive) {
+                        Task { deletionReview = await manager.prepareEntireRecycleBinDeletionReview() }
+                    } label: {
+                        Label("Empty Recycle Bin", systemImage: "trash")
+                            .labelStyle(.iconOnly).frame(width: 40, height: 40)
+                    }
+                    .buttonStyle(LensLabSecondaryButtonStyle())
+                    .galleryHoverLabel("Empty Recycle Bin")
+                    .accessibilityIdentifier("gallery-empty-recycle-bin")
+                    .disabled(album.assetCount == 0 || manager.isPerformingOperation)
+                }
                 if manager.hasPhotoAccess && !compact {
                     if manager.selectedAlbum != nil {
                         sortMenu
@@ -334,11 +444,13 @@ struct GalleryView: View {
             }
         } label: {
             Label(isSelectingAlbums ? "Cancel" : "Select", systemImage: isSelectingAlbums ? "xmark" : "checkmark.circle")
-                .frame(minHeight: 26)
+                .labelStyle(.iconOnly)
+                .frame(width: 40, height: 40)
         }
         .buttonStyle(LensLabSecondaryButtonStyle())
         .disabled(displayedAlbums.isEmpty && !isSelectingAlbums)
         .accessibilityIdentifier("svt-gallery-select-albums")
+        .galleryHoverLabel(isSelectingAlbums ? "Cancel" : "Select")
     }
 
     private var albumVisibilityAction: some View {
@@ -506,6 +618,16 @@ struct GalleryView: View {
                     }
                     Divider()
                 }
+                if manager.selectedAlbum == nil {
+                    Menu("Sort albums", systemImage: "arrow.up.arrow.down") {
+                        Picker("Album order", selection: Binding(get: { manager.albumSortMode }, set: { manager.setAlbumSortMode($0) })) {
+                            ForEach(GalleryAlbumSortMode.allCases, id: \.self) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }.pickerStyle(.inline)
+                    }
+                    .accessibilityIdentifier("gallery-album-sort")
+                }
                 Button("Refresh", systemImage: "arrow.clockwise") {
                     Task { await manager.loadAlbums() }
                 }
@@ -518,12 +640,13 @@ struct GalleryView: View {
             .accessibilityIdentifier("svt-gallery-open-settings")
         } label: {
             Image(systemName: "ellipsis")
-                .frame(minWidth: 16, minHeight: 26)
+                .frame(width: 40, height: 40)
         }
         .buttonStyle(LensLabSecondaryButtonStyle())
         .accessibilityLabel("More Gallery Actions")
         .accessibilityIdentifier("svt-gallery-more")
         .help("More Gallery Actions")
+        .galleryHoverLabel("More")
     }
 
     private var selectionMenuOptions: some View {
@@ -704,7 +827,7 @@ struct GalleryView: View {
                                         Label("Hide Album", systemImage: "eye.slash")
                                     }
                                 }
-                                if album.collection.canPerform(.rename) {
+                                if album.collection?.canPerform(.rename) == true {
                                     Button {
                                         albumToRename = album
                                     } label: {
@@ -1082,9 +1205,15 @@ private struct GalleryAlbumCover: View {
                     }
             }
         }
-        .task(id: album.id) {
+        .task(id: "\(album.id)-\(album.assetCount)-\(manager.mediaFilter.rawValue)") {
             coverAsset = nil
-            coverAsset = manager.coverAsset(for: album.collection)
+            if let collection = album.collection {
+                coverAsset = manager.coverAsset(for: collection)
+            } else if let scope = album.virtualScope {
+                let filter = GalleryVirtualMediaFilter(rawValue: manager.mediaFilter.rawValue) ?? .all
+                let snapshot = await GalleryVirtualLibraryIndex.shared.snapshot(for: scope, mediaFilter: filter)
+                if let first = snapshot.displayOrder.first { coverAsset = snapshot.fetch.object(at: first) }
+            }
         }
     }
 }
@@ -1313,7 +1442,7 @@ private struct GalleryMoveSheet: View {
     private var destinationAlbums: [GalleryAlbum] {
         let recentIDs = Set(recentDestinations.map(\.id))
         let available = manager.albums.filter {
-            $0.id != manager.selectedAlbum?.id && $0.collection.canPerform(.addContent)
+            $0.id != manager.selectedAlbum?.id && $0.collection?.canPerform(.addContent) == true
         }
         return GalleryAlbumSearch.filter(available, query: albumFilter)
             .filter { !recentIDs.contains($0.id) }
@@ -1382,6 +1511,19 @@ private struct GalleryMoveSheet: View {
                 .buttonStyle(LensLabSecondaryButtonStyle())
             }
 
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if manager.selectedAlbum?.collection?.canPerform(.removeContent) == true {
+                        Button("Remove from Album", systemImage: "rectangle.stack.badge.minus") {
+                            isPresented = false
+                            Task { await manager.removeSelectionFromAlbum() }
+                        }
+                        .buttonStyle(LensLabSecondaryButtonStyle())
+                        .disabled(manager.isPerformingOperation || manager.selectedCount == 0)
+                        .accessibilityIdentifier("gallery-grid-remove-from-album")
+                        Text("Keep the originals in Photos without this album membership.")
+                            .font(.caption).foregroundStyle(LensLabTheme.mutedInk)
+                    }
             GalleryAlbumSearchField(query: $albumFilter, accessibilityID: "gallery-move-album-search")
 
             if !recentDestinations.isEmpty {
@@ -1441,6 +1583,8 @@ private struct GalleryMoveSheet: View {
                 }
             }
         }
+                }
+            }
         .padding(18)
         .frame(width: 580, height: 680)
         .background(LensLabTheme.card)

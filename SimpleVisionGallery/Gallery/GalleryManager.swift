@@ -21,12 +21,82 @@ import SwiftUI
     typealias GalleryPlatformImage = NSImage
 #endif
 
+nonisolated enum GalleryLibrarySection: String, CaseIterable, Sendable {
+    case albums
+    case photos
+    case unfiled
+    case recycleBin
+}
+
+nonisolated enum GalleryMediaFilter: String, CaseIterable, Sendable {
+    case all
+    case photos
+    case videos
+
+    var title: String {
+        switch self {
+        case .all: "Photos and Videos"
+        case .photos: "Photos"
+        case .videos: "Videos"
+        }
+    }
+}
+
+nonisolated enum GalleryAlbumSortMode: String, CaseIterable, Sendable {
+    case name
+    case dateModified
+    case random
+    case custom
+
+    var title: String {
+        switch self {
+        case .name: "Name"
+        case .dateModified: "Date Modified"
+        case .random: "Random"
+        case .custom: "Custom"
+        }
+    }
+}
+
 struct GalleryAlbum: Identifiable, Hashable {
     let id: String
     let title: String
     let assetCount: Int
-    let collection: PHAssetCollection
+    let collection: PHAssetCollection?
     let coverAsset: PHAsset?
+    let virtualScope: GalleryVirtualScope?
+    let photoCount: Int
+    let videoCount: Int
+    let latestModificationDate: Date?
+
+    init(
+        id: String,
+        title: String,
+        assetCount: Int,
+        collection: PHAssetCollection?,
+        coverAsset: PHAsset?,
+        virtualScope: GalleryVirtualScope? = nil,
+        photoCount: Int? = nil,
+        videoCount: Int? = nil,
+        latestModificationDate: Date? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.assetCount = assetCount
+        self.collection = collection
+        self.coverAsset = coverAsset
+        self.virtualScope = virtualScope
+        self.photoCount = photoCount ?? Self.mediaAssetCount(in: collection, type: .image)
+        self.videoCount = videoCount ?? Self.mediaAssetCount(in: collection, type: .video)
+        self.latestModificationDate = latestModificationDate
+    }
+
+    private static func mediaAssetCount(in collection: PHAssetCollection?, type: PHAssetMediaType) -> Int {
+        guard let collection else { return 0 }
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(format: "mediaType == %d", type.rawValue)
+        return PHAsset.fetchAssets(in: collection, options: options).count
+    }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
@@ -336,11 +406,20 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     private static let assetSortModeDefaultsKey = "gallery.assetSortMode.v1"
     private static let nameSortAscendingDefaultsKey = "gallery.nameSortAscending.v1"
     private static let dateSortAscendingDefaultsKey = "gallery.dateSortAscending.v1"
+    private static let mediaFilterDefaultsKey = "gallery.mediaFilter.v1"
+    private static let albumSortModeDefaultsKey = "gallery.albumSortMode.v1"
+    private static let albumCustomOrderDefaultsKey = "gallery.albumCustomOrder.v1"
+    private static let albumRandomOrderDefaultsKey = "gallery.albumRandomOrder.v1"
 
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published var albums: [GalleryAlbum] = []
+    @Published private(set) var librarySection: GalleryLibrarySection = .albums
+    @Published private(set) var virtualLibraryRevision = 0
     @Published private var visibilityPreferences = GalleryVisibilityPreferences()
     @Published private(set) var assetSortMode: GalleryAssetSortMode = .photosOrder
+    @Published private(set) var mediaFilter: GalleryMediaFilter = .all
+    @Published private(set) var albumSortMode: GalleryAlbumSortMode = .name
+    @Published var mediaSearchQuery = ""
     @Published private(set) var nameSortAscending = true
     @Published private(set) var dateSortAscending = false
     @Published private(set) var isSortingAssets = false
@@ -365,6 +444,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
 
     private var albumFetchResult: PHFetchResult<PHAssetCollection>?
     private var assetFetchResult: PHFetchResult<PHAsset>?
+    private var assetScopeIndexes: [Int]?
     private var assetDisplayOrder: [Int]? {
         didSet { viewerSnapshotID = UUID() }
     }
@@ -387,6 +467,16 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     private var preheatedRange: Range<Int>?
     private var deletionReviewAuthority = GalleryDeletionReviewAuthority()
     private let imageManager = PHCachingImageManager()
+    private var virtualLibrarySubscription: AnyCancellable?
+    private var virtualAssetCounts: [GalleryVirtualScope: Int] = [:]
+    private var virtualPhotoCounts: [GalleryVirtualScope: Int] = [:]
+    private var virtualVideoCounts: [GalleryVirtualScope: Int] = [:]
+    private var cachedSearchNamesByID: [String: String] = [:]
+    private var cachedSearchRecords: [GalleryNamedAssetIndex]?
+    private var cachedSearchSignature: String?
+    @Published private(set) var isIndexingMediaSearch = false
+    private var customAlbumOrder: [String] = []
+    private var randomAlbumOrder: [String] = []
 
     #if canImport(UIKit) || canImport(AppKit)
         private let thumbnailCache: NSCache<NSString, GalleryPlatformImage> = {
@@ -402,6 +492,14 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         assetSortMode = GalleryAssetSortMode(
             rawValue: UserDefaults.standard.string(forKey: Self.assetSortModeDefaultsKey) ?? ""
         ) ?? .photosOrder
+        mediaFilter = GalleryMediaFilter(
+            rawValue: UserDefaults.standard.string(forKey: Self.mediaFilterDefaultsKey) ?? ""
+        ) ?? .all
+        albumSortMode = GalleryAlbumSortMode(
+            rawValue: UserDefaults.standard.string(forKey: Self.albumSortModeDefaultsKey) ?? ""
+        ) ?? .name
+        customAlbumOrder = UserDefaults.standard.stringArray(forKey: Self.albumCustomOrderDefaultsKey) ?? []
+        randomAlbumOrder = UserDefaults.standard.stringArray(forKey: Self.albumRandomOrderDefaultsKey) ?? []
         if UserDefaults.standard.object(forKey: Self.nameSortAscendingDefaultsKey) != nil {
             nameSortAscending = UserDefaults.standard.bool(forKey: Self.nameSortAscendingDefaultsKey)
         }
@@ -410,6 +508,14 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         PHPhotoLibrary.shared().register(self)
+        virtualLibrarySubscription = GalleryVirtualLibraryIndex.shared.$revision
+            .sink { [weak self] revision in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.virtualLibraryRevision = revision
+                    await self.handleVirtualLibraryRevision()
+                }
+            }
     }
 
     deinit {
@@ -439,11 +545,16 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     var visibleAlbums: [GalleryAlbum] {
-        albums.filter { !isAlbumHidden($0) }
+        let realAlbums = albums.filter { $0.virtualScope == nil }
+        let visible = realAlbums
+            .filter { !isRecycleBin(album: $0) && !isAlbumHidden($0) }
+            .map(displayCount(for:))
+        let unfiled = virtualAlbum(for: .unfiled)
+        return sortedAlbums(visible + [displayCount(for: unfiled)])
     }
 
     var hiddenAlbums: [GalleryAlbum] {
-        albums.filter { isAlbumHidden($0) }
+        albums.filter { !isRecycleBin(album: $0) && $0.virtualScope == nil && isAlbumHidden($0) }
     }
 
     var hiddenAlbumIDs: Set<String> {
@@ -455,11 +566,180 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func isAlbumHidden(_ album: GalleryAlbum) -> Bool {
-        visibilityPreferences.isHidden(albumID: album.id, assetCount: album.assetCount)
+        guard album.virtualScope == nil else { return false }
+        return visibilityPreferences.isHidden(albumID: album.id, assetCount: album.assetCount)
     }
 
     func isRecycleBin(album: GalleryAlbum) -> Bool {
-        GalleryRecycleBin.isRecycleBin(album)
+        album.virtualScope == .recycleBin || GalleryRecycleBin.isRecycleBin(album)
+    }
+
+    private func displayCount(for album: GalleryAlbum) -> GalleryAlbum {
+        let count: Int
+        switch mediaFilter {
+        case .all: count = album.assetCount
+        case .photos: count = album.photoCount
+        case .videos: count = album.videoCount
+        }
+        return GalleryAlbum(
+            id: album.id,
+            title: album.title,
+            assetCount: count,
+            collection: album.collection,
+            coverAsset: album.coverAsset,
+            virtualScope: album.virtualScope,
+            photoCount: album.photoCount,
+            videoCount: album.videoCount,
+            latestModificationDate: album.latestModificationDate
+        )
+    }
+
+    func setMediaFilter(_ filter: GalleryMediaFilter) async {
+        guard mediaFilter != filter else { return }
+        mediaFilter = filter
+        UserDefaults.standard.set(filter.rawValue, forKey: Self.mediaFilterDefaultsKey)
+        guard selectedAlbum != nil else { return }
+        await refreshCurrentAlbum(keepingSelection: false, showSortingProgress: true)
+    }
+
+    func setMediaSearchQuery(_ query: String) async {
+        guard !Task.isCancelled else { return }
+        let changed = mediaSearchQuery != query
+        mediaSearchQuery = query
+        guard changed else { return }
+        guard selectedAlbum != nil else { return }
+        clearSelection(silent: true)
+        await refreshCurrentAlbum(keepingSelection: false, showSortingProgress: false)
+    }
+
+    func setAlbumSortMode(_ mode: GalleryAlbumSortMode) {
+        guard albumSortMode != mode else { return }
+        albumSortMode = mode
+        if mode == .random {
+            randomAlbumOrder = (albums.filter { !isRecycleBin(album: $0) } + [virtualAlbum(for: .unfiled)])
+                .map(\.id).shuffled()
+            UserDefaults.standard.set(randomAlbumOrder, forKey: Self.albumRandomOrderDefaultsKey)
+        }
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.albumSortModeDefaultsKey)
+        albums = sortedAlbums(albums)
+    }
+
+    func reorderAlbum(movingID: String, beforeID: String?) {
+        var order = customAlbumOrder
+        let knownIDs = Set(albums.filter { !isRecycleBin(album: $0) }.map(\.id) + [GalleryVirtualScope.unfiled.virtualID])
+        order = order.filter(knownIDs.contains)
+        let fallbackOrder = sortedAlbums(albums.filter { !isRecycleBin(album: $0) } + [virtualAlbum(for: .unfiled)])
+        var orderedIDs = Set(order)
+        for album in fallbackOrder where orderedIDs.insert(album.id).inserted { order.append(album.id) }
+        guard let sourceIndex = order.firstIndex(of: movingID) else { return }
+        order.remove(at: sourceIndex)
+        let destinationIndex = beforeID.flatMap { order.firstIndex(of: $0) } ?? order.endIndex
+        order.insert(movingID, at: destinationIndex)
+        customAlbumOrder = order
+        albumSortMode = .custom
+        UserDefaults.standard.set(order, forKey: Self.albumCustomOrderDefaultsKey)
+        UserDefaults.standard.set(albumSortMode.rawValue, forKey: Self.albumSortModeDefaultsKey)
+        albums = sortedAlbums(albums)
+    }
+
+    private func invalidateMediaSearchCache() {
+        cachedSearchRecords = nil
+        cachedSearchSignature = nil
+        cachedSearchNamesByID.removeAll(keepingCapacity: true)
+        isIndexingMediaSearch = false
+    }
+
+    func openLibrarySection(_ section: GalleryLibrarySection) async {
+        if section == .albums {
+            closeAlbum()
+            return
+        }
+
+        if section == .recycleBin {
+            let bin = GalleryRecycleBin.existingCollection().map { collection in
+                albums.first(where: { $0.id == collection.localIdentifier }) ?? makeAlbum(from: collection)
+            }
+            if let bin {
+                await openAlbum(bin)
+                return
+            }
+        }
+
+        let scope: GalleryVirtualScope = switch section {
+        case .albums: .photos // Handled above.
+        case .photos: .photos
+        case .unfiled: .unfiled
+        case .recycleBin: .recycleBin
+        }
+        let snapshot = await GalleryVirtualLibraryIndex.shared.snapshot(for: scope, mediaFilter: scopeMediaFilter)
+        virtualAssetCounts[scope] = snapshot.photoCount + snapshot.videoCount
+        virtualPhotoCounts[scope] = snapshot.photoCount
+        virtualVideoCounts[scope] = snapshot.videoCount
+        await openAlbum(makeVirtualAlbum(scope: scope, snapshot: snapshot))
+    }
+
+    private var scopeMediaFilter: GalleryVirtualMediaFilter {
+        switch mediaFilter {
+        case .all: .all
+        case .photos: .photos
+        case .videos: .videos
+        }
+    }
+
+    private func virtualAlbum(for scope: GalleryVirtualScope) -> GalleryAlbum {
+        GalleryAlbum(
+            id: scope.virtualID,
+            title: scope.title,
+            assetCount: virtualAssetCounts[scope] ?? 0,
+            collection: nil,
+            coverAsset: nil,
+            virtualScope: scope,
+            photoCount: virtualPhotoCounts[scope] ?? 0,
+            videoCount: virtualVideoCounts[scope] ?? 0
+        )
+    }
+
+    private func makeVirtualAlbum(
+        scope: GalleryVirtualScope,
+        snapshot: GalleryVirtualLibrarySnapshot
+    ) -> GalleryAlbum {
+        let cover = snapshot.displayOrder.first.flatMap { index -> PHAsset? in
+            guard index >= 0, index < snapshot.fetch.count else { return nil }
+            return snapshot.fetch.object(at: index)
+        }
+        virtualAssetCounts[scope] = snapshot.photoCount + snapshot.videoCount
+        virtualPhotoCounts[scope] = snapshot.photoCount
+        virtualVideoCounts[scope] = snapshot.videoCount
+        return GalleryAlbum(
+            id: scope.virtualID,
+            title: scope.title,
+            assetCount: snapshot.photoCount + snapshot.videoCount,
+            collection: nil,
+            coverAsset: cover,
+            virtualScope: scope,
+            photoCount: snapshot.photoCount,
+            videoCount: snapshot.videoCount
+        )
+    }
+
+    private func warmVirtualLibraryIndex() async {
+        let index = GalleryVirtualLibraryIndex.shared
+        for scope in [GalleryVirtualScope.photos, .unfiled, .recycleBin] {
+            let snapshot = await index.snapshot(for: scope)
+            virtualAssetCounts[scope] = snapshot.photoCount + snapshot.videoCount
+            virtualPhotoCounts[scope] = snapshot.photoCount
+            virtualVideoCounts[scope] = snapshot.videoCount
+        }
+    }
+
+    private func handleVirtualLibraryRevision() async {
+        guard hasPhotoAccess else { return }
+        await warmVirtualLibraryIndex()
+        guard let selectedAlbum, let scope = selectedAlbum.virtualScope else { return }
+        let snapshot = await GalleryVirtualLibraryIndex.shared.snapshot(for: scope, mediaFilter: scopeMediaFilter)
+        self.selectedAlbum = makeVirtualAlbum(scope: scope, snapshot: snapshot)
+        invalidateMediaSearchCache()
+        await refreshCurrentAlbum(keepingSelection: false, showSortingProgress: false)
     }
 
     func setAutoHideEmptyAlbums(_ enabled: Bool) {
@@ -482,7 +762,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func hideAlbums(withIDs albumIDs: Set<String>) {
-        let availableIDs = Set(albums.map(\.id))
+        let availableIDs = Set(albums.filter { !isRecycleBin(album: $0) }.map(\.id))
         let idsToHide = albumIDs.intersection(availableIDs)
         guard !idsToHide.isEmpty else { return }
 
@@ -525,9 +805,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func reshuffleAssets() {
-        guard assetSortMode == .random, let assetFetchResult else { return }
+        guard assetSortMode == .random, assetFetchResult != nil, let assetDisplayOrder else { return }
 
-        assetDisplayOrder = Array(0..<assetFetchResult.count).shuffled()
+        self.assetDisplayOrder = assetDisplayOrder.shuffled()
         clearSelection(silent: true)
         resetImagePreheating()
         selectionFeedbackSignal += 1
@@ -544,6 +824,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
 
     func loadAlbums(refreshSelectedAlbumAssets: Bool = true) async {
         guard hasPhotoAccess else { return }
+        Task { @MainActor [weak self] in await self?.warmVirtualLibraryIndex() }
 
         let generation = UUID()
         albumLoadGeneration = generation
@@ -607,10 +888,18 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }
 
         let selectedAlbumID = selectedAlbum?.id
-        let refreshedSelection = selectedAlbumID.flatMap { selectedID in
+        var refreshedSelection = selectedAlbumID.flatMap { selectedID in
             sortedSnapshot.first { $0.id == selectedID }
         }
-        let availableAlbumIDs = Set(sortedSnapshot.map(\.id))
+        if refreshedSelection == nil, let selectedScope = selectedAlbum?.virtualScope {
+            let snapshot = await GalleryVirtualLibraryIndex.shared.snapshot(for: selectedScope)
+            refreshedSelection = makeVirtualAlbum(scope: selectedScope, snapshot: snapshot)
+        }
+        let availableAlbumIDs = Set(sortedSnapshot.map(\.id)).union([
+            GalleryVirtualScope.photos.virtualID,
+            GalleryVirtualScope.unfiled.virtualID,
+            GalleryVirtualScope.recycleBin.virtualID
+        ])
         let commitActions = GalleryAlbumCommitActions(
             defaultAssetRefreshRequested: refreshSelectedAlbumAssets,
             pendingAssetRefresh: pendingAssetRefreshAuthority,
@@ -649,6 +938,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         albumSelectionGeneration = UUID()
         assetLoadGeneration = UUID()
         assetFetchResult = nil
+        assetScopeIndexes = nil
         assetFetchAlbumID = nil
         clearInFlightAssetFetch()
         assetDisplayOrder = nil
@@ -657,6 +947,17 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         isSortingAssets = false
         sortingMessage = nil
         selectedAlbum = album
+        if let scope = album.virtualScope {
+            librarySection = switch scope {
+            case .photos: .photos
+            case .unfiled: .unfiled
+            case .recycleBin: .recycleBin
+            }
+        } else if isRecycleBin(album: album) {
+            librarySection = .recycleBin
+        } else {
+            librarySection = .albums
+        }
         pendingAlbumOpenIntent = GalleryAlbumOpenIntent(
             id: UUID(),
             albumID: album.id,
@@ -683,7 +984,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         albumSelectionGeneration = UUID()
         assetLoadGeneration = UUID()
         selectedAlbum = nil
+        librarySection = .albums
         assetFetchResult = nil
+        assetScopeIndexes = nil
         assetFetchAlbumID = nil
         clearInFlightAssetFetch()
         assetDisplayOrder = nil
@@ -802,7 +1105,8 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             showToast(.warning, "Enter an album name first.")
             return
         }
-        guard album.collection.canPerform(.rename) else {
+        guard let collection = album.collection, album.virtualScope == nil,
+              collection.canPerform(.rename) else {
             handleOperationError(GalleryOperationError.albumNotRenamable(album.title), fallback: "Rename failed")
             return
         }
@@ -812,7 +1116,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             try await runOperation(message: "Renaming \(album.title)...") {
                 var staged = false
                 try await PHPhotoLibrary.shared().performChanges {
-                    guard let request = PHAssetCollectionChangeRequest(for: album.collection) else { return }
+                    guard let request = PHAssetCollectionChangeRequest(for: collection) else { return }
                     request.title = newTitle
                     staged = true
                 }
@@ -823,8 +1127,11 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
                 id: album.id,
                 title: newTitle,
                 assetCount: album.assetCount,
-                collection: PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [album.id], options: nil).firstObject ?? album.collection,
-                coverAsset: album.coverAsset
+                collection: PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [album.id], options: nil).firstObject ?? collection,
+                coverAsset: album.coverAsset,
+                photoCount: album.photoCount,
+                videoCount: album.videoCount,
+                latestModificationDate: album.latestModificationDate
             )
             albums = sortedAlbums(albums.map { $0.id == album.id ? renamed : $0 })
             if selectedAlbum?.id == album.id { selectedAlbum = renamed }
@@ -846,34 +1153,45 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
 
         do {
             let assets = try selectedAssets()
-            guard sourceAlbum.collection.canPerform(.removeContent) else {
-                throw GalleryOperationError.sourceAlbumNotEditable(sourceAlbum.title)
-            }
-            guard destinationAlbum.collection.canPerform(.addContent) else {
+            guard let destination = destinationAlbum.collection,
+                  destinationAlbum.virtualScope == nil,
+                  destination.canPerform(.addContent) else {
                 throw GalleryOperationError.destinationAlbumNotEditable(destinationAlbum.title)
+            }
+            let source = sourceAlbum.collection
+            let sourceIsVirtual = sourceAlbum.virtualScope != nil
+            guard sourceIsVirtual || source?.canPerform(.removeContent) == true else {
+                throw GalleryOperationError.sourceAlbumNotEditable(sourceAlbum.title)
             }
             try await runOperation(message: "Moving \(assets.count) item\(assets.count == 1 ? "" : "s")...") {
                 var didStageChange = false
                 try await PHPhotoLibrary.shared().performChanges {
-                    guard
-                        let destinationRequest = PHAssetCollectionChangeRequest(for: destinationAlbum.collection),
-                        let sourceRequest = PHAssetCollectionChangeRequest(for: sourceAlbum.collection)
-                    else {
-                        return
-                    }
-
-                    didStageChange = true
+                    let sourceRequest = source.flatMap { PHAssetCollectionChangeRequest(for: $0) }
+                    guard source == nil || sourceRequest != nil,
+                          let destinationRequest = PHAssetCollectionChangeRequest(for: destination) else { return }
                     destinationRequest.addAssets(assets as NSFastEnumeration)
-                    sourceRequest.removeAssets(assets as NSFastEnumeration)
+                    sourceRequest?.removeAssets(assets as NSFastEnumeration)
+                    didStageChange = true
                 }
 
                 guard didStageChange else {
                     throw GalleryOperationError.changeRequestUnavailable
                 }
+                GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(
+                    assetIDs: Set(assets.map(\.localIdentifier)),
+                    addedAlbumID: destination.localIdentifier,
+                    removedAlbumID: sourceIsVirtual ? nil : source?.localIdentifier
+                )
+                #if os(visionOS)
+                if !sourceIsVirtual { GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets) }
+                GalleryViewerStore.shared.synchronizeVirtualMembershipAfterMutation(
+                    assets: assets,
+                    addedToAlbum: true,
+                    recycling: GalleryRecycleBin.isRecycleBin(destinationAlbum),
+                    removedFromSource: !sourceIsVirtual
+                )
+                #endif
             }
-            #if os(visionOS)
-            GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets)
-            #endif
             GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationAlbum.id)
             showToast(.success, "Moved \(assets.count) item\(assets.count == 1 ? "" : "s")")
         } catch {
@@ -891,31 +1209,39 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
 
         do {
             let assets = try selectedAssets()
-            guard sourceAlbum.collection.canPerform(.removeContent) else {
+            let source = sourceAlbum.collection
+            let sourceIsVirtual = sourceAlbum.virtualScope != nil
+            guard sourceIsVirtual || source?.canPerform(.removeContent) == true else {
                 throw GalleryOperationError.sourceAlbumNotEditable(sourceAlbum.title)
             }
             var placeholderIdentifier: String?
             try await runOperation(message: "Creating \(trimmedName)...") {
                 var didStageChange = false
                 try await PHPhotoLibrary.shared().performChanges {
-                    guard let sourceRequest = PHAssetCollectionChangeRequest(for: sourceAlbum.collection) else {
-                        return
-                    }
-
+                    let sourceRequest = source.flatMap { PHAssetCollectionChangeRequest(for: $0) }
+                    guard source == nil || sourceRequest != nil else { return }
                     let createRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: trimmedName)
                     createRequest.addAssets(assets as NSFastEnumeration)
                     placeholderIdentifier = createRequest.placeholderForCreatedAssetCollection.localIdentifier
-                    sourceRequest.removeAssets(assets as NSFastEnumeration)
+                    sourceRequest?.removeAssets(assets as NSFastEnumeration)
                     didStageChange = true
                 }
 
                 guard didStageChange, placeholderIdentifier != nil else {
                     throw GalleryOperationError.albumCreationFailed
                 }
+                GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(
+                    assetIDs: Set(assets.map(\.localIdentifier)),
+                    addedAlbumID: placeholderIdentifier,
+                    removedAlbumID: sourceIsVirtual ? nil : source?.localIdentifier
+                )
+                #if os(visionOS)
+                if !sourceIsVirtual { GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets) }
+                GalleryViewerStore.shared.synchronizeVirtualMembershipAfterMutation(
+                    assets: assets, addedToAlbum: true, recycling: false, removedFromSource: !sourceIsVirtual
+                )
+                #endif
             }
-            #if os(visionOS)
-            GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets)
-            #endif
             if let placeholderIdentifier {
                 GalleryMoveHistory.shared.recordSuccessfulMove(to: placeholderIdentifier)
             }
@@ -937,6 +1263,42 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         _ = await recycleSelection()
     }
 
+    /// Removes selected assets from the current real album while leaving them in Photos.
+    func removeSelectionFromAlbum() async {
+        guard let album = selectedAlbum, album.virtualScope == nil,
+              let collection = album.collection else {
+            showToast(.warning, "Choose a real album first.")
+            return
+        }
+        do {
+            let assets = try selectedAssets()
+            guard collection.canPerform(.removeContent) else {
+                throw GalleryOperationError.sourceAlbumNotEditable(album.title)
+            }
+            try await runOperation(message: "Removing \(assets.count) item\(assets.count == 1 ? "" : "s") from \(album.title)...") {
+                var staged = false
+                try await PHPhotoLibrary.shared().performChanges {
+                    guard let request = PHAssetCollectionChangeRequest(for: collection) else { return }
+                    request.removeAssets(assets as NSFastEnumeration)
+                    staged = true
+                }
+                guard staged else { throw GalleryOperationError.changeRequestUnavailable }
+                GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(
+                    assetIDs: Set(assets.map(\.localIdentifier)), removedAlbumID: collection.localIdentifier
+                )
+                #if os(visionOS)
+                GalleryViewerStore.shared.removeFromAlbum(collection.localIdentifier, assets: assets)
+                GalleryViewerStore.shared.synchronizeVirtualMembershipAfterMutation(
+                    assets: assets, addedToAlbum: false,
+                    recycling: false, removedFromSource: true
+                )
+                #endif
+            }
+        } catch {
+            handleOperationError(error, fallback: "Remove failed")
+        }
+    }
+
     /// Moves the current selection to Recycle Bin, or returns a frozen deletion review in the bin.
     @discardableResult
     func recycleSelection() async -> GalleryDeletionPlan? {
@@ -949,18 +1311,57 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         do {
             let assets = try selectedAssets()
             try await runOperation(message: "Moving \(assets.count) item\(assets.count == 1 ? "" : "s") to Recycle Bin...") {
-                try await GalleryRecycleBin.move(assets, from: sourceAlbum.collection)
+                let binID = try await GalleryRecycleBin.move(assets, from: sourceAlbum.collection)
+                GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(
+                    assetIDs: Set(assets.map(\.localIdentifier)),
+                    addedAlbumID: binID,
+                    removedAlbumID: sourceAlbum.virtualScope == nil ? sourceAlbum.collection?.localIdentifier : nil
+                )
+                #if os(visionOS)
+                if sourceAlbum.virtualScope == nil {
+                    GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets)
+                }
+                GalleryViewerStore.shared.synchronizeVirtualMembershipAfterMutation(
+                    assets: assets, addedToAlbum: false, recycling: true,
+                    removedFromSource: sourceAlbum.virtualScope == nil
+                )
+                #endif
             }
-            #if os(visionOS)
-            GalleryViewerStore.shared.removeFromAlbum(sourceAlbum.id, assets: assets)
-            #endif
-            clearSelection(silent: true)
-            await loadAlbums()
             showToast(.success, "Moved \(assets.count) item\(assets.count == 1 ? "" : "s") to Recycle Bin")
         } catch {
             handleOperationError(error, fallback: "Remove failed")
         }
         return nil
+    }
+
+    /// Empty Bin applies to the whole bin, even when its grid is searched or filtered.
+    func prepareEntireRecycleBinDeletionReview() async -> GalleryDeletionPlan? {
+        do {
+            guard let selectedAlbum, isRecycleBin(album: selectedAlbum),
+                  let collection = selectedAlbum.collection else {
+                throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
+            }
+            try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
+            let selectionGeneration = albumSelectionGeneration
+            let fetch = PHAsset.fetchAssets(in: collection, options: nil)
+            var candidates: [GalleryDeletionCandidate] = []
+            candidates.reserveCapacity(fetch.count)
+            for i in 0..<fetch.count {
+                candidates.append(Self.deletionCandidate(for: fetch.object(at: i)))
+                if i.isMultiple(of: 512) { await Task.yield() }
+            }
+            guard self.selectedAlbum?.id == selectedAlbum.id,
+                  albumSelectionGeneration == selectionGeneration else {
+                throw GalleryOperationError.deletionReviewExpired
+            }
+            guard let plan = GalleryDeletionPlan(candidates: candidates) else { return nil }
+            deletionReviewAuthority.issue(plan)
+            return plan
+        } catch {
+            deletionReviewAuthority.invalidate()
+            handleOperationError(error, fallback: "Could not prepare deletion review")
+            return nil
+        }
     }
 
     func prepareDeletionReview() -> GalleryDeletionPlan? {
@@ -1032,10 +1433,15 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
                         survivors: survivors.count
                     )
                 }
+                GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(
+                    assetIDs: Set(review.localIdentifiers),
+                    removedAlbumID: currentSource.localIdentifier,
+                    deletedAssetIDs: Set(review.localIdentifiers)
+                )
+                #if os(visionOS)
+                GalleryViewerStore.shared.removeFromAllAlbums(assets: assets)
+                #endif
             }
-            #if os(visionOS)
-            GalleryViewerStore.shared.removeFromAllAlbums(assets: assets)
-            #endif
             showToast(
                 .success,
                 "Deleted \(review.totalCount) item\(review.totalCount == 1 ? "" : "s")"
@@ -1101,7 +1507,13 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func coverAsset(for collection: PHAssetCollection) -> PHAsset? {
-        Self.coverAsset(for: collection)
+        let options = PHFetchOptions()
+        options.fetchLimit = 1
+        if mediaFilter != .all {
+            let type: PHAssetMediaType = mediaFilter == .photos ? .image : .video
+            options.predicate = NSPredicate(format: "mediaType == %d", type.rawValue)
+        }
+        return PHAsset.fetchAssets(in: collection, options: options).firstObject
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
@@ -1138,24 +1550,68 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
 
     private func makeAlbum(from collection: PHAssetCollection) -> GalleryAlbum {
         let title = collection.localizedTitle ?? "Untitled"
+        let photoCount = Self.assetCountEstimate(for: collection, mediaType: .image)
+        let videoCount = Self.assetCountEstimate(for: collection, mediaType: .video)
+        let latestOptions = PHFetchOptions()
+        latestOptions.fetchLimit = 1
+        latestOptions.sortDescriptors = [NSSortDescriptor(key: "modificationDate", ascending: false)]
+        let latestModificationDate = PHAsset.fetchAssets(in: collection, options: latestOptions)
+            .firstObject?.modificationDate
         return GalleryAlbum(
             id: collection.localIdentifier,
             title: title,
-            assetCount: Self.assetCountEstimate(for: collection),
+            assetCount: photoCount + videoCount,
             collection: collection,
-            coverAsset: nil
+            coverAsset: nil,
+            photoCount: photoCount,
+            videoCount: videoCount,
+            latestModificationDate: latestModificationDate
         )
     }
 
     private func sortedAlbums(_ albums: [GalleryAlbum]) -> [GalleryAlbum] {
-        albums.sorted { lhs, rhs in
-            lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        switch albumSortMode {
+        case .name:
+            return albums.sorted(by: albumNamePrecedes)
+        case .dateModified:
+            return albums.sorted { lhs, rhs in
+                let leftDate = lhs.latestModificationDate ?? .distantPast
+                let rightDate = rhs.latestModificationDate ?? .distantPast
+                if leftDate == rightDate { return albumNamePrecedes(lhs, rhs) }
+                return leftDate > rightDate
+            }
+        case .random:
+            let rank = Dictionary(uniqueKeysWithValues: randomAlbumOrder.enumerated().map { ($1, $0) })
+            return albums.sorted { lhs, rhs in
+                let leftRank = rank[lhs.id] ?? Int.max
+                let rightRank = rank[rhs.id] ?? Int.max
+                if leftRank == rightRank { return albumNamePrecedes(lhs, rhs) }
+                return leftRank < rightRank
+            }
+        case .custom:
+            let rank = Dictionary(uniqueKeysWithValues: customAlbumOrder.enumerated().map { ($1, $0) })
+            return albums.sorted { lhs, rhs in
+                let leftRank = rank[lhs.id] ?? Int.max
+                let rightRank = rank[rhs.id] ?? Int.max
+                if leftRank == rightRank { return albumNamePrecedes(lhs, rhs) }
+                return leftRank < rightRank
+            }
         }
+    }
+
+    private func albumNamePrecedes(_ lhs: GalleryAlbum, _ rhs: GalleryAlbum) -> Bool {
+        lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
     }
 
     private static func assetCountEstimate(for collection: PHAssetCollection) -> Int {
         let count = collection.estimatedAssetCount
         return count == NSNotFound ? 0 : max(0, count)
+    }
+
+    private static func assetCountEstimate(for collection: PHAssetCollection, mediaType: PHAssetMediaType) -> Int {
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(format: "mediaType == %d", mediaType.rawValue)
+        return PHAsset.fetchAssets(in: collection, options: options).count
     }
 
     private static func coverAsset(for collection: PHAssetCollection) -> PHAsset? {
@@ -1264,6 +1720,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             return
         }
 
+        let retainedSelection = keepingSelection
+            ? Set(selectedIndexes.compactMap { asset(at: $0)?.localIdentifier }) : []
+        let retainedAnchor = keepingSelection ? rangeAnchorIndex.flatMap { asset(at: $0)?.localIdentifier } : nil
         let generation = UUID()
         let selectionGeneration = albumSelectionGeneration
         let externalRefreshAuthority = pendingAssetRefreshAuthority.flatMap { authority in
@@ -1278,17 +1737,44 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             ? "Applying \(assetSortMode.title) order..."
             : nil
 
-        let fetchResult = PHAsset.fetchAssets(
-            in: selectedAlbum.collection,
-            options: assetFetchOptions()
-        )
+        let scopedIndexes: [Int]?
+        let fetchResult: PHFetchResult<PHAsset>
+        if let scope = selectedAlbum.virtualScope {
+            let snapshot = await GalleryVirtualLibraryIndex.shared.snapshot(for: scope, mediaFilter: scopeMediaFilter)
+            guard assetLoadGeneration == generation,
+                  self.selectedAlbum?.id == selectedAlbum.id,
+                  albumSelectionGeneration == selectionGeneration else { return }
+            fetchResult = snapshot.fetch
+            scopedIndexes = snapshot.displayOrder
+            virtualAssetCounts[scope] = snapshot.photoCount + snapshot.videoCount
+            virtualPhotoCounts[scope] = snapshot.photoCount
+            virtualVideoCounts[scope] = snapshot.videoCount
+        } else if let collection = selectedAlbum.collection {
+            fetchResult = PHAsset.fetchAssets(in: collection, options: assetFetchOptions())
+            scopedIndexes = nil
+        } else {
+            closeAlbum()
+            return
+        }
         inFlightAssetFetchGeneration = generation
         inFlightAssetFetchAlbumID = selectedAlbum.id
         inFlightAssetFetchResult = fetchResult
         defer { clearInFlightAssetFetch(generation: generation) }
+        assetScopeIndexes = scopedIndexes
+        let includedIndexes = await indexesMatchingMediaSearch(
+            query: mediaSearchQuery,
+            albumID: selectedAlbum.id,
+            fetchResult: fetchResult,
+            includedIndexes: scopedIndexes,
+            generation: generation
+        )
+        guard assetLoadGeneration == generation,
+              self.selectedAlbum?.id == selectedAlbum.id,
+              albumSelectionGeneration == selectionGeneration else { return }
         let displayOrder = await buildAssetDisplayOrder(
             for: fetchResult,
-            generation: generation
+            generation: generation,
+            includedIndexes: includedIndexes
         )
 
         guard
@@ -1303,7 +1789,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         assetFetchAlbumID = selectedAlbum.id
         clearInFlightAssetFetch(generation: generation)
         assetDisplayOrder = displayOrder
-        totalAssetCount = fetchResult.count
+        totalAssetCount = displayOrder?.count ?? fetchResult.count
         visibleAssetCount = GalleryPagingPolicy.visibleCount(
             current: visibleAssetCount,
             total: totalAssetCount,
@@ -1312,11 +1798,24 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         if !keepingSelection {
             clearSelection(silent: true)
         } else {
-            var validSelection = IndexSet()
-            for index in selectedIndexes where index < totalAssetCount {
-                validSelection.insert(index)
+            let retainedIDs = retainedSelection.union(retainedAnchor.map { [$0] } ?? [])
+            let retainedAssets = PHAsset.fetchAssets(withLocalIdentifiers: Array(retainedIDs), options: nil)
+            var sources = Set<Int>()
+            var anchorSource: Int?
+            for i in 0..<retainedAssets.count {
+                let asset = retainedAssets.object(at: i)
+                let sourceIndex = fetchResult.index(of: asset)
+                guard sourceIndex != NSNotFound else { continue }
+                if retainedSelection.contains(asset.localIdentifier) { sources.insert(sourceIndex) }
+                if retainedAnchor == asset.localIdentifier { anchorSource = sourceIndex }
             }
-            selectedIndexes = validSelection
+            if let displayOrder {
+                selectedIndexes = IndexSet(displayOrder.indices.filter { sources.contains(displayOrder[$0]) })
+                rangeAnchorIndex = anchorSource.flatMap { displayOrder.firstIndex(of: $0) }
+            } else {
+                selectedIndexes = IndexSet(sources)
+                rangeAnchorIndex = anchorSource
+            }
         }
         resetImagePreheating()
         isSortingAssets = false
@@ -1343,20 +1842,118 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }
     }
 
+    private func indexesMatchingMediaSearch(
+        query: String,
+        albumID: String,
+        fetchResult: PHFetchResult<PHAsset>,
+        includedIndexes: [Int]?,
+        generation: UUID
+    ) async -> [Int]? {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return includedIndexes }
+        let signature = "\(albumID)|\(mediaFilter.rawValue)|\(assetSortMode.rawValue)|\(assetSortAscending)|\(fetchResult.count)|\(virtualLibraryRevision)"
+        let records: [GalleryNamedAssetIndex]
+        if cachedSearchSignature == signature, let cachedSearchRecords {
+            records = cachedSearchRecords
+        } else {
+            let sourceIndexes = includedIndexes ?? Array(0..<fetchResult.count)
+            isIndexingMediaSearch = true
+            defer { isIndexingMediaSearch = false }
+            var rows: [GalleryNamedAssetIndex] = []
+            rows.reserveCapacity(sourceIndexes.count)
+            for (position, sourceIndex) in sourceIndexes.enumerated() {
+                guard assetLoadGeneration == generation else { return [] }
+                let asset = fetchResult.object(at: sourceIndex)
+                let assetID = asset.localIdentifier
+                let name = cachedSearchNamesByID[assetID] ?? Self.assetFilename(asset)
+                cachedSearchNamesByID[assetID] = name
+                rows.append(GalleryNamedAssetIndex(index: sourceIndex, name: name))
+                let completed = position + 1
+                if completed == 1 || completed % 250 == 0 || completed == sourceIndexes.count {
+                    sortingMessage = "Indexing file names \(completed) of \(sourceIndexes.count)..."
+                    await Task.yield()
+                }
+            }
+            guard assetLoadGeneration == generation else { return [] }
+            cachedSearchSignature = signature
+            cachedSearchRecords = rows
+            records = rows
+        }
+        sortingMessage = nil
+        return await Task.detached(priority: .userInitiated) {
+            records.filter { $0.name.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil }.map(\.index)
+        }.value
+    }
+
     private func assetFetchOptions() -> PHFetchOptions? {
-        guard assetSortMode == .date else { return nil }
+        guard assetSortMode == .date || mediaFilter != .all else { return nil }
 
         let options = PHFetchOptions()
-        options.sortDescriptors = [
-            NSSortDescriptor(key: "creationDate", ascending: dateSortAscending)
-        ]
+        if assetSortMode == .date {
+            options.sortDescriptors = [
+                NSSortDescriptor(key: "creationDate", ascending: dateSortAscending)
+            ]
+        }
+        switch mediaFilter {
+        case .all:
+            break
+        case .photos:
+            options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        case .videos:
+            options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.video.rawValue)
+        }
         return options
     }
 
     private func buildAssetDisplayOrder(
         for fetchResult: PHFetchResult<PHAsset>,
-        generation: UUID
+        generation: UUID,
+        includedIndexes: [Int]? = nil
     ) async -> [Int]? {
+        if let includedIndexes {
+            switch assetSortMode {
+            case .photosOrder:
+                return includedIndexes
+            case .random:
+                return includedIndexes.shuffled()
+            case .date:
+                let ascending = dateSortAscending
+                var datedIndexes: [(index: Int, date: Date)] = []
+                datedIndexes.reserveCapacity(includedIndexes.count)
+                for index in includedIndexes {
+                    datedIndexes.append((index, fetchResult.object(at: index).creationDate ?? .distantPast))
+                }
+                return datedIndexes.sorted { lhs, rhs in
+                    if lhs.date == rhs.date { return lhs.index < rhs.index }
+                    return ascending ? lhs.date < rhs.date : lhs.date > rhs.date
+                }.map(\.index)
+            case .name:
+                var records: [GalleryNamedAssetIndex] = []
+                records.reserveCapacity(includedIndexes.count)
+                for (offset, sourceIndex) in includedIndexes.enumerated() {
+                    guard assetLoadGeneration == generation else { return nil }
+                    let asset = fetchResult.object(at: sourceIndex)
+                    records.append(GalleryNamedAssetIndex(
+                        index: sourceIndex,
+                        name: cachedSearchNamesByID[asset.localIdentifier] ?? Self.assetFilename(asset)
+                    ))
+                    if offset == 0 || (offset + 1) % 50 == 0 || offset + 1 == includedIndexes.count {
+                        updateAssetSortingProgress("Reading names \(offset + 1) of \(includedIndexes.count)...")
+                        await Task.yield()
+                    }
+                }
+                guard assetLoadGeneration == generation else { return nil }
+                let ascending = nameSortAscending
+                updateAssetSortingProgress("Sorting \(records.count) names...")
+                return await Task.detached(priority: .userInitiated) {
+                    records.sorted { lhs, rhs in
+                        let result = lhs.name.localizedStandardCompare(rhs.name)
+                        if result == .orderedSame { return lhs.index < rhs.index }
+                        return ascending ? result == .orderedAscending : result == .orderedDescending
+                    }.map(\.index)
+                }.value
+            }
+        }
         switch assetSortMode {
         case .photosOrder, .date:
             return nil
@@ -1373,7 +1970,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
                 records.append(
                     GalleryNamedAssetIndex(
                         index: index,
-                        name: assetFilename(asset)
+                        name: cachedSearchNamesByID[asset.localIdentifier] ?? Self.assetFilename(asset)
                     )
                 )
 
@@ -1405,7 +2002,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }
     }
 
-    private func assetFilename(_ asset: PHAsset) -> String {
+    nonisolated private static func assetFilename(_ asset: PHAsset) -> String {
         let resources = PHAssetResource.assetResources(for: asset)
         let preferredTypes: [PHAssetResourceType]
 
@@ -1557,6 +2154,10 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             inFlightFetchChanged: inFlightAlbumsChanged,
             assetFetchChanged: !changedAssetFetchAlbumIDs.isEmpty
         )
+
+        if committedAlbumsChanged || inFlightAlbumsChanged || committedAssetFetchChanged || inFlightAssetFetchChanged {
+            invalidateMediaSearchCache()
+        }
 
         if let refreshAuthority {
             pendingAssetRefreshAuthority = refreshAuthority

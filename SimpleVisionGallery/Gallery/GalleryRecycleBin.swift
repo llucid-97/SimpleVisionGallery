@@ -29,9 +29,11 @@ enum GalleryRecycleBin {
         return firstMatching
     }
 
-    /// Adds assets to the bin and removes them from their source in one Photos transaction.
+    /// Adds assets to the bin and, when moving from a real album, removes them
+    /// from that album in the same Photos transaction. Virtual sources have no
+    /// Photos collection to remove from and must preserve unrelated membership.
     @discardableResult
-    static func move(_ assets: [PHAsset], from source: PHAssetCollection) async throws -> String {
+    static func move(_ assets: [PHAsset], from source: PHAssetCollection?) async throws -> String {
         guard !assets.isEmpty else { throw GalleryRecycleBinError.noAssets }
         if moving { await withCheckedContinuation { waiters.append($0) } }
         moving = true
@@ -41,11 +43,17 @@ enum GalleryRecycleBin {
         }
         // Collections are immutable snapshots. Resolve current title/editability
         // so a rename cannot leave recycle behavior attached to the old name.
-        guard let source = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [source.localIdentifier], options: nil).firstObject else {
-            throw GalleryRecycleBinError.sourceNotEditable
+        let currentSource: PHAssetCollection?
+        if let source {
+            guard let refreshed = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [source.localIdentifier], options: nil).firstObject else {
+                throw GalleryRecycleBinError.sourceNotEditable
+            }
+            guard !isRecycleBinTitle(refreshed.localizedTitle) else { throw GalleryRecycleBinError.alreadyInBin }
+            guard refreshed.canPerform(.removeContent) else { throw GalleryRecycleBinError.sourceNotEditable }
+            currentSource = refreshed
+        } else {
+            currentSource = nil
         }
-        guard !isRecycleBinTitle(source.localizedTitle) else { throw GalleryRecycleBinError.alreadyInBin }
-        guard source.canPerform(.removeContent) else { throw GalleryRecycleBinError.sourceNotEditable }
 
         let bin = existingCollection()
         if let bin, !bin.canPerform(.addContent) { throw GalleryRecycleBinError.binNotEditable }
@@ -53,7 +61,8 @@ enum GalleryRecycleBin {
         var createdIdentifier: String?
         var staged = false
         try await PHPhotoLibrary.shared().performChanges {
-            guard let sourceRequest = PHAssetCollectionChangeRequest(for: source) else { return }
+            let sourceRequest = currentSource.flatMap { PHAssetCollectionChangeRequest(for: $0) }
+            guard currentSource == nil || sourceRequest != nil else { return }
             let binRequest: PHAssetCollectionChangeRequest
             if let bin {
                 guard let request = PHAssetCollectionChangeRequest(for: bin) else { return }
@@ -64,7 +73,7 @@ enum GalleryRecycleBin {
                 binRequest = request
             }
             binRequest.addAssets(assets as NSFastEnumeration)
-            sourceRequest.removeAssets(assets as NSFastEnumeration)
+            sourceRequest?.removeAssets(assets as NSFastEnumeration)
             staged = true
         }
         guard staged else { throw GalleryRecycleBinError.changeUnavailable }

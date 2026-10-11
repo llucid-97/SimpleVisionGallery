@@ -16,6 +16,11 @@ struct GalleryDesignContext {
     let openAlbum: (GalleryAlbum) -> Void
     let renameAlbum: (GalleryAlbum) -> Void
     let toggleVisibility: (GalleryAlbum) -> Void
+    let selectSection: (GalleryLibrarySection) -> Void
+    let reorderAlbumID: String?
+    let beginReordering: (GalleryAlbum) -> Void
+    let cancelReordering: () -> Void
+    let reorderAlbum: (String, String, Bool) -> Void
     let showSettings: () -> Void
 
     var hasOpenAlbum: Bool { manager.selectedAlbum != nil }
@@ -25,12 +30,15 @@ struct GalleryDesignAlbumActions: View {
     let context: GalleryDesignContext
     let album: GalleryAlbum
     var body: some View {
-        Button(context.manager.isAlbumHidden(album) ? "Unhide Album" : "Hide Album",
-            systemImage: context.manager.isAlbumHidden(album) ? "eye" : "eye.slash") {
-            context.toggleVisibility(album)
-        }
-        if album.collection.canPerform(.rename) {
-            Button("Rename Album", systemImage: "pencil") { context.renameAlbum(album) }
+        Button("Sort", systemImage: "arrow.up.arrow.down") { context.beginReordering(album) }
+        if album.collection != nil {
+            Button(context.manager.isAlbumHidden(album) ? "Unhide Album" : "Hide Album",
+                systemImage: context.manager.isAlbumHidden(album) ? "eye" : "eye.slash") {
+                context.toggleVisibility(album)
+            }
+            if album.collection?.canPerform(.rename) == true {
+                Button("Rename Album", systemImage: "pencil") { context.renameAlbum(album) }
+            }
         }
     }
 }

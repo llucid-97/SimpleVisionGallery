@@ -31,7 +31,7 @@ final class GalleryMoveHistory {
         return destinationIDs.compactMap { id in
             guard id != albumID, seen.insert(id).inserted,
                   let album = byID[id],
-                  album.collection.canPerform(.addContent)
+                  album.collection?.canPerform(.addContent) == true
             else { return nil }
             return album
         }

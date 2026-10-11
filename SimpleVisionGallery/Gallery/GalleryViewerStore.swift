@@ -52,6 +52,7 @@ fileprivate final class GalleryViewerPlaylist {
     var snapshot: GalleryViewerSnapshot
     var index: GalleryPlaylistIndex
     private var needsFreshMetadata = false
+    private let displayIndexBySource: [Int: Int]?
     private let metadataCache: NSCache<NSString, PHAsset> = {
         let cache = NSCache<NSString, PHAsset>()
         cache.countLimit = 16
@@ -61,7 +62,15 @@ fileprivate final class GalleryViewerPlaylist {
 
     init(_ snapshot: GalleryViewerSnapshot) {
         self.snapshot = snapshot
-        index = GalleryPlaylistIndex(originalCount: snapshot.fetch.count)
+        index = GalleryPlaylistIndex(originalCount: snapshot.displayOrder?.count ?? snapshot.fetch.count)
+        displayIndexBySource = snapshot.displayOrder.map { order in
+            Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        }
+    }
+
+    func displayIndex(forSource sourceIndex: Int) -> Int? {
+        if let displayIndexBySource { return displayIndexBySource[sourceIndex] }
+        return sourceIndex < index.originalCount ? sourceIndex : nil
     }
 
     func asset(at displayIndex: Int) -> PHAsset {
@@ -96,6 +105,10 @@ final class GalleryViewerSession: ObservableObject, Identifiable {
 
     var albumID: String { playlist.snapshot.album.id }
     var albumTitle: String { playlist.snapshot.album.title }
+    var canRemoveFromSourceAlbum: Bool {
+        let album = playlist.snapshot.album
+        return album.virtualScope == nil && album.collection?.canPerform(.removeContent) == true
+    }
     var currentAsset: PHAsset? { cursor.map { playlist.asset(at: $0) } }
     /// Resolve only the next live item in the frozen display order; never scan the album.
     var nextAsset: PHAsset? {
@@ -151,15 +164,22 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     private var playlists: [UUID: GalleryViewerPlaylist] = [:]
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
     private var albumRefreshGeneration = UUID()
+    private var membershipSubscription: AnyCancellable?
 
     private override init() {
         super.init()
         PHPhotoLibrary.shared().register(self)
+        membershipSubscription = GalleryVirtualLibraryIndex.shared.$revision.dropFirst().sink { [weak self] _ in
+            guard let self else { return }
+            let index = GalleryVirtualLibraryIndex.shared
+            self.removeVirtualIDs(index.removedFromPhotos, scope: .photos)
+            self.removeVirtualIDs(index.removedFromUnfiled, scope: .unfiled)
+        }
     }
 
     func createSession(from manager: GalleryManager, at displayIndex: Int) -> UUID? {
         guard let snapshot = manager.viewerSnapshot(),
-              displayIndex >= 0, displayIndex < snapshot.fetch.count else { return nil }
+              displayIndex >= 0, displayIndex < (snapshot.displayOrder?.count ?? snapshot.fetch.count) else { return nil }
         let playlist = playlists[snapshot.id] ?? GalleryViewerPlaylist(snapshot)
         playlists[snapshot.id] = playlist
         guard !playlist.index.removed.contains(displayIndex) else { return nil }
@@ -202,7 +222,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         let generation = UUID()
         albumRefreshGeneration = generation
         let fetch = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
-        var result: [GalleryAlbum] = []
+        var result: [GalleryAlbum] = albums.filter { $0.virtualScope != nil }
         for index in 0..<fetch.count {
             let collection = fetch.object(at: index)
             result.append(GalleryAlbum(id: collection.localIdentifier,
@@ -234,7 +254,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             let old = playlist.snapshot.album
             let renamed = GalleryAlbum(
                 id: old.id, title: title, assetCount: old.assetCount,
-                collection: old.collection, coverAsset: old.coverAsset
+                collection: old.collection, coverAsset: old.coverAsset, virtualScope: old.virtualScope
             )
             playlist.snapshot = GalleryViewerSnapshot(
                 id: playlist.snapshot.id,
@@ -247,12 +267,15 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         albums = albums.map { album in
             guard album.id == id else { return album }
             return GalleryAlbum(id: album.id, title: title, assetCount: album.assetCount,
-                collection: album.collection, coverAsset: album.coverAsset)
+                collection: album.collection, coverAsset: album.coverAsset, virtualScope: album.virtualScope)
         }
     }
 
     func move(_ id: UUID, to destination: GalleryAlbum, expectedAssetID: String? = nil) async throws {
-        try await mutate(id, destination: destination.collection, newAlbumName: nil, recycling: false, expectedAssetID: expectedAssetID)
+        guard let collection = destination.collection, destination.virtualScope == nil else {
+            throw ViewerMutationError.destinationNotEditable
+        }
+        try await mutate(id, destination: collection, newAlbumName: nil, recycling: false, expectedAssetID: expectedAssetID)
     }
 
     func move(_ id: UUID, toNewAlbumNamed name: String, expectedAssetID: String? = nil) async throws {
@@ -265,39 +288,78 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         try await mutate(id, destination: nil, newAlbumName: nil, recycling: true, expectedAssetID: expectedAssetID)
     }
 
+    /// Removes the current item from its real source album without deleting it
+    /// from Photos or placing it in Recycle Bin.
+    func removeFromSourceAlbum(sessionID: UUID, expectedAssetID: String) async throws {
+        guard let session = sessions[sessionID], let asset = session.currentAsset else { throw ViewerMutationError.noAsset }
+        guard asset.localIdentifier == expectedAssetID else { return }
+        guard session.playlist.snapshot.album.virtualScope == nil else { throw ViewerMutationError.sourceNotEditable }
+        await acquireMutation()
+        defer { releaseMutation() }
+        guard let live = sessions[sessionID], live.currentAsset?.localIdentifier == expectedAssetID else { return }
+        guard let source = PHAssetCollection.fetchAssetCollections(
+            withLocalIdentifiers: [session.albumID], options: nil).firstObject,
+              source.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
+        var staged = false
+        try await PHPhotoLibrary.shared().performChanges {
+            guard let request = PHAssetCollectionChangeRequest(for: source) else { return }
+            request.removeAssets([asset] as NSArray)
+            staged = true
+        }
+        guard staged else { throw ViewerMutationError.changeUnavailable }
+        GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], removedAlbumID: source.localIdentifier)
+        synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
+            recycling: false, removedFromSource: true)
+        removeFromAlbum(source.localIdentifier, assets: [asset])
+        await refreshAlbums()
+    }
+
     // Capture the requested asset before waiting: a second tap must not act on the next slide.
     private func mutate(_ id: UUID, destination: PHAssetCollection?, newAlbumName: String?, recycling: Bool, expectedAssetID: String?) async throws {
         guard let session = sessions[id], let asset = session.currentAsset else { throw ViewerMutationError.noAsset }
         guard expectedAssetID == nil || expectedAssetID == asset.localIdentifier else { return }
+        let sourceAlbum = session.playlist.snapshot.album
         let sourceID = session.albumID
         await acquireMutation()
         defer { releaseMutation() }
         guard let liveSession = sessions[id], liveSession.currentAsset?.localIdentifier == asset.localIdentifier else { return }
-        guard let source = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [sourceID], options: nil).firstObject,
-              source.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
+        let source: PHAssetCollection?
+        if sourceAlbum.virtualScope == nil {
+            guard let realSource = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [sourceID], options: nil).firstObject,
+                  realSource.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
+            source = realSource
+        } else {
+            source = nil
+        }
 
-        if recycling && GalleryRecycleBin.isRecycleBinTitle(source.localizedTitle) {
+        if recycling && (sourceAlbum.virtualScope == .recycleBin || (source.map { GalleryRecycleBin.isRecycleBinTitle($0.localizedTitle) } ?? false)) {
+            guard let source else { throw ViewerMutationError.assetNoLongerInBin }
             try await deleteFromRecycleBin(asset, source: source)
             removeFromAllAlbums(assets: [asset])
+            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], deletedAssetIDs: [asset.localIdentifier])
             await refreshAlbums()
             return
         }
 
         if recycling {
             try await GalleryRecycleBin.move([asset], from: source)
-            removeFromAlbum(source.localIdentifier, assets: [asset])
+            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: GalleryRecycleBin.existingCollection()?.localIdentifier, removedAlbumID: source?.localIdentifier)
+            synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
+                recycling: true, removedFromSource: source != nil)
+            if let source { removeFromAlbum(source.localIdentifier, assets: [asset]) }
             await refreshAlbums()
             return
         }
 
-        var target = destination
-        var createName = newAlbumName
-        guard target?.localIdentifier != source.localIdentifier else { return }
+        let target = destination
+        let createName = newAlbumName
+        if let target, target.localIdentifier == source?.localIdentifier { return }
         if let target, !target.canPerform(.addContent) { throw ViewerMutationError.destinationNotEditable }
         var staged = false
         var createdIdentifier: String?
         try await PHPhotoLibrary.shared().performChanges {
-            guard let sourceRequest = PHAssetCollectionChangeRequest(for: source) else { return }
+            let sourceRequest = source.flatMap { PHAssetCollectionChangeRequest(for: $0) }
+            guard source == nil || sourceRequest != nil else { return }
             let destinationRequest: PHAssetCollectionChangeRequest
             if let target {
                 guard let request = PHAssetCollectionChangeRequest(for: target) else { return }
@@ -307,11 +369,16 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 createdIdentifier = destinationRequest.placeholderForCreatedAssetCollection.localIdentifier
             } else { return }
             destinationRequest.addAssets([asset] as NSArray)
-            sourceRequest.removeAssets([asset] as NSArray)
+            sourceRequest?.removeAssets([asset] as NSArray)
             staged = true
         }
         guard staged else { throw ViewerMutationError.changeUnavailable }
-        removeFromAlbum(source.localIdentifier, assets: [asset])
+        let destinationID = target?.localIdentifier ?? createdIdentifier
+        GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: destinationID, removedAlbumID: source?.localIdentifier)
+        let destinationIsBin = destinationID == GalleryRecycleBin.existingCollection()?.localIdentifier
+        synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: true,
+            recycling: destinationIsBin, removedFromSource: source != nil)
+        if let source { removeFromAlbum(source.localIdentifier, assets: [asset]) }
         if let destinationID = target?.localIdentifier ?? createdIdentifier {
             GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationID)
         }
@@ -369,10 +436,9 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         guard !identifiers.isEmpty else { return }
         for playlist in playlists.values {
             var sourceRemovals = IndexSet()
-            for index in 0..<playlist.snapshot.fetch.count {
-                if identifiers.contains(playlist.snapshot.fetch.object(at: index).localIdentifier) {
-                    sourceRemovals.insert(index)
-                }
+            for asset in assets {
+                let index = playlist.snapshot.fetch.index(of: asset)
+                if index != NSNotFound { sourceRemovals.insert(index) }
             }
             guard !sourceRemovals.isEmpty else { continue }
             var displayRemovals = sourceRemovals
@@ -386,7 +452,41 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         }
     }
 
+    /// Applies the known local membership effect to frozen virtual playlists by
+    /// looking up only the changed assets. The shared index remains responsible
+    /// for PhotoKit's cumulative membership counts and later external deltas.
+    func synchronizeVirtualMembershipAfterMutation(assets: [PHAsset], addedToAlbum: Bool,
+                                                   recycling: Bool, removedFromSource: Bool) {
+        GalleryVirtualLibraryIndex.shared.invalidate()
+        let identifiers = Set(assets.map(\.localIdentifier))
+        guard !identifiers.isEmpty else { return }
+        for playlist in playlists.values {
+            guard let scope = playlist.snapshot.album.virtualScope else { continue }
+            let shouldRemove: Bool
+            switch scope {
+            case .photos: shouldRemove = recycling
+            case .unfiled: shouldRemove = addedToAlbum || recycling
+            case .recycleBin: shouldRemove = false
+            }
+            guard shouldRemove else { continue }
+            var displayRemovals = IndexSet()
+            for asset in assets {
+                guard identifiers.contains(asset.localIdentifier) else { continue }
+                let sourceIndex = playlist.snapshot.fetch.index(of: asset)
+                guard sourceIndex != NSNotFound else { continue }
+                let displayIndex: Int
+                if playlist.snapshot.displayOrder != nil {
+                    guard let found = playlist.displayIndex(forSource: sourceIndex) else { continue }
+                    displayIndex = found
+                } else { displayIndex = sourceIndex }
+                displayRemovals.insert(displayIndex)
+            }
+            applyRemovals(displayRemovals, to: playlist)
+        }
+    }
+
     private func applyRemovals(_ removed: IndexSet, to playlist: GalleryViewerPlaylist) {
+        guard !removed.subtracting(playlist.index.removed).isEmpty else { return }
         playlist.index.remove(removed)
         notify(playlist)
     }
@@ -404,10 +504,19 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     }
 
     private func handleChange(_ change: PHChange) async {
+        // Let the shared membership observer consume this same PhotoKit change
+        // before applying its exact-ID removal deltas to virtual sessions.
+        await Task.yield()
+        let index = GalleryVirtualLibraryIndex.shared
+        let removedPhotos = index.removedFromPhotos
+        let removedUnfiled = index.removedFromUnfiled
+        if !removedPhotos.isEmpty { removeVirtualIDs(removedPhotos, scope: .photos) }
+        if !removedUnfiled.isEmpty { removeVirtualIDs(removedUnfiled, scope: .unfiled) }
         // Each fetch remains frozen at opening time; deltas are therefore cumulative.
         for playlist in Array(playlists.values) {
             let snapshot = playlist.snapshot
-            if change.changeDetails(for: snapshot.album.collection)?.objectWasDeleted == true {
+            if let collection = snapshot.album.collection,
+               change.changeDetails(for: collection)?.objectWasDeleted == true {
                 applyRemovals(IndexSet(integersIn: 0..<snapshot.fetch.count), to: playlist)
                 continue
             }
@@ -443,6 +552,24 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             applyRemovals(removed, to: playlist)
         }
     }
+
+    private func removeVirtualIDs(_ identifiers: Set<String>, scope: GalleryVirtualScope) {
+        guard !identifiers.isEmpty else { return }
+        // Membership changes preserve assets. Resolve only their IDs, then use each
+        // frozen fetch's source indexes; the shared current fetch may have shifted.
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: Array(identifiers), options: nil)
+        for playlist in playlists.values where playlist.snapshot.album.virtualScope == scope {
+            var displayRemovals = IndexSet()
+            for i in 0..<assets.count {
+                let sourceIndex = playlist.snapshot.fetch.index(of: assets.object(at: i))
+                guard sourceIndex != NSNotFound,
+                      let displayIndex = playlist.displayIndex(forSource: sourceIndex) else { continue }
+                displayRemovals.insert(displayIndex)
+            }
+            if !displayRemovals.isEmpty { applyRemovals(displayRemovals, to: playlist) }
+        }
+    }
+
 }
 
 private enum ViewerMutationError: LocalizedError {

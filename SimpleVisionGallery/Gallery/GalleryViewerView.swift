@@ -497,7 +497,7 @@ private struct GalleryViewerMoveSheet: View {
         let recentIDs = Set(query.isEmpty ? recentDestinations.map(\.id) : [])
         return GalleryAlbumSearch.filter(store.albums.filter {
             $0.id != store.session(sessionID)?.albumID
-                && $0.collection.canPerform(.addContent)
+                && $0.collection?.canPerform(.addContent) == true
                 && !GalleryRecycleBin.isRecycleBin($0)
                 && !recentIDs.contains($0.id)
         }, query: query)
@@ -537,6 +537,15 @@ private struct GalleryViewerMoveSheet: View {
                         .disabled(store.isPerformingOperation)
                     }
                 }
+                Section("Current album") {
+                    Button("Remove from Album", systemImage: "minus.circle") {
+                        performMove {
+                            try await store.removeFromSourceAlbum(sessionID: sessionID, expectedAssetID: assetID)
+                        }
+                    }
+                    .disabled(!canRemoveFromSource || store.isPerformingOperation)
+                    .accessibilityIdentifier("gallery-viewer-remove-from-album")
+                }
                 if let error { Text(error).foregroundStyle(.red) }
             }
             .searchable(text: $query, prompt: "Find an album")
@@ -555,6 +564,10 @@ private struct GalleryViewerMoveSheet: View {
             do { try await action(); dismiss() }
             catch let failure { self.error = failure.localizedDescription }
         }
+    }
+
+    private var canRemoveFromSource: Bool {
+        store.session(sessionID)?.canRemoveFromSourceAlbum == true
     }
 }
 
