@@ -2,3 +2,5 @@
 # Shared references
 
 The gallery source comes from SimpleVisionTools commit `bbb285c70f53f0d852165cd59bf4829a69a59a49`. The app icon is original artwork in `SimpleVisionGallery/Assets.xcassets/AppIcon.solidimagestack/`. Keep shared release reference material here and mutable agent work under locally ignored `workspaces/`. Apple release references are linked in `docs/app-store-release.md`.
+
+The original white photo mark and long shadow are in `brand/simple-vision-gallery-mark.svg`. The three icon layer SVGs preserve transparency for the foreground and shadow; the background is opaque. Regenerate their asset-catalog PNGs with `swift resources/brand/render-app-icon-layers.swift`; pass `--preview` and an ignored output path to inspect the composite. Do not flatten the transparent layers onto white.

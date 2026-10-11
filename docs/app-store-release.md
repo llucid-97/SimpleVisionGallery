@@ -1,17 +1,19 @@
 <!-- Target audience: humans -->
 # App Store release checklist
 
-Status: dogfooding on Pali with paid-team signing. Apple Developer Program enrollment is active. Pricing, public support details, and App Store submission remain pending. No App Store upload or submission has been made.
+Status: dogfooding on Pali with paid-team signing. Apple Developer Program enrollment is active. The app will be free in all countries; the temporary public support email is agim.gershom@gmail.com. Seller identity, App Review contact details, public page hosting, and App Store submission remain pending. No App Store upload or submission has been made.
 
 ## Version numbering
 
 Use the same three-part semantic version for both Apple version fields. Patch increments mark dogfood fixes, and there is no separate build counter.
 
+See [today’s pre-launch checklist](pre-launch-checklist.md) for the ordered remaining work.
+
 ## Release checklist
 
 - [x] Apple Developer Program membership is active; paid-team signing is configured for Pali.
 - [ ] Use an App Store Connect role with the permissions needed for the chosen release work. The Account Holder handles membership agreements; paid apps and in-app purchases require the Paid Apps Agreement. See [App Store Connect workflow](https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-workflow/) and [agreements](https://developer.apple.com/help/app-store-connect/manage-agreements/sign-and-update-agreements/).
-- [ ] Decide pricing and availability next week. Confirm the seller name and public support contact/URL. The public privacy-policy URL also remains to be hosted and entered; Apple requires a privacy policy URL for App Store apps. See [Manage app privacy](https://developer.apple.com/help/app-store-connect/manage-app-information/manage-app-privacy/).
+- [x] Price and countries are decided: free, all countries. The temporary public support email is agim.gershom@gmail.com. Confirm the seller name and private App Review contact details, and host the public support and privacy pages. Apple requires a privacy policy URL for App Store apps. See [Manage app privacy](https://developer.apple.com/help/app-store-connect/manage-app-information/manage-app-privacy/).
 - [ ] Review the final target’s permission text, privacy manifest, included SDKs, privacy answers, and listing against the shipped features. The populated target uses PhotoKit for library changes and requests cloud originals through PhotoKit when needed.
 - [ ] Human-review the original three-layer visionOS app icon now in the asset catalog. Apple specifies a square 1024 × 1024 icon with two or three unmasked layers; Xcode composes the layers into the circular icon. Keep the main subject centered and avoid a hole-like shape in the background. See [visionOS app icon guidance](https://developer.apple.com/design/human-interface-guidelines/app-icons) and [Xcode image-stack setup](https://developer.apple.com/documentation/xcode/configuring-your-app-icon).
 - [ ] Validate spatial scene generation on Apple Vision Pro. The visionOS Simulator cannot generate `Spatial3DImage`; it can still help check layout and ordinary viewer behavior. Capture truthful product screenshots from the running app. Apple currently requires Apple Vision Pro screenshots at 3840 × 2160 pixels. See [Spatial3DImage overview](https://developer.apple.com/documentation/realitykit/imagepresentationcomponent/spatial3dimage) and [screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/).
@@ -29,11 +31,11 @@ Use the same three-part semantic version for both Apple version fields. Patch in
 
 ## Pending publication details
 
-- Public seller/developer identity and support contact/URL
+- Public seller/developer identity and private App Review email/phone
+- Public support and privacy page hosting (temporary support email: agim.gershom@gmail.com)
 - Public privacy-policy URL
-- Price and storefront availability
 - Human icon review and real Apple Vision Pro screenshots
 
 ## About screen follow-ups
 
-Before release, add the final public privacy-policy URL and support mailbox. After the mailbox is ready, add a mailto link for feedback and feature requests. After launch, add the app's social media page. After the first published version, add Invite Friends using the App Store link. Add Donate only after the donation route is set up. These links are intentionally absent until their destinations exist.
+Before release, add the public privacy-policy URL and a dedicated support mailbox when ready. The temporary support email already has a mailto link in About and the privacy contact section. After launch, add the app's social media page. After the first published version, add Invite Friends using the App Store link. Add Donate only after the donation route is set up. These links are intentionally absent until their destinations exist.

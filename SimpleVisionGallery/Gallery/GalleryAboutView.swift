@@ -4,6 +4,7 @@ struct GalleryAboutView: View {
     @Environment(\.dismiss) private var dismiss
     private let repository = URL(string: "https://github.com/llucid-97/SimpleVisionGallery")!
     private let issues = URL(string: "https://github.com/llucid-97/SimpleVisionGallery/issues")!
+    private let support = URL(string: "mailto:agim.gershom@gmail.com")!
 
     private var version: String {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -40,6 +41,8 @@ struct GalleryAboutView: View {
                     }
                 }
                 Section("Project and Known Issues") {
+                    Link(destination: support) { Label("Email Support", systemImage: "envelope") }
+                        .accessibilityIdentifier("gallery-about-support")
                     Link(destination: issues) { Label("Known Issues", systemImage: "ladybug") }
                         .accessibilityIdentifier("gallery-about-issues")
                     Link(destination: repository) { Label("GitHub", systemImage: "chevron.left.forwardslash.chevron.right") }
@@ -81,8 +84,8 @@ private struct GalleryPrivacyView: View {
             Section("Local Settings") {
                 Text("Gallery stores settings on your device, including accent color, album visibility and order, media filters, recent move destinations, thumbnail size, spatial prefetch, and video looping. Removing the app removes app-local settings. Changes made to your Photos library remain in Photos.")
             }
-            Section("Before Public Release") {
-                Text("A public policy URL and support mailbox will be added before the App Store release.")
+            Section("Contact") {
+                Link("Questions or privacy requests: agim.gershom@gmail.com", destination: URL(string: "mailto:agim.gershom@gmail.com")!)
             }
         }
         .navigationTitle("Privacy Policy")

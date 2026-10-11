@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Simple Vision Gallery white photo glyph layer">
+  <g fill="#FFFFFF">
+    <path fill-rule="evenodd" d="M265 160H715A85 85 0 0 1 800 245V695A85 85 0 0 1 715 780H265A85 85 0 0 1 180 695V245A85 85 0 0 1 265 160ZM275 225H705A35 35 0 0 1 740 260V680A35 35 0 0 1 705 715H275A35 35 0 0 1 240 680V260A35 35 0 0 1 275 225Z"/>
+    <circle cx="625" cy="330" r="43"/>
+    <path d="M270 665 405 490 493 590 560 515 710 685H270Z"/>
+  </g>
+</svg>

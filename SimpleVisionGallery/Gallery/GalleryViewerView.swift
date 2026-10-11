@@ -346,7 +346,7 @@ private struct GalleryViewerPane: View {
                 .tint(.white).foregroundStyle(.white)
         } else if let player = media.player, media.error == nil {
             if media.isSpatialVideo {
-                GallerySpatialVideoView(player: player, faceActiveCamera: backingYaw != 0)
+                GallerySpatialVideoView(player: player, initialYawDegrees: Float(backingYaw))
             } else {
                 GalleryNativeVideoPlayer(player: player)
             }
@@ -354,7 +354,7 @@ private struct GalleryViewerPane: View {
             Image(uiImage: image).resizable().scaledToFit()
                 .frame(width: width, height: height)
         } else if let entity = media.imageEntity {
-            GalleryRealityImage(entity: entity, faceActiveCamera: backingYaw != 0)
+            GalleryRealityImage(entity: entity, initialYawDegrees: Float(backingYaw))
         } else {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle").font(.largeTitle)
@@ -594,11 +594,15 @@ private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
 
 private struct GalleryRealityImage: View {
     let entity: Entity
-    var faceActiveCamera: Bool = false
+    var initialYawDegrees: Float = 0
 
     var body: some View {
         GeometryReader3D { geometry in
             RealityView { content in
+                // Set the inward angle once when this surface is attached.
+                // Billboarding would erase the parallax when the viewer moves.
+                entity.components.remove(BillboardComponent.self)
+                entity.orientation = simd_quatf(angle: initialYawDegrees * .pi / 180, axis: [0, 1, 0])
                 content.add(entity)
                 fit(content: content, geometry: geometry)
             } update: { content in
@@ -617,15 +621,6 @@ private struct GalleryRealityImage: View {
             screen.x > 0, screen.y > 0 else { return }
         let bounds = content.convert(geometry.frame(in: .local), from: .local, to: content)
         let scale = min(bounds.extents.x / screen.x, bounds.extents.y / screen.y)
-        // Camera-facing RealityKit placement works in a window without reading
-        // a device/head transform or requesting spatial-tracking authorization.
-        if faceActiveCamera {
-            if entity.components[BillboardComponent.self] == nil {
-                entity.components.set(BillboardComponent())
-            }
-        } else {
-            entity.components.remove(BillboardComponent.self)
-        }
         entity.scale = SIMD3<Float>(scale, scale, 1)
         // Content coordinates avoid applying the pane offset twice and retain
         // the native surface's forward depth above the window backing.

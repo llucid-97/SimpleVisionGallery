@@ -1,7 +1,7 @@
 <!-- Target audience: humans -->
 # Privacy policy draft — Simple Vision Gallery
 
-**Draft for owner review.** The developer identity, effective date, public support contact, and public URL are pending.
+**Draft for owner review.** The legal developer identity, effective date, and public URL are pending. The public support email below is temporary until a dedicated mailbox is ready.
 
 **Developer:** [PENDING — legal developer or seller name]
 
@@ -29,7 +29,7 @@ You can change Photos access in visionOS Settings. You can turn off looping with
 
 ## Contact
 
-Questions or privacy requests: [PENDING — public support email or contact URL]
+Questions or privacy requests: [agim.gershom@gmail.com](mailto:agim.gershom@gmail.com) (temporary support email).
 
 ## Changes to this policy
 
