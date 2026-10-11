@@ -1,5 +1,7 @@
 <!-- Target audience: humans -->
-# App Store listing draft
+# Submitted App Store listing
+
+Submitted 11 October 2026, version 1.0.10. Status: Waiting for Review.
 
 ## Name
 
@@ -27,11 +29,17 @@ Rename your albums, find them even with a small typo, and quickly reuse your thr
 
 visionOS,spatial photos,photo gallery,3D photos,slideshow,videos
 
-## Metadata to complete before release
+## Saved metadata
 
-- Proposed developer/seller name: Gershom Agim; verify against Apple Developer membership
-- Public support email: agim.gershom@gmail.com (temporary until a dedicated mailbox is ready)
-- Public support URL
-- Public privacy-policy URL
-- Price: free; availability: all countries
-- Human review of the app icon and real Apple Vision Pro screenshots
+- Developer/seller name: Gershom Agim, verified against Apple Developer membership
+- Public support email: agim.gershom@gmail.com (temporary)
+- Support URL: https://llucid-97.github.io/simple-vision-gallery/support.html
+- Privacy URL: https://llucid-97.github.io/simple-vision-gallery/privacy.html
+- Price: free; availability: all 175 countries and regions
+- App Store Connect app: 6821613011; English (U.K.); Photo & Video category
+- Processed build 1.0.10 submitted; automatic release after Apple approval
+- Private App Review contact saved; no app sign-in required
+- Four native Simulator screenshots uploaded: albums, grid, single viewer and paired viewers. Original generated artwork in 2D; no claim of spatial generation in Simulator
+- Privacy: Data Not Collected, published with owner confirmation
+- Age rating: 4+; high motion: No; third-party content: No
+- EU status: non-trader, based on owner's personal-hobby declaration

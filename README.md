@@ -28,7 +28,7 @@ xcodebuild -project SimpleVisionGallery.xcodeproj -scheme SimpleVisionGallery \
   -configuration Debug CODE_SIGNING_ALLOWED=NO build
 ```
 
-For a signed headset build, select your Apple Developer team in Xcode's Signing & Capabilities tab. The bundle identifier is currently `com.llucid.simplevisiongallery`; finalize it with the release team before App Store registration.
+For a signed headset build, select your Apple Developer team in Xcode's Signing & Capabilities tab. The bundle identifier is currently `com.llucid.simplevisiongallery`; it is registered under the release team.
 
 The simulator uses native image and video components with mono fixtures. Generated spatial scenes and stereo appearance need a headset check.
 
@@ -36,7 +36,7 @@ For the next headset round, see [the short dogfooding guide](docs/dogfooding.md)
 
 ## App Store
 
-Paid Developer Program signing is available for headset dogfooding. See [the release checklist](docs/app-store-release.md), [listing draft](docs/app-store-listing.md), and [privacy policy draft](docs/privacy-policy.md). Public URLs, account/team, final icon review, pricing and distribution signing must be settled before submission.
+Version 1.0.10 is submitted to Apple and Waiting for Review, with free worldwide availability and automatic release after approval. See [the release record](docs/app-store-release.md), [submitted listing](docs/app-store-listing.md), and [privacy policy](docs/privacy-policy.md). Public support and privacy pages are live; App Store availability is still pending.
 
 ## Origin
 
