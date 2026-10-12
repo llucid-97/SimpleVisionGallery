@@ -36,7 +36,7 @@ For the next headset round, see [the short dogfooding guide](docs/dogfooding.md)
 
 ## App Store
 
-Version 1.0.10 is submitted to Apple and Waiting for Review, with free worldwide availability and automatic release after approval. See [the release record](docs/app-store-release.md), [submitted listing](docs/app-store-listing.md), and [privacy policy](docs/privacy-policy.md). Public support and privacy pages are live; App Store availability is still pending.
+Version 1.0.10 is [live on the App Store](https://apps.apple.com/app/id6821613011), free to download, released 12 October 2026. See [the release record](docs/app-store-release.md), [store listing](docs/app-store-listing.md), and [privacy policy](docs/privacy-policy.md).
 
 ## Origin
 

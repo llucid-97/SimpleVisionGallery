@@ -1,7 +1,7 @@
 <!-- Target audience: humans -->
 # App Store release record
 
-**1.0.10 is Waiting for Review**, submitted 11 October 2026 at 13:50 BST. Automatic release after approval is selected. The app is free in all 175 countries and regions. Apple approval and public availability remain pending.
+**1.0.10 is live on the [App Store](https://apps.apple.com/app/id6821613011)**, released 12 October 2026 at 20:48:30 BST. Apple’s public pages and lookup data confirm version 1.0.10 and free pricing in the U.K. and U.S.; worldwide availability was configured for all 175 countries and regions. The owner reported approval, and automatic release completed.
 
 ## Release identity
 
@@ -40,4 +40,4 @@ Free Apps Agreement active; no paid agreement or banking setup needed for this f
 
 ## Follow-ups
 
-Watch for Apple's review result and confirm public availability after approval. Add Invite Friends using the verified live App Store link, a social page after launch and Donate after its route exists. The temporary support mailbox already has a mailto link; replace it when a dedicated mailbox is ready.
+The public support website now links to the live App Store listing, and the review heartbeat is paused. Pali dogfood version 1.0.11 contains subsequent fixes; it has not been submitted to the App Store. Add Invite Friends using the verified live App Store link, a social page after launch and Donate after its route exists. The temporary support mailbox already has a mailto link; replace it when a dedicated mailbox is ready.
