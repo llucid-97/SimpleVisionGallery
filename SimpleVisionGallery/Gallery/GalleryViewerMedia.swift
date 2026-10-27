@@ -39,6 +39,7 @@ final class GalleryViewerMedia {
     private var prepared: GalleryPreparedImage?
     private var preparedKey: String?
     private var isSceneActive = true
+    private var isPresentationCovered = false
     private var resumePlaybackWhenActive = false
 
     init() {
@@ -127,7 +128,7 @@ final class GalleryViewerMedia {
                     ) { [weak self, weak item] _ in
                         Task { @MainActor [weak self, weak item] in
                             guard let self, let item, self.generation == token,
-                                  self.videoLooping, self.isSceneActive,
+                                  self.videoLooping, self.isSceneActive, !self.isPresentationCovered,
                                   let player = self.player, player.currentItem === item,
                                   player.rate > 0 else { return }
                             // With .none, reaching the end does not pause the player.
@@ -146,7 +147,7 @@ final class GalleryViewerMedia {
                             self.error = message
                         }
                     }
-                    if self.isSceneActive { self.player?.play() }
+                    if self.isSceneActive && !self.isPresentationCovered { self.player?.play() }
                     else { self.resumePlaybackWhenActive = true }
                 } else {
                     let key = GallerySceneCache.key(for: asset)
@@ -322,11 +323,17 @@ final class GalleryViewerMedia {
         max(1, GalleryViewerPreferences.globalPrefetchPixelBudget / GallerySceneCache.shared.prefetchOwnerCount)
     }
 
-    /// Pause speculative work while a sheet covers the media, retaining completed
-    /// preparations so the current item can return without a second generation.
-    func pausePrefetch(_ paused: Bool) {
-        if paused { cancelPrefetchWork() }
-        else { startPrefetchIfNeeded() }
+    /// Hiding a raised surface must not cancel the next scene's conversion.
+    func setPresentationCovered(_ covered: Bool) {
+        guard covered != isPresentationCovered else { return }
+        isPresentationCovered = covered
+        if covered {
+            resumePlaybackWhenActive = resumePlaybackWhenActive || (player.map { $0.timeControlStatus != .paused } ?? false)
+            player?.pause()
+        } else if isSceneActive {
+            if resumePlaybackWhenActive { player?.play() }
+            resumePlaybackWhenActive = false
+        }
     }
 
     private func cancelPrefetchWork() {
@@ -344,12 +351,14 @@ final class GalleryViewerMedia {
         guard active != isSceneActive else { return }
         isSceneActive = active
         if active {
-            if resumePlaybackWhenActive { player?.play() }
-            resumePlaybackWhenActive = false
+            if !isPresentationCovered {
+                if resumePlaybackWhenActive { player?.play() }
+                resumePlaybackWhenActive = false
+            }
             startPrefetchIfNeeded()
         } else {
             cancelPrefetchWork()
-            resumePlaybackWhenActive = player.map { $0.timeControlStatus != .paused } ?? false
+            resumePlaybackWhenActive = resumePlaybackWhenActive || (player.map { $0.timeControlStatus != .paused } ?? false)
             player?.pause()
         }
     }
@@ -621,6 +630,13 @@ private final class GallerySceneCache {
                 || results.values.reduce(0, +) > GalleryViewerPreferences.globalPrefetchPixelBudget
         }
         while overBudget() {
+            // Visible images already have an owner. Evict unreserved LRU entries
+            // before discarding a playlist's prepared next scene.
+            let reserved = Set(retainedPrefetch.map { retainedResultKey($0.key, media: $0.value.media) })
+            if let oldest = entries.filter({ !reserved.contains($0.key) }).min(by: { $0.value.access < $1.value.access })?.key {
+                entries.removeValue(forKey: oldest)
+                continue
+            }
             if let oldest = retainedPrefetch.min(by: { $0.value.access < $1.value.access })?.key,
                let retained = retainedPrefetch[oldest] {
                 let resultKey = retainedResultKey(oldest, media: retained.media)

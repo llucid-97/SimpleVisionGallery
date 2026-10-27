@@ -560,14 +560,11 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 }
             }
             guard playlist.changeGeneration == generation else { continue }
-            var removed = IndexSet()
-            // A single integer pass handles arbitrarily sorted snapshots without asset materialization.
-            if let order = snapshot.displayOrder, !sourceRemovals.isEmpty {
-                for (displayIndex, sourceIndex) in order.enumerated() where sourceRemovals.contains(sourceIndex) {
-                    removed.insert(displayIndex)
-                }
-            } else { removed = sourceRemovals }
-            playlist.invalidateMetadata()
+            let removed = IndexSet(sourceRemovals.compactMap { playlist.displayIndex(forSource: $0) })
+            // Album membership changes do not change the remaining media.
+            if !details.hasIncrementalChanges || !(details.changedIndexes?.isEmpty ?? true) {
+                playlist.invalidateMetadata()
+            }
             applyRemovals(removed, to: playlist)
         }
     }

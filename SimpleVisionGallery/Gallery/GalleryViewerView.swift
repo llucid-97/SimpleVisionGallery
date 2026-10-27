@@ -217,10 +217,6 @@ private struct GalleryViewerPane: View {
     }
 
     private func refreshPrefetch() {
-        guard moveTarget == nil else {
-            media.pausePrefetch(true)
-            return
-        }
         guard scenePhase == .active else {
             return
         }
@@ -318,22 +314,14 @@ private struct GalleryViewerPane: View {
             if moveTarget?.sessionID == session.id { moveTarget = nil }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
-            media.setSceneActive(phase == .active && moveTarget == nil)
+            media.setSceneActive(phase == .active)
             refreshPrefetch()
         }
         .onChange(of: loopVideos, initial: true) { _, enabled in
             media.setVideoLooping(enabled)
         }
-        .onChange(of: moveTarget?.id) { _, targetID in
-            media.pausePrefetch(targetID != nil)
-            media.setSceneActive(scenePhase == .active && targetID == nil)
-            refreshPrefetch()
-        }
-        .onChange(of: pendingDelete?.assetID) { _, targetID in
-            if targetID == nil, !isDeletingFromPhotos {
-                media.setSceneActive(scenePhase == .active && moveTarget == nil)
-                media.pausePrefetch(moveTarget != nil)
-            }
+        .onChange(of: moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos, initial: true) { _, covered in
+            media.setPresentationCovered(covered)
         }
         .onChange(of: prefetchKeys) { _, _ in refreshPrefetch() }
         .onChange(of: session.currentAsset?.localIdentifier) { _, newID in
@@ -437,8 +425,7 @@ private struct GalleryViewerPane: View {
                 if let assetID = session.currentAsset?.localIdentifier {
                     actionError = nil
                     // Capture playback intent before dismantling the media surface.
-                    media.pausePrefetch(true)
-                    media.setSceneActive(false)
+                    media.setPresentationCovered(true)
                     moveTarget = GalleryViewerMoveTarget(sessionID: session.id, assetID: assetID)
                 }
             } label: { Label("Move", systemImage: "arrowshape.turn.up.right") }
@@ -449,8 +436,7 @@ private struct GalleryViewerPane: View {
                 guard let targetID = session.currentAsset?.localIdentifier else { return }
                 actionError = nil
                 if isInRecycleBin {
-                    media.pausePrefetch(true)
-                    media.setSceneActive(false)
+                    media.setPresentationCovered(true)
                     pendingDelete = GalleryViewerDeleteTarget(assetID: targetID)
                     return
                 }
@@ -487,15 +473,13 @@ private struct GalleryViewerPane: View {
 
     private func performPermanentDelete(assetID: String) {
         isDeletingFromPhotos = true
-        media.pausePrefetch(true)
-        media.setSceneActive(false)
+        media.setPresentationCovered(true)
         Task {
             do { try await store.recycle(session.id, expectedAssetID: assetID) }
             catch { actionError = error.localizedDescription }
             isDeletingFromPhotos = false
             pendingDelete = nil
-            media.setSceneActive(scenePhase == .active && moveTarget == nil)
-            media.pausePrefetch(moveTarget != nil)
+            media.setPresentationCovered(moveTarget != nil)
         }
     }
 }
