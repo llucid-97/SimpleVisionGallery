@@ -1,6 +1,8 @@
 <!-- Target audience: humans -->
 # Simple Vision Gallery — launch checklist
 
+Update **1.0.11** was submitted on **27 October 2026 at 15:51 GMT** and is Waiting for Review. See the [release record](app-store-release.md). The completed initial-launch checklist below remains historical.
+
 Version **1.0.10** is [live on the App Store](https://apps.apple.com/app/id6821613011), released **12 October 2026 at 20:48:30 BST**. The owner reported approval; Apple’s public listing and U.K./U.S. lookup data confirm free availability. All 175 countries and regions were configured for release.
 
 [App Review receipt](https://appstoreconnect.apple.com/apps/6821613011/distribution/reviewsubmissions/details/824ff151-b0d6-4416-b2d2-1029a8c54e81)

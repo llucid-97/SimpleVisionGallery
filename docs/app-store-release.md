@@ -1,6 +1,21 @@
 <!-- Target audience: humans -->
 # App Store release record
 
+## Update 1.0.11 — Waiting for Review
+
+Submitted **27 October 2026 at 15:51 GMT**, with automatic release after approval and no phased rollout. Public version 1.0.10 remains available while Apple reviews the update. Free pricing, availability, privacy answers, screenshots and review contact remain unchanged.
+
+This update improves the transition to the next prepared photo after a Recycle Bin move, keeps the Move sheet visible in side-by-side slideshows by hiding both raised surfaces, and adds vertical clearance around portrait media without changing window widths.
+
+- Source: `95732af3b5699271a97e73529c8f60c027f410b8`; version/build `1.0.11`.
+- Processed build: `60e63b6e-fce9-4037-92f3-0a9955ac1d5c`.
+- [App Review receipt](https://appstoreconnect.apple.com/apps/6821613011/distribution/reviewsubmissions/details/b264b037-f07b-47f8-8a6a-0fc1d2826f9c).
+- Release archive `job-12762`, official distribution export `job-12764`, and upload `job-12767` succeeded. Distribution signatures passed strict verification; both version fields and bundle identity were checked.
+- Code review found no blocker. Existing scheduler, mutation and 100,001-item index evidence was reviewed. Fresh native Simulator captures cover portrait viewers, both Move entry points and restored media. Six visual reviewers completed 36 checks; the parent recorded 22 absences, 7 inapplicable checks and 7 coverage gaps. This is not a full pixel-peeping pass. The disabled native Create and Move styling was verified unchanged from 1.0.10 and was not accepted as a new defect.
+- No new UI or app code was written for this submission; it packages the existing Pali 1.0.11 code. New headset stereo/gaze, long-content, live hit regions, hover/keyboard focus, reduced-motion and rapid animation-interruption checks were not performed. No fresh real-library mutation test was run for this packaging-only update.
+
+## Initial release 1.0.10
+
 **1.0.10 is live on the [App Store](https://apps.apple.com/app/id6821613011)**, released 12 October 2026 at 20:48:30 BST. Apple’s public pages and lookup data confirm version 1.0.10 and free pricing in the U.K. and U.S.; worldwide availability was configured for all 175 countries and regions. The owner reported approval, and automatic release completed.
 
 ## Release identity
@@ -40,4 +55,4 @@ Free Apps Agreement active; no paid agreement or banking setup needed for this f
 
 ## Follow-ups
 
-The public support website now links to the live App Store listing, and the review heartbeat is paused. Pali dogfood version 1.0.11 contains subsequent fixes; it has not been submitted to the App Store. Add Invite Friends using the verified live App Store link, a social page after launch and Donate after its route exists. The temporary support mailbox already has a mailto link; replace it when a dedicated mailbox is ready.
+The public support website links to the live App Store listing. The 1.0.11 review heartbeat runs weekly on Sunday at 21:00 Europe/London. After approval, verify public version 1.0.11 before pausing it. Pali already has the corresponding development build. Add Invite Friends using the verified live App Store link, a social page after launch and Donate after its route exists. The temporary support mailbox already has a mailto link; replace it when a dedicated mailbox is ready.
