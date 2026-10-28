@@ -5,6 +5,7 @@ struct GalleryAboutView: View {
     private let repository = URL(string: "https://github.com/llucid-97/simple-vision-gallery")!
     private let issues = URL(string: "https://github.com/llucid-97/simple-vision-gallery/issues")!
     private let support = URL(string: "mailto:agim.gershom@gmail.com")!
+    private let discord = URL(string: "https://discord.gg/KPtkqpV3Dd")!
 
     private var version: String {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -17,11 +18,11 @@ struct GalleryAboutView: View {
             List {
                 Section {
                     Text("Simple Vision Gallery").font(.title2.weight(.semibold))
-                    Text("Spatial photos, together.").foregroundStyle(.secondary)
+                    Text("Spatial scenes, together.").foregroundStyle(.secondary)
                     Text(version).monospacedDigit().accessibilityIdentifier("gallery-about-version")
                 }
                 Section("Frequently Asked Questions") {
-                    DisclosureGroup("How do spatial photos work?") {
+                    DisclosureGroup("How do spatial scenes work?") {
                         Text("Open a photo and Gallery prepares a spatial scene on your device. Use the photo button below it to switch between spatial and 2D views. Some images cannot be converted and remain available in 2D.")
                     }
                     DisclosureGroup("Can I open more than one photo?") {
@@ -41,6 +42,8 @@ struct GalleryAboutView: View {
                     }
                 }
                 Section("Project and Known Issues") {
+                    Link(destination: discord) { Label("Discord Feedback", systemImage: "bubble.left.and.bubble.right") }
+                        .accessibilityIdentifier("gallery-about-discord")
                     Link(destination: support) { Label("Email Support", systemImage: "envelope") }
                         .accessibilityIdentifier("gallery-about-support")
                     Link(destination: issues) { Label("Known Issues", systemImage: "ladybug") }
@@ -91,7 +94,7 @@ private struct GalleryPrivacyView: View {
             }
             Section("Contact") {
                 Link("Questions or privacy requests: agim.gershom@gmail.com", destination: URL(string: "mailto:agim.gershom@gmail.com")!)
-                Text("If you email support, the developer receives the information you include and uses it to respond.")
+                Text("If you contact support by email or Discord, the developer receives the information you include and uses it to respond.")
             }
         }
         .navigationTitle("Privacy Policy")
