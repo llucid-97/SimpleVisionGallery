@@ -16,3 +16,4 @@ Native image/video surfaces need content-local placement and explicit 540pt Real
 | Agent | Status | Workspace | Session ID | Updated | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Sky Surveyor | active | workspaces/sky-surveyor/ | 01a107b5-7d16-7fb3-8d84-619ad7126389 | 2026-10-11 | Owns standalone gallery dogfooding fixes and latest-main Pali delivery. |
+| Sieve | complete | workspaces/sieve/delete-feedback/ | 10f20ccf-ebdd-4061-89c7-739d08a18556 | 2026-10-29 | Immediate delete feedback and asynchronous PhotoKit work. |

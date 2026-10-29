@@ -338,27 +338,11 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         await acquireMutation()
         defer { releaseMutation() }
         guard let liveSession = sessions[id], liveSession.currentAsset?.localIdentifier == asset.localIdentifier else { return }
-        let source: PHAssetCollection?
-        if sourceAlbum.virtualScope == nil {
-            guard let realSource = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [sourceID], options: nil).firstObject,
-                  realSource.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
-            source = realSource
-        } else {
-            source = nil
-        }
-
-        if recycling && (sourceAlbum.virtualScope == .recycleBin || (source.map { GalleryRecycleBin.isRecycleBinTitle($0.localizedTitle) } ?? false)) {
-            guard let source else { throw ViewerMutationError.assetNoLongerInBin }
-            try await deleteFromRecycleBin(asset, source: source)
-            removeFromAllAlbums(assets: [asset])
-            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], deletedAssetIDs: [asset.localIdentifier])
-            await refreshAlbums()
-            return
-        }
-
-        if recycling {
+        if recycling && sourceAlbum.virtualScope != .recycleBin && !GalleryRecycleBin.isRecycleBinTitle(sourceAlbum.title) {
             // Show the already-prepared successor as soon as the bin action starts.
             // Membership still changes only after Photos commits the transaction.
+            guard sourceAlbum.virtualScope != nil || sourceAlbum.collection != nil else { throw ViewerMutationError.sourceNotEditable }
+            let source = sourceAlbum.virtualScope == nil ? sourceAlbum.collection : nil
             let originalCursor = liveSession.cursor
             liveSession.setCursor(liveSession.playlist.index.cursorAfterRemoving(originalCursor))
             let handoffGeneration = liveSession.cursorGeneration
@@ -378,6 +362,24 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
                 recycling: true, removedFromSource: source != nil)
             if let source { removeFromAlbum(source.localIdentifier, assets: [asset]) }
+            await refreshAlbums()
+            return
+        }
+
+        let source: PHAssetCollection?
+        if sourceAlbum.virtualScope == nil {
+            guard let realSource = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [sourceID], options: nil).firstObject,
+                  realSource.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
+            source = realSource
+        } else {
+            source = nil
+        }
+
+        if recycling && (sourceAlbum.virtualScope == .recycleBin || (source.map { GalleryRecycleBin.isRecycleBinTitle($0.localizedTitle) } ?? false)) {
+            guard let source else { throw ViewerMutationError.assetNoLongerInBin }
+            try await deleteFromRecycleBin(asset, source: source)
+            removeFromAllAlbums(assets: [asset])
+            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], deletedAssetIDs: [asset.localIdentifier])
             await refreshAlbums()
             return
         }

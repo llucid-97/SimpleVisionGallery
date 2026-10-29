@@ -5,19 +5,19 @@
 enum GalleryRecycleBin {
     private static var moving = false
     private static var waiters: [CheckedContinuation<Void, Never>] = []
-    static let title = "Recycle Bin"
+    nonisolated static let title = "Recycle Bin"
 
     static func isRecycleBin(_ album: GalleryAlbum) -> Bool {
         isRecycleBinTitle(album.title)
     }
 
-    static func isRecycleBinTitle(_ title: String?) -> Bool {
+    nonisolated static func isRecycleBinTitle(_ title: String?) -> Bool {
         guard let title else { return false }
         return title.trimmingCharacters(in: .whitespacesAndNewlines)
             .caseInsensitiveCompare(Self.title) == .orderedSame
     }
 
-    static func existingCollection() -> PHAssetCollection? {
+    nonisolated static func existingCollection() -> PHAssetCollection? {
         let albums = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
         var firstMatching: PHAssetCollection?
         for index in 0..<albums.count {
@@ -41,6 +41,12 @@ enum GalleryRecycleBin {
             if waiters.isEmpty { moving = false }
             else { waiters.removeFirst().resume() }
         }
+        return try await Task.detached {
+            try await performMove(assets, from: source)
+        }.value
+    }
+
+    private nonisolated static func performMove(_ assets: [PHAsset], from source: PHAssetCollection?) async throws -> String {
         // Collections are immutable snapshots. Resolve current title/editability
         // so a rename cannot leave recycle behavior attached to the old name.
         let currentSource: PHAssetCollection?
@@ -81,7 +87,7 @@ enum GalleryRecycleBin {
     }
 }
 
-private enum GalleryRecycleBinError: LocalizedError {
+private nonisolated enum GalleryRecycleBinError: LocalizedError {
     case noAssets, alreadyInBin, sourceNotEditable, binNotEditable, changeUnavailable
 
     var errorDescription: String? {

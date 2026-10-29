@@ -186,6 +186,7 @@ private struct GalleryViewerPane: View {
     @State private var actionError: String?
     @State private var pendingDelete: GalleryViewerDeleteTarget?
     @State private var isDeletingFromPhotos = false
+    @State private var isRecycling = false
     @State private var loadedKey: GalleryViewerLoadKey?
     @AppStorage(GalleryViewerPreferences.prefetchWindowKey)
     private var prefetchWindow = GalleryViewerPreferences.defaultPrefetchWindow
@@ -379,7 +380,9 @@ private struct GalleryViewerPane: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 52) {
+        // Bind a tap to the displayed photo without a fresh Photos lookup on press.
+        let displayedAssetID = session.currentAsset?.localIdentifier
+        return HStack(spacing: 52) {
             Button {
                 actionError = nil
                 store.previous(session.id)
@@ -433,22 +436,30 @@ private struct GalleryViewerPane: View {
             .accessibilityIdentifier("gallery-viewer-move")
 
             Button {
-                guard let targetID = session.currentAsset?.localIdentifier else { return }
+                guard !isRecycling else { return }
+                guard let targetID = displayedAssetID else { return }
                 actionError = nil
                 if isInRecycleBin {
                     media.setPresentationCovered(true)
                     pendingDelete = GalleryViewerDeleteTarget(assetID: targetID)
                     return
                 }
+                isRecycling = true
                 Task {
                     do { try await store.recycle(session.id, expectedAssetID: targetID) }
                     catch { actionError = error.localizedDescription }
+                    isRecycling = false
                 }
             } label: {
                 Label(isInRecycleBin ? "Delete Permanently" : "Move to Recycle Bin",
                     systemImage: isInRecycleBin ? "trash.slash" : "trash")
+                    .opacity(isRecycling ? 0 : 1)
+                    .overlay {
+                        if isRecycling { ProgressView().controlSize(.small).accessibilityHidden(true) }
+                    }
             }
-            .disabled(session.currentAsset == nil || store.isPerformingOperation)
+            .disabled(displayedAssetID == nil || store.isPerformingOperation || isRecycling)
+            .accessibilityLabel(isRecycling ? "Moving to Recycle Bin" : (isInRecycleBin ? "Delete Permanently" : "Move to Recycle Bin"))
             .accessibilityIdentifier("gallery-viewer-recycle")
             .accessibilityHint(isInRecycleBin ? "Permanently deletes this item from Photos after confirmation." : "Moves this item to the Recycle Bin album.")
 
