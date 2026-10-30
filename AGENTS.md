@@ -9,6 +9,9 @@ Standalone visionOS photo gallery. Ordinary supported photos become spatial scen
 ## Coordination
 Use one owned checkout per top-level agent; additional worktrees belong under that agent's workspace. Never overwrite another agent's uncommitted work. Main is the integration branch; the user has authorized pushes and made this repository public on 11 October 2026. Build/validate before pushing. Heavy builds and simulator runs must use agent_queue_mcp. Mutable plans live outside the repository.
 
+## Feature updates
+For feature updates, use the `full-send` skill (`~/.codex/skills/full-send/SKILL.md`) to carry the work through implementation, checks, feedback, and integration. Follow this repository's main-branch workflow and keep device privacy and user-data rules in force.
+
 ## Rendering and scale
 Native image/video surfaces need content-local placement and explicit 540pt RealityView depth; a surrounding 2D GeometryReader otherwise collapses depth and hides pixels behind the window. Keep 160pt vertical media clearance (included in the window height budget) and 52pt lower button gaps, fixed window widths and resizable heights. Paired native surfaces use fixed inward ±10-degree angles matching the backing; initialize on attachment and never add continuous billboards or reset orientation on layout/playback updates. These angles approximate the initial centered viewing position, not a sampled head pose. Test real ImagePresentationComponent/VideoPlayerComponent mono fixtures in Simulator; generated spatial scenes/stereo require headset checks. Avoid whole-library materialization: lazy PHFetchResult, paged assets, bounded foreground/lookahead generation (default5 ahead/2 behind, shared20-result/80M-pixel speculative cache and2 preparation slots).
 
