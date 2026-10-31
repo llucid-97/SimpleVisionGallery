@@ -1627,7 +1627,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         selectedIndexes.insert(integersIn: lowerBound..<(upperBound + 1))
     }
 
-    private func selectedAssets() throws -> [PHAsset] {
+    func selectedAssets() throws -> [PHAsset] {
         guard assetFetchResult != nil else {
             throw GalleryOperationError.noAlbumSelected
         }

@@ -184,6 +184,7 @@ private struct GalleryViewerPane: View {
     @State private var media = GalleryViewerMedia()
     @State private var spatialEnabled = true
     @State private var actionError: String?
+    @StateObject private var sharing = GalleryShareController()
     @State private var pendingDelete: GalleryViewerDeleteTarget?
     @State private var isDeletingFromPhotos = false
     @State private var isRecycling = false
@@ -246,6 +247,17 @@ private struct GalleryViewerPane: View {
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Menu {
+                    Button("Share", systemImage: "square.and.arrow.up") {
+                        if let asset = session.currentAsset { sharing.start(assets: [asset]) }
+                    }
+                    .disabled(session.currentAsset == nil || sharing.isPreparing)
+                } label: {
+                    Label("More slideshow actions", systemImage: "ellipsis")
+                }
+                .labelStyle(.iconOnly)
+                .galleryHoverLabel("More")
+                .accessibilityIdentifier("gallery-viewer-more")
                 Button(action: duplicate) {
                     Label("Open another slideshow", systemImage: "rectangle.on.rectangle")
                 }
@@ -294,6 +306,7 @@ private struct GalleryViewerPane: View {
         }
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
+        .gallerySharing(sharing)
         .ornament(attachmentAnchor: .scene(ornamentAnchor), contentAlignment: .top) {
             controls.padding(12).glassBackgroundEffect()
         }

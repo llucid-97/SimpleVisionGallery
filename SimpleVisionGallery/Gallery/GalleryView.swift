@@ -7,6 +7,7 @@
 
 @preconcurrency import Photos
 import SwiftUI
+import Combine
 
 private enum GalleryAlbumVisibility: String, CaseIterable, Identifiable {
     case visible
@@ -55,6 +56,7 @@ struct GalleryView: View {
     @State private var isSelectingAlbums = false
     @State private var selectedAlbumIDs: Set<String> = []
     @State private var deletionReview: GalleryDeletionPlan?
+    @StateObject private var sharing = GalleryShareController()
     @AppStorage("gallery.thumbnailSize.v1") private var thumbnailSize = 112.0
     #if os(visionOS)
         @Environment(\.openWindow) private var openWindow
@@ -75,6 +77,7 @@ struct GalleryView: View {
         .sheet(isPresented: $showingMoveSheet) {
             GalleryMoveSheet(manager: manager, isPresented: $showingMoveSheet)
         }
+        .gallerySharing(sharing)
         .preferredColorScheme(.dark)
         .tint(GalleryAppearance.accent(for: accentRGB))
         .sheet(isPresented: $showingSettings) {
@@ -651,6 +654,11 @@ struct GalleryView: View {
 
     private var selectionMenuOptions: some View {
         Group {
+            Button("Share", systemImage: "square.and.arrow.up") {
+                do { sharing.start(assets: try manager.selectedAssets()) }
+                catch { sharing.error = error.localizedDescription }
+            }
+            .disabled(sharing.isPreparing)
             Button("Clear Selection", systemImage: "xmark.circle") {
                 manager.clearSelection()
             }
@@ -1874,3 +1882,144 @@ private struct GalleryDestructiveButtonStyle: ButtonStyle {
 #Preview {
     GalleryView(isPresented: .constant(true))
 }
+
+#if os(visionOS)
+import UIKit
+
+/// A share owns its temporary files until the system activity sheet is dismissed.
+private struct GallerySharePayload: Identifiable {
+    let id = UUID()
+    let directory: URL
+    let files: [URL]
+}
+
+@MainActor
+final class GalleryShareController: ObservableObject {
+    @Published fileprivate var payload: GallerySharePayload?
+    @Published var error: String?
+    @Published private(set) var isPreparing = false
+    @Published private(set) var isCancelling = false
+    private var preparation: Task<Void, Never>?
+    private var activeDirectory: URL?
+
+    func start(assets: [PHAsset]) {
+        guard !assets.isEmpty, !isPreparing, payload == nil else { return }
+        isPreparing = true
+        isCancelling = false
+        error = nil
+        // The array holds the exact assets selected at the time the button was pressed.
+        preparation = Task {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("GalleryShare-\(UUID().uuidString)", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                var files: [URL] = []
+                for asset in assets {
+                    try Task.checkCancellation()
+                    let resources = PHAssetResource.assetResources(for: asset).filter {
+                        switch $0.type {
+                        case .photo, .alternatePhoto, .video, .pairedVideo: return true
+                        default: return false
+                        }
+                    }
+                    guard !resources.isEmpty else {
+                        throw NSError(domain: "GalleryShare", code: 1, userInfo: [NSLocalizedDescriptionKey: "An original file is not available for one of the selected items."])
+                    }
+                    for resource in resources {
+                        try Task.checkCancellation()
+                        let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+                        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                        let name = (resource.originalFilename as NSString).lastPathComponent
+                        let destination = folder.appendingPathComponent(name.isEmpty ? UUID().uuidString : name)
+                        let options = PHAssetResourceRequestOptions()
+                        options.isNetworkAccessAllowed = true
+                        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                            PHAssetResourceManager.default().writeData(for: resource, toFile: destination, options: options) { error in
+                                if let error { continuation.resume(throwing: error) }
+                                else { continuation.resume() }
+                            }
+                        }
+                        try Task.checkCancellation()
+                        files.append(destination)
+                    }
+                }
+                activeDirectory = directory
+                payload = GallerySharePayload(directory: directory, files: files)
+            } catch {
+                try? FileManager.default.removeItem(at: directory)
+                self.error = Task.isCancelled ? "Sharing was cancelled." : "Could not prepare the original files: \(error.localizedDescription)"
+            }
+            isPreparing = false
+            isCancelling = false
+            preparation = nil
+        }
+    }
+
+    func cancel() {
+        isCancelling = true
+        preparation?.cancel()
+    }
+
+    func tearDown() {
+        preparation?.cancel()
+        if !isPreparing { finish() }
+    }
+
+    fileprivate func finish() {
+        if let directory = activeDirectory { try? FileManager.default.removeItem(at: directory) }
+        activeDirectory = nil
+        payload = nil
+    }
+}
+
+private struct GalleryActivitySheet: UIViewControllerRepresentable {
+    let files: [URL]
+    let finish: (Error?) -> Void
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: files, applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, error in finish(error) }
+        return controller
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+private struct GallerySharingModifier: ViewModifier {
+    @ObservedObject var sharing: GalleryShareController
+    func body(content: Content) -> some View {
+        content
+            .onDisappear { sharing.tearDown() }
+            .sheet(item: $sharing.payload, onDismiss: { sharing.finish() }) { payload in
+                GalleryActivitySheet(files: payload.files) { error in
+                    Task { @MainActor in
+                        sharing.finish()
+                        if let error { sharing.error = "Sharing failed: \(error.localizedDescription)" }
+                    }
+                }
+            }
+            .overlay {
+                if sharing.isPreparing {
+                    VStack(spacing: 12) {
+                        ProgressView(sharing.isCancelling ? "Cancelling…" : "Preparing original files…")
+                        Button("Cancel") { sharing.cancel() }
+                            .disabled(sharing.isCancelling)
+                    }
+                    .padding(24)
+                    .glassBackgroundEffect()
+                }
+            }
+            .alert("Sharing", isPresented: Binding(
+                get: { sharing.error != nil },
+                set: { if !$0 { sharing.error = nil } }
+            )) {
+                Button("OK", role: .cancel) { sharing.error = nil }
+            } message: { Text(sharing.error ?? "") }
+    }
+}
+
+extension View {
+    func gallerySharing(_ sharing: GalleryShareController) -> some View {
+        modifier(GallerySharingModifier(sharing: sharing))
+    }
+}
+#endif

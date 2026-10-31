@@ -5,6 +5,8 @@ Open **Simple Vision Gallery** and grant Photos access. This is a separate app, 
 
 Try these during normal use:
 
+- Select several items in the grid, open the selection menu and choose Share. In a slideshow, use the top-bar More menu, then Share. These actions prepare original media files for the system share sheet; generated depth scenes are not exported.
+
 - Move a photo, then check the original album in Photos. The same item should be gone; a separate, identical-looking copy stays separate.
 - Rename an album by pinching and holding its card. Try a small typo in album search and in the move picker. The three latest move destinations should appear first.
 - Swipe forward and back, then move the current photo. The default buffer is five ahead and two behind; both sizes can be changed in Settings.
