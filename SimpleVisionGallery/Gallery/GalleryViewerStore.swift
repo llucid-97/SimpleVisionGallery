@@ -240,9 +240,10 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         var result: [GalleryAlbum] = albums.filter { $0.virtualScope != nil }
         for index in 0..<fetch.count {
             let collection = fetch.object(at: index)
+            // Move destinations need metadata, not per-album media counts.
             result.append(GalleryAlbum(id: collection.localIdentifier,
                 title: collection.localizedTitle ?? "Album", assetCount: 0,
-                collection: collection, coverAsset: nil))
+                collection: collection, coverAsset: nil, photoCount: 0, videoCount: 0))
             if index.isMultiple(of: 128) {
                 await Task.yield()
                 guard albumRefreshGeneration == generation else { return }
