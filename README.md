@@ -34,6 +34,14 @@ The simulator uses native image and video components with mono fixtures. Generat
 
 For the next headset round, see [the short dogfooding guide](docs/dogfooding.md).
 
+## Testing
+
+Run the viewer album refresh check on macOS. It needs Swift, but no simulator or Photos access:
+
+```sh
+python3 tests/check_viewer_album_refresh.py
+```
+
 ## App Store
 
 Version 1.0.10 is [live on the App Store](https://apps.apple.com/app/id6821613011), free to download, released 12 October 2026. Version 1.0.11 was submitted for review on 27 October, with smoother slideshow handoff and clearer portrait and side-by-side controls. See [the release record](docs/app-store-release.md), [store listing](docs/app-store-listing.md), and [privacy policy](docs/privacy-policy.md).
