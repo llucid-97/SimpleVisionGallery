@@ -16,12 +16,15 @@ struct GalleryDesignContext {
     let openAlbum: (GalleryAlbum) -> Void
     let renameAlbum: (GalleryAlbum) -> Void
     let toggleVisibility: (GalleryAlbum) -> Void
+    let moveAlbumToVault: (GalleryAlbum) -> Void
+    let restoreAlbumFromVault: (GalleryAlbum) -> Void
     let selectSection: (GalleryLibrarySection) -> Void
     let reorderAlbumID: String?
     let beginReordering: (GalleryAlbum) -> Void
     let cancelReordering: () -> Void
     let reorderAlbum: (String, String, Bool) -> Void
     let showSettings: () -> Void
+    let showVault: () -> Void
 
     var hasOpenAlbum: Bool { manager.selectedAlbum != nil }
 }
@@ -31,8 +34,18 @@ struct GalleryDesignAlbumActions: View {
     let album: GalleryAlbum
     var body: some View {
         Button("Sort", systemImage: "arrow.up.arrow.down") { context.beginReordering(album) }
+        if context.manager.hasVaultRecords(in: album) {
+            Button("Restore Private Items to Photos", systemImage: "lock.open") {
+                context.restoreAlbumFromVault(album)
+            }
+            .disabled(GalleryVaultService.shared.isBusy)
+        }
         if album.collection != nil {
-            Button(context.manager.isAlbumHidden(album) ? "Unhide Album" : "Hide Album",
+            Button("Move Album to Private Vault", systemImage: "lock") {
+                context.moveAlbumToVault(album)
+            }
+            .disabled(context.manager.isPerformingOperation || GalleryVaultService.shared.isBusy)
+            Button(context.manager.isAlbumHidden(album) ? "Show Album in List" : "Hide Album from List",
                 systemImage: context.manager.isAlbumHidden(album) ? "eye" : "eye.slash") {
                 context.toggleVisibility(album)
             }

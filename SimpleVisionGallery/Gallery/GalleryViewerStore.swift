@@ -53,6 +53,15 @@ struct GalleryViewerSnapshot {
     let album: GalleryAlbum
     let fetch: PHFetchResult<PHAsset>
     let displayOrder: [Int]?
+    var vaultRecords: [GalleryVaultRecord] = []
+    var mediaFilter: GalleryMediaFilter = .all
+    var mediaSearch: String = ""
+    var vaultSort: GalleryAssetSortMode = .photosOrder
+    var vaultSortAscending: Bool = true
+    var vaultShuffleSeed = UUID()
+
+    var nativeCount: Int { displayOrder?.count ?? fetch.count }
+    var count: Int { nativeCount + vaultRecords.count }
 }
 
 @MainActor
@@ -60,7 +69,8 @@ fileprivate final class GalleryViewerPlaylist {
     var snapshot: GalleryViewerSnapshot
     var index: GalleryPlaylistIndex
     private var needsFreshMetadata = false
-    private let displayIndexBySource: [Int: Int]?
+    private var displayIndexBySource: [Int: Int]?
+    private(set) var vaultPositionByID: [UUID: Int]
     private let metadataCache: NSCache<NSString, PHAsset> = {
         let cache = NSCache<NSString, PHAsset>()
         cache.countLimit = 16
@@ -70,18 +80,51 @@ fileprivate final class GalleryViewerPlaylist {
 
     init(_ snapshot: GalleryViewerSnapshot) {
         self.snapshot = snapshot
-        index = GalleryPlaylistIndex(originalCount: snapshot.displayOrder?.count ?? snapshot.fetch.count)
+        index = GalleryPlaylistIndex(originalCount: snapshot.count)
+        vaultPositionByID = Dictionary(uniqueKeysWithValues: snapshot.vaultRecords.enumerated().map {
+            ($1.id, snapshot.nativeCount + $0)
+        })
         displayIndexBySource = snapshot.displayOrder.map { order in
             Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
         }
     }
 
-    func displayIndex(forSource sourceIndex: Int) -> Int? {
-        if let displayIndexBySource { return displayIndexBySource[sourceIndex] }
-        return sourceIndex < index.originalCount ? sourceIndex : nil
+    func dropNativeFetch(_ emptyFetch: PHFetchResult<PHAsset>, album: GalleryAlbum) {
+        let old = snapshot
+        snapshot = GalleryViewerSnapshot(id: old.id, album: album, fetch: emptyFetch,
+            displayOrder: nil, vaultRecords: old.vaultRecords, mediaFilter: old.mediaFilter,
+            mediaSearch: old.mediaSearch, vaultSort: old.vaultSort,
+            vaultSortAscending: old.vaultSortAscending, vaultShuffleSeed: old.vaultShuffleSeed)
+        displayIndexBySource = nil
+        metadataCache.removeAllObjects()
+        needsFreshMetadata = false
+        setVaultRecords(snapshot.vaultRecords)
+        changeGeneration = UUID()
     }
 
-    func asset(at displayIndex: Int) -> PHAsset {
+    func setVaultRecords(_ records: [GalleryVaultRecord]) {
+        snapshot.vaultRecords = records
+        vaultPositionByID = Dictionary(uniqueKeysWithValues: records.enumerated().map {
+            ($1.id, snapshot.nativeCount + $0)
+        })
+    }
+
+    func displayIndex(forSource sourceIndex: Int) -> Int? {
+        if let displayIndexBySource { return displayIndexBySource[sourceIndex] }
+        return sourceIndex < snapshot.nativeCount ? sourceIndex : nil
+    }
+
+    func item(at displayIndex: Int) -> GalleryMediaItem? {
+        guard displayIndex >= 0, displayIndex < index.originalCount, !index.removed.contains(displayIndex) else { return nil }
+        if displayIndex >= snapshot.nativeCount {
+            let vaultIndex = displayIndex - snapshot.nativeCount
+            guard snapshot.vaultRecords.indices.contains(vaultIndex) else { return nil }
+            return .vault(snapshot.vaultRecords[vaultIndex])
+        }
+        return .photos(asset(at: displayIndex))
+    }
+
+    private func asset(at displayIndex: Int) -> PHAsset {
         let sourceIndex = snapshot.displayOrder?[displayIndex] ?? displayIndex
         let original = snapshot.fetch.object(at: sourceIndex)
         guard needsFreshMetadata else { return original }
@@ -124,45 +167,38 @@ final class GalleryViewerSession: ObservableObject, Identifiable {
         let album = playlist.snapshot.album
         return album.virtualScope == nil && album.collection?.canPerform(.removeContent) == true
     }
-    var currentAsset: PHAsset? { cursor.map { playlist.asset(at: $0) } }
-    /// Resolve only the next live item in the frozen display order; never scan the album.
-    var nextAsset: PHAsset? {
+    var currentItem: GalleryMediaItem? { cursor.flatMap { playlist.item(at: $0) } }
+    var currentAsset: PHAsset? { currentItem?.photosAsset }
+    var nextItem: GalleryMediaItem? {
         guard let cursor,
               let next = playlist.index.index(at: playlist.index.position(of: cursor) + 1)
         else { return nil }
-        return playlist.asset(at: next)
+        return playlist.item(at: next)
     }
-    /// Resolve only the requested lookahead, preserving order and stopping at the last item.
-    func upcomingAssets(limit: Int) -> [PHAsset] {
+    var nextAsset: PHAsset? { nextItem?.photosAsset }
+
+    func upcomingItems(limit: Int) -> [GalleryMediaItem] {
         guard let cursor, limit > 0 else { return [] }
         let currentPosition = playlist.index.position(of: cursor)
         let available = min(limit, playlist.index.count - currentPosition - 1)
         guard available > 0 else { return [] }
-        var assets: [PHAsset] = []
-        assets.reserveCapacity(available)
-        for offset in 1...available {
-            if let next = playlist.index.index(at: currentPosition + offset) {
-                assets.append(playlist.asset(at: next))
-            }
+        return (1...available).compactMap { offset in
+            playlist.index.index(at: currentPosition + offset).flatMap { playlist.item(at: $0) }
         }
-        return assets
     }
 
-    /// Resolve a bounded lookbehind in nearest-first order without scanning older pages.
-    func precedingAssets(limit: Int) -> [PHAsset] {
+    func precedingItems(limit: Int) -> [GalleryMediaItem] {
         guard let cursor, limit > 0 else { return [] }
         let currentPosition = playlist.index.position(of: cursor)
         let available = min(limit, currentPosition)
         guard available > 0 else { return [] }
-        var assets: [PHAsset] = []
-        assets.reserveCapacity(available)
-        for offset in 1...available {
-            if let previous = playlist.index.index(at: currentPosition - offset) {
-                assets.append(playlist.asset(at: previous))
-            }
+        return (1...available).compactMap { offset in
+            playlist.index.index(at: currentPosition - offset).flatMap { playlist.item(at: $0) }
         }
-        return assets
     }
+
+    func upcomingAssets(limit: Int) -> [PHAsset] { upcomingItems(limit: limit).compactMap(\.photosAsset) }
+    func precedingAssets(limit: Int) -> [PHAsset] { precedingItems(limit: limit).compactMap(\.photosAsset) }
 
     var count: Int { playlist.index.count }
     var position: Int { cursor.map { playlist.index.position(of: $0) + 1 } ?? 0 }
@@ -180,10 +216,35 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
     private var albumRefreshGeneration = UUID()
     private var membershipSubscription: AnyCancellable?
+    private var vaultSubscription: AnyCancellable?
+    private var vaultTransferSubscription: AnyCancellable?
+    private var vaultRestoreSubscription: AnyCancellable?
+    private var restoredVaultIDs: Set<UUID> = []
 
     private override init() {
         super.init()
         PHPhotoLibrary.shared().register(self)
+        vaultTransferSubscription = NotificationCenter.default.publisher(for: .galleryVaultDidHideItems)
+            .sink { [weak self] notification in
+                guard let ids = notification.userInfo?["sourceIdentifierSet"] as? Set<String>, !ids.isEmpty else { return }
+                self?.removeTransferredIDs(ids)
+            }
+        vaultRestoreSubscription = NotificationCenter.default.publisher(for: .galleryVaultDidRestoreItem)
+            .sink { [weak self] notification in
+                guard let self, let record = notification.userInfo?["record"] as? GalleryVaultRecord else { return }
+                self.restoredVaultIDs.insert(record.id)
+                for playlist in self.playlists.values {
+                    guard let position = playlist.vaultPositionByID[record.id] else { continue }
+                    self.applyRemovals(IndexSet(integer: position), to: playlist)
+                }
+            }
+        vaultSubscription = GalleryVaultService.shared.$records.combineLatest(GalleryVaultService.shared.$isUnlocked)
+            .sink { [weak self] records, unlocked in
+                guard let self else { return }
+                let visibleRecords = unlocked ? records : []
+                self.restoredVaultIDs.formIntersection(Set(visibleRecords.map(\.id)))
+                self.updateVaultPlaylists(visibleRecords)
+            }
         membershipSubscription = GalleryVirtualLibraryIndex.shared.$revision.dropFirst().sink { [weak self] _ in
             guard let self else { return }
             let index = GalleryVirtualLibraryIndex.shared
@@ -194,7 +255,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
 
     func createSession(from manager: GalleryManager, at displayIndex: Int) -> UUID? {
         guard let snapshot = manager.viewerSnapshot(),
-              displayIndex >= 0, displayIndex < (snapshot.displayOrder?.count ?? snapshot.fetch.count) else { return nil }
+              displayIndex >= 0, displayIndex < snapshot.count else { return nil }
         let playlist = playlists[snapshot.id] ?? GalleryViewerPlaylist(snapshot)
         playlists[snapshot.id] = playlist
         guard !playlist.index.removed.contains(displayIndex) else { return nil }
@@ -205,6 +266,43 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     }
 
     func session(_ id: UUID) -> GalleryViewerSession? { sessions[id] }
+
+    /// Rebind surviving unlocked vault sessions to an empty Photos fetch.
+    func revokePhotoAccess() {
+        let emptyFetch = PHAsset.fetchAssets(withLocalIdentifiers: [], options: nil)
+        for playlist in Array(playlists.values) {
+            let old = playlist.snapshot
+            let oldNativeCount = old.nativeCount
+            let oldRemoved = playlist.index.removed
+            let remaining = old.vaultRecords.indices.filter { !oldRemoved.contains(oldNativeCount + $0) }
+            if remaining.isEmpty {
+                objectWillChange.send()
+                for session in sessions.values.filter({ $0.playlist === playlist }) {
+                    sessions.removeValue(forKey: session.id)
+                }
+                playlists.removeValue(forKey: old.id)
+                continue
+            }
+            let album = old.album
+            let privateTitle = old.vaultRecords.lazy.flatMap(\.albums).first(where: { $0.id == album.id })?.title
+            let reboundAlbum = GalleryAlbum(id: album.id, title: privateTitle ?? album.title,
+                assetCount: 0, collection: nil, coverAsset: nil, virtualScope: album.virtualScope,
+                photoCount: 0, videoCount: 0)
+            let cursors = sessions.values.filter { $0.playlist === playlist }.map { ($0, $0.cursor) }
+            playlist.dropNativeFetch(emptyFetch, album: reboundAlbum)
+            var index = GalleryPlaylistIndex(originalCount: old.vaultRecords.count)
+            index.remove(IndexSet(old.vaultRecords.indices.filter { oldRemoved.contains(oldNativeCount + $0) }))
+            playlist.index = index
+            objectWillChange.send()
+            for (session, cursor) in cursors {
+                let oldVaultOffset = cursor.flatMap { $0 >= oldNativeCount ? $0 - oldNativeCount : nil }
+                let desired = oldVaultOffset ?? index.index(at: 0)
+                session.setCursor(index.survivingCursor(desired))
+                session.revision += 1
+            }
+        }
+    }
+
 
     func duplicateSession(_ id: UUID) -> UUID? {
         guard let original = sessions[id], let cursor = original.cursor else { return nil }
@@ -258,7 +356,13 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 id: playlist.snapshot.id,
                 album: refreshed,
                 fetch: playlist.snapshot.fetch,
-                displayOrder: playlist.snapshot.displayOrder
+                displayOrder: playlist.snapshot.displayOrder,
+                vaultRecords: playlist.snapshot.vaultRecords,
+                mediaFilter: playlist.snapshot.mediaFilter,
+                mediaSearch: playlist.snapshot.mediaSearch,
+                vaultSort: playlist.snapshot.vaultSort,
+                vaultSortAscending: playlist.snapshot.vaultSortAscending,
+                vaultShuffleSeed: playlist.snapshot.vaultShuffleSeed
             )
             notify(playlist)
         }
@@ -276,7 +380,13 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 id: playlist.snapshot.id,
                 album: renamed,
                 fetch: playlist.snapshot.fetch,
-                displayOrder: playlist.snapshot.displayOrder
+                displayOrder: playlist.snapshot.displayOrder,
+                vaultRecords: playlist.snapshot.vaultRecords,
+                mediaFilter: playlist.snapshot.mediaFilter,
+                mediaSearch: playlist.snapshot.mediaSearch,
+                vaultSort: playlist.snapshot.vaultSort,
+                vaultSortAscending: playlist.snapshot.vaultSortAscending,
+                vaultShuffleSeed: playlist.snapshot.vaultShuffleSeed
             )
             notify(playlist)
         }
@@ -507,6 +617,107 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         }
     }
 
+    /// Remove displayed and nearby items immediately, then scan frozen native fetches in bounded batches.
+    /// Deleted identifiers can no longer be fetched from the live library to resolve their old indexes.
+    private func removeTransferredIDs(_ identifiers: Set<String>) {
+        for playlist in Array(playlists.values) {
+            let snapshot = playlist.snapshot
+            let nativeCount = snapshot.nativeCount
+            guard nativeCount > 0 else { continue }
+            var immediate = IndexSet()
+            for session in sessions.values where session.playlist === playlist {
+                guard let cursor = session.cursor else { continue }
+                let position = playlist.index.position(of: cursor)
+                let lower = max(0, position - 24)
+                let upper = min(playlist.index.count, position + 25)
+                for offset in lower..<upper {
+                    guard let displayIndex = playlist.index.index(at: offset), displayIndex < nativeCount,
+                          let item = playlist.item(at: displayIndex), identifiers.contains(item.localIdentifier) else { continue }
+                    immediate.insert(displayIndex)
+                }
+            }
+            applyRemovals(immediate, to: playlist)
+            Task { @MainActor [weak self, weak playlist] in
+                guard let self, let playlist else { return }
+                var start = 0
+                while start < nativeCount {
+                    guard self.playlists[snapshot.id] === playlist,
+                          playlist.snapshot.nativeCount == nativeCount else { return }
+                    let end = min(start + 512, nativeCount)
+                    var found = IndexSet()
+                    for displayIndex in start..<end where !playlist.index.removed.contains(displayIndex) {
+                        let source = snapshot.displayOrder?[displayIndex] ?? displayIndex
+                        if identifiers.contains(snapshot.fetch.object(at: source).localIdentifier) { found.insert(displayIndex) }
+                    }
+                    self.applyRemovals(found, to: playlist)
+                    start = end
+                    await Task.yield()
+                }
+            }
+        }
+    }
+
+    /// Rebuild only the vault suffix. Never materialize the native Photos fetch.
+    /// Removing the old suffix before releasing metadata prevents locked scenes remaining visible.
+    private func updateVaultPlaylists(_ records: [GalleryVaultRecord]) {
+        let vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)
+        for playlist in Array(playlists.values) {
+            let old = playlist.snapshot.vaultRecords
+            let album = playlist.snapshot.album
+            if album.collection == nil, album.virtualScope == nil,
+               vaultIndex.albumTitles[album.id] == nil {
+                objectWillChange.send()
+                for session in sessions.values.filter({ $0.playlist === playlist }) {
+                    sessions.removeValue(forKey: session.id)
+                }
+                playlists.removeValue(forKey: playlist.snapshot.id)
+                continue
+            }
+            let nativeCount = playlist.snapshot.nativeCount
+            let next = vaultIndex.records(for: playlist.snapshot.album,
+                filter: playlist.snapshot.mediaFilter, search: playlist.snapshot.mediaSearch,
+                sort: playlist.snapshot.vaultSort, ascending: playlist.snapshot.vaultSortAscending,
+                shuffleSeed: playlist.snapshot.vaultShuffleSeed)
+            if old.map(\.id) == next.map(\.id), !next.isEmpty { continue }
+
+            let associated = sessions.values.filter { $0.playlist === playlist }
+            let previousCursors: [(GalleryViewerSession, Int?, UUID?)] = associated.map { session in
+                let oldOffset = session.cursor.map { $0 - nativeCount }
+                let vaultID = oldOffset.flatMap { old.indices.contains($0) ? old[$0].id : nil }
+                return (session, session.cursor, vaultID)
+            }
+            let oldRemoved = playlist.index.removed
+            var newIndex = GalleryPlaylistIndex(originalCount: nativeCount + next.count)
+            var preservedRemoved = oldRemoved.intersection(IndexSet(integersIn: 0..<nativeCount))
+            let previouslyRemovedIDs = Set(old.enumerated().compactMap { offset, record in
+                oldRemoved.contains(nativeCount + offset) ? record.id : nil
+            })
+            for (offset, record) in next.enumerated() where previouslyRemovedIDs.contains(record.id) {
+                preservedRemoved.insert(nativeCount + offset)
+            }
+            newIndex.remove(preservedRemoved)
+            playlist.setVaultRecords(next)
+            playlist.index = newIndex
+            playlist.changeGeneration = UUID()
+            let nextPositions = Dictionary(uniqueKeysWithValues: next.enumerated().map { ($1.id, nativeCount + $0) })
+            objectWillChange.send()
+            for (session, oldCursor, vaultID) in previousCursors {
+                let desired: Int?
+                if let vaultID, let newPosition = nextPositions[vaultID] {
+                    desired = newPosition
+                } else if let oldCursor, oldCursor < nativeCount {
+                    desired = oldCursor
+                } else if newIndex.count > 0 {
+                    desired = newIndex.index(at: min(max(0, nativeCount - 1), newIndex.count - 1))
+                } else {
+                    desired = nil
+                }
+                session.setCursor(newIndex.survivingCursor(desired))
+                session.revision += 1
+            }
+        }
+    }
+
     private func applyRemovals(_ removed: IndexSet, to playlist: GalleryViewerPlaylist) {
         guard !removed.subtracting(playlist.index.removed).isEmpty else { return }
         playlist.index.remove(removed)
@@ -539,7 +750,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             let snapshot = playlist.snapshot
             if let collection = snapshot.album.collection,
                change.changeDetails(for: collection)?.objectWasDeleted == true {
-                applyRemovals(IndexSet(integersIn: 0..<snapshot.fetch.count), to: playlist)
+                applyRemovals(IndexSet(integersIn: 0..<snapshot.nativeCount), to: playlist)
                 continue
             }
             guard let details = change.changeDetails(for: snapshot.fetch) else { continue }

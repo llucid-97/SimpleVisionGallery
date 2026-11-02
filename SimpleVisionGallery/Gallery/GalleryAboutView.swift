@@ -34,6 +34,12 @@ struct GalleryAboutView: View {
                     DisclosureGroup("Does moving or removing an item delete it?") {
                         Text("Moving from an album adds the item to its destination and removes its old album membership. Remove from Album leaves the original in Photos. Moving from Photos files the item in the destination album.")
                     }
+                    DisclosureGroup("How does Private Vault work?") {
+                        Text("Move selected items or an album into Private Vault to save encrypted originals on this device. Only after the copies are verified does Gallery ask Photos to delete the originals. Unlock with device authentication to show private items in their parent albums and slideshows. Restore to Photos creates new library items and restores recorded album membership.")
+                    }
+                    DisclosureGroup("Is Private Vault backed up?") {
+                        Text("Private Vault is device-local. Deleting the app, losing the device, or removing its passcode can make private items unrecoverable. Restore important items to Photos before doing any of these. The vault is separate from Apple’s Hidden album. Photos deletion also syncs through iCloud Photos, and Recently Deleted can retain the originals and their storage space.")
+                    }
                     DisclosureGroup("How does Recycle Bin work?") {
                         Text("The bin button moves items into a Photos album named Recycle Bin. They stay in your Photos library until you permanently delete them from the bin. Apple Photos asks before permanent deletion; batches use one request.")
                     }
@@ -84,6 +90,10 @@ private struct GalleryPrivacyView: View {
                 Text("Gallery uses Apple PhotoKit to show the photos, videos, and albums you allow it to access. Read and write access lets you create, rename, and organize albums and move items to Recycle Bin. You can change access in visionOS Settings.")
                 Text("Spatial scenes are generated on your device and kept in a limited memory cache. Gallery does not save permanent converted copies to Photos.")
                 Text("Recycle Bin is an ordinary Photos album. Permanent deletion is available inside the bin. Photos may keep deleted items in Recently Deleted. Album changes and deletions may sync through iCloud Photos if you use it.")
+            }
+            Section("Private Vault") {
+                Text("Private Vault stores the original media and its recorded album metadata encrypted in app-local storage. Unlocking uses device authentication. Private media is not sent to the developer or automatically synced to another device. Decrypted viewing files are temporary and cleared when the vault locks.")
+                Text("Moving into the vault requests deletion from Photos only after verified copies are saved. This deletion can sync through iCloud Photos. Recently Deleted may retain originals and disk space. Restoring creates new Photos items; original Photos identifiers and all Photos-specific history cannot be guaranteed. Deleting the app, losing this device, or removing its passcode can make the local vault unrecoverable.")
             }
             Section("Collection and Sharing") {
                 Text("Gallery does not send your photos, videos, or preferences to the app developer. It has no accounts, advertising, analytics, tracking, or developer-run network service.")

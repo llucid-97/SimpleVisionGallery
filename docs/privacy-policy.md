@@ -17,6 +17,16 @@ The viewer’s Recycle Bin action immediately moves an item out of its current a
 
 PhotoKit can retrieve assets stored on the device or in iCloud Photos. If an original is stored in iCloud, Apple’s Photos service may download it when Gallery requests it. See [PhotoKit](https://developer.apple.com/documentation/PhotoKit) and Apple’s [Photos privacy guidance](https://developer.apple.com/documentation/PhotoKit/delivering-an-enhanced-privacy-experience-in-your-photos-app).
 
+## Private Vault
+
+Private Vault stores media and its recorded parent album information encrypted inside the app on this device. Device authentication unlocks access. Private items then appear in Gallery’s lists and slideshows; locking clears those presentations and temporary viewing files. Gallery reports a cleanup failure and refuses another unlock until temporary files can be cleared.
+
+Moving to the vault saves and verifies copies before asking Photos to delete originals. For a batch, one deletion request covers only the successfully saved items. Deletion may sync to other devices through iCloud Photos, and Recently Deleted can retain originals and their storage space. Gallery leaves unsupported items and unfinished copies in Photos.
+
+The vault does not sync or have a backup. Deleting the app, losing this device, or removing the device passcode can make private items unrecoverable. Restore important items to Photos before doing any of these. Restoring creates new Photos items; exact original identifiers, editing history and order in every album are not guaranteed. A missing or non-editable parent album requires an explicit choice before restoration can omit that album.
+
+Private media and vault keys are not sent to the developer. Vault metadata, including original filenames and album names, is encrypted on disk. Existing album names in the Photos library remain unchanged.
+
 ## Information collection and sharing
 
 Gallery processes photo and video content on your device and does not send it to the app developer. The app does not use analytics, advertising, tracking, or an app-operated network service. Apple’s Photos and iCloud services may retrieve or sync library content according to your settings and Apple’s terms.
@@ -25,7 +35,7 @@ The app stores preferences such as album sorting, thumbnail size, spatial lookah
 
 ## Your choices
 
-You can change Photos access in visionOS Settings. You can turn off looping with the viewer’s loop button and set the spatial lookahead to zero in Gallery Settings. Removing the app removes its app-local preferences. Photos changes follow the behavior of your Photos library and iCloud settings.
+You can change Photos access in visionOS Settings. You can turn off looping with the viewer’s loop button and set the spatial lookahead to zero in Gallery Settings. Removing the app removes its app-local preferences and local vault files. Restore private media to Photos first. Photos changes follow the behavior of your Photos library and iCloud settings.
 
 ## Contact
 

@@ -42,6 +42,23 @@ Run the viewer album refresh check on macOS. It needs Swift, but no simulator or
 python3 tests/check_viewer_album_refresh.py
 ```
 
+The private vault lifecycle check uses deterministic Photos and storage fakes. It tests safe partial batches, cancellation, deletion retry, restore recovery and lock races. It does not grant Photos access or touch your library:
+
+```sh
+python3 tests/check_vault_transfer.py
+python3 tests/check_vault_storage.py
+```
+
+Native PhotoKit, device authentication and filesystem checks are separate integration tests.
+
+## Private Vault
+
+Private Vault stores encrypted originals on this device, separate from Apple's Hidden album. Move selected items or an album into the vault; after verifying the copies, Gallery asks Photos to remove the originals in one batch. Unlocking shows private items in Photos and their recorded parent albums inside Gallery. Restore to Photos imports new items and restores album membership.
+
+The vault has no backup or device sync. App deletion, device loss or removal of the device passcode can make vault items unrecoverable. Restore important items before doing any of these. Photos deletions sync through iCloud Photos, and Recently Deleted may keep using disk space.
+
+A partial batch keeps unfinished originals in Photos and saved copies in the vault. Retry can finish a declined deletion. Edited resource combinations that cannot be safely restored are left in Photos. Vault items appear after native items in grids; known whole-album order is retained, but exact order in every parent album and Photos-specific history are not guaranteed. Private video thumbnails use a video symbol to avoid decrypting whole videos while scrolling.
+
 ## App Store
 
 Version 1.0.10 is [live on the App Store](https://apps.apple.com/app/id6821613011), free to download, released 12 October 2026. Version 1.0.11 was submitted for review on 27 October, with smoother slideshow handoff and clearer portrait and side-by-side controls. See [the release record](docs/app-store-release.md), [store listing](docs/app-store-listing.md), and [privacy policy](docs/privacy-policy.md).
