@@ -17,10 +17,16 @@ struct GalleryViewerWindowRoot: View {
     let value: GalleryViewerWindowValue?
     @ObservedObject private var store = GalleryViewerStore.shared
     @ObservedObject private var windows = GalleryViewerWindows.shared
+    @ObservedObject private var vault = GalleryVaultService.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.pushWindow) private var pushWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var moveTarget: GalleryViewerMoveTarget?
+    @State private var vaultTransfer: GalleryVaultTransferRequest?
+    @State private var showingVault = false
+    @State private var vaultSheetCovered = false
+    @State private var vaultMessage: String?
+    @State private var vaultAlbumRetryIDs: [UUID] = []
 
     private var paired: Bool { value?.sessionIDs.count == 2 }
     private var paneWidth: CGFloat { paired ? 500 : 700 }
@@ -28,7 +34,7 @@ struct GalleryViewerWindowRoot: View {
     private var windowWidth: CGFloat { paired ? 1048 : 732 }
 
     private var preferredWindowHeight: CGFloat {
-        let mediaHeight = value?.sessionIDs.compactMap { store.session($0)?.currentAsset }
+        let mediaHeight = value?.sessionIDs.compactMap { store.session($0)?.currentItem }
             .map { asset -> CGFloat in
                 guard asset.pixelWidth > 0, asset.pixelHeight > 0 else { return minimumMediaHeight }
                 // Spatial videos also need room for their transport controls.
@@ -47,6 +53,11 @@ struct GalleryViewerWindowRoot: View {
                             GalleryViewerPane(
                                 session: session,
                                 moveTarget: $moveTarget,
+                                vaultTransfer: $vaultTransfer,
+                                showingVault: $showingVault,
+                                vaultMessage: $vaultMessage,
+                                vaultAlbumRetryIDs: $vaultAlbumRetryIDs,
+                                vaultCovered: vaultTransfer != nil || showingVault || vaultSheetCovered,
                                 width: paneWidth,
                                 minimumMediaHeight: minimumMediaHeight,
                                 backingYaw: value.sessionIDs.count == 2
@@ -107,6 +118,13 @@ struct GalleryViewerWindowRoot: View {
         .sheet(item: $moveTarget) { target in
             GalleryViewerMoveSheet(sessionID: target.sessionID, assetID: target.assetID)
         }
+        .sheet(isPresented: $showingVault, onDismiss: { vaultSheetCovered = false }) {
+            GalleryVaultView(resultMessage: $vaultMessage, albumRetryIDs: $vaultAlbumRetryIDs)
+        }
+        .onChange(of: showingVault) { _, showing in
+            if showing { vaultSheetCovered = true }
+        }
+        .modifier(GalleryVaultConfirmation(request: $vaultTransfer, showingVault: $showingVault, resultMessage: $vaultMessage))
         .persistentSystemOverlays(.visible)
     }
 
@@ -173,6 +191,11 @@ private struct GalleryViewerLoadKey: Equatable {
 private struct GalleryViewerPane: View {
     @ObservedObject var session: GalleryViewerSession
     @Binding var moveTarget: GalleryViewerMoveTarget?
+    @Binding var vaultTransfer: GalleryVaultTransferRequest?
+    @Binding var showingVault: Bool
+    @Binding var vaultMessage: String?
+    @Binding var vaultAlbumRetryIDs: [UUID]
+    let vaultCovered: Bool
     let width: CGFloat
     let minimumMediaHeight: CGFloat
     let backingYaw: Double
@@ -181,6 +204,7 @@ private struct GalleryViewerPane: View {
     let arrange: () -> Void
     let duplicate: () -> Void
     @ObservedObject private var store = GalleryViewerStore.shared
+    @ObservedObject private var vault = GalleryVaultService.shared
     @State private var media = GalleryViewerMedia()
     @State private var spatialEnabled = true
     @State private var actionError: String?
@@ -197,20 +221,20 @@ private struct GalleryViewerPane: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private var loadKey: GalleryViewerLoadKey {
-        GalleryViewerLoadKey(assetID: session.currentAsset?.localIdentifier,
-            modified: session.currentAsset?.modificationDate, spatial: spatialEnabled)
+        GalleryViewerLoadKey(assetID: session.currentItem?.localIdentifier,
+            modified: session.currentItem?.modificationDate, spatial: spatialEnabled)
     }
 
-    private var upcomingAssets: [PHAsset] {
-        session.upcomingAssets(limit: GalleryViewerPreferences.boundedPrefetchWindow(prefetchWindow))
+    private var upcomingAssets: [GalleryMediaItem] {
+        session.upcomingItems(limit: GalleryViewerPreferences.boundedPrefetchWindow(prefetchWindow))
     }
 
-    private var precedingAssets: [PHAsset] {
-        session.precedingAssets(limit: min(GalleryViewerPreferences.backwardPrefetchWindowRange.upperBound,
+    private var precedingAssets: [GalleryMediaItem] {
+        session.precedingItems(limit: min(GalleryViewerPreferences.backwardPrefetchWindowRange.upperBound,
             max(GalleryViewerPreferences.backwardPrefetchWindowRange.lowerBound, backwardPrefetchWindow)))
     }
 
-    private var prefetchAssets: [PHAsset] { upcomingAssets + precedingAssets }
+    private var prefetchAssets: [GalleryMediaItem] { upcomingAssets + precedingAssets }
 
     private var prefetchKeys: [GalleryViewerLoadKey] {
         prefetchAssets.map {
@@ -224,11 +248,11 @@ private struct GalleryViewerPane: View {
         }
         // Keep a matching in-flight lookahead alive until load promotes it.
         guard loadedKey == loadKey, !media.isLoading else { return }
-        media.prefetch(assets: prefetchAssets)
+        media.prefetch(items: prefetchAssets)
     }
 
     private var preferredMediaHeight: CGFloat {
-        let asset = session.currentAsset
+        let asset = session.currentItem
         let assetRatio = asset.flatMap { item -> Double? in
             guard item.pixelWidth > 0, item.pixelHeight > 0 else { return nil }
             return Double(item.pixelWidth) / Double(item.pixelHeight)
@@ -248,6 +272,34 @@ private struct GalleryViewerPane: View {
                 }
                 Spacer()
                 Menu {
+                    if let asset = session.currentAsset {
+                        Button("Move to Private Vault", systemImage: "lock") {
+                            vaultTransfer = .items([asset])
+                        }
+                        .disabled(vault.isBusy)
+                    }
+                    if let record = session.currentItem?.vaultRecord {
+                        Button("Restore to Photos", systemImage: "lock.open") {
+                            let id = record.id
+                            showingVault = true
+                            vaultMessage = nil
+                            vaultAlbumRetryIDs = []
+                            Task { @MainActor in
+                                do {
+                                    try await vault.restore(recordID: id)
+                                    vaultMessage = "Restored to Photos."
+                                } catch {
+                                    if vault.isUnlocked {
+                                        vaultMessage = error.localizedDescription
+                                        if let failure = error as? GalleryVaultTransferError,
+                                           case .albumUnavailable = failure { vaultAlbumRetryIDs = [id] }
+                                    }
+                                }
+                            }
+                        }
+                        .disabled(vault.isBusy)
+                    }
+                    Button("Private Vault", systemImage: "lock") { showingVault = true }
                     Button("Share", systemImage: "square.and.arrow.up") {
                         if let asset = session.currentAsset { sharing.start(assets: [asset]) }
                     }
@@ -262,7 +314,7 @@ private struct GalleryViewerPane: View {
                     Label("Open another slideshow", systemImage: "rectangle.on.rectangle")
                 }
                 .labelStyle(.iconOnly)
-                .disabled(session.currentAsset == nil)
+                .disabled(session.currentItem == nil)
                 .accessibilityIdentifier("gallery-viewer-duplicate")
                 Button(action: arrange) {
                     Label("Arrange side by side", systemImage: "rectangle.split.2x1")
@@ -284,7 +336,7 @@ private struct GalleryViewerPane: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .contentShape(Rectangle())
                     .simultaneousGesture(DragGesture(minimumDistance: 45).onEnded { drag in
-                        if session.currentAsset?.mediaType == .video && drag.startLocation.y > geometry.size.height - 100 { return }
+                        if session.currentItem?.mediaType == .video && drag.startLocation.y > geometry.size.height - 100 { return }
                         guard abs(drag.translation.width) > abs(drag.translation.height) * 1.4 else { return }
                         actionError = nil
                         if drag.translation.width < 0 { store.next(session.id) }
@@ -313,10 +365,10 @@ private struct GalleryViewerPane: View {
         .task(id: loadKey) {
             let requestedKey = loadKey
             loadedKey = nil
-            media.prefetch(assets: prefetchAssets, excludingCurrent: session.currentAsset,
-                preserving: session.currentAsset)
-            if let asset = session.currentAsset {
-                await media.load(asset: asset, spatialEnabled: spatialEnabled)
+            media.prefetch(items: prefetchAssets, excludingCurrent: session.currentItem,
+                preserving: session.currentItem)
+            if let item = session.currentItem {
+                await media.load(item: item, spatialEnabled: spatialEnabled)
             } else { media.cancel() }
             guard !Task.isCancelled, requestedKey == loadKey else { return }
             loadedKey = requestedKey
@@ -334,11 +386,21 @@ private struct GalleryViewerPane: View {
         .onChange(of: loopVideos, initial: true) { _, enabled in
             media.setVideoLooping(enabled)
         }
-        .onChange(of: moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos, initial: true) { _, covered in
+        .onChange(of: moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos || vaultCovered, initial: true) { _, covered in
             media.setPresentationCovered(covered)
         }
+        .onChange(of: vault.isUnlocked) { _, unlocked in
+            if !unlocked {
+                sharing.tearDown()
+                vaultMessage = nil
+                vaultAlbumRetryIDs = []
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .galleryPhotosAccessDidRevoke)) { _ in
+            sharing.tearDown()
+        }
         .onChange(of: prefetchKeys) { _, _ in refreshPrefetch() }
-        .onChange(of: session.currentAsset?.localIdentifier) { _, newID in
+        .onChange(of: session.currentItem?.localIdentifier) { _, newID in
             if let target = moveTarget, target.sessionID == session.id,
                target.assetID != newID { moveTarget = nil }
         }
@@ -354,15 +416,15 @@ private struct GalleryViewerPane: View {
 
     @ViewBuilder
     private func mediaStage(height: CGFloat) -> some View {
-        if moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos {
+        if moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos || vaultCovered {
             // A move sheet belongs to the whole window: either raised surface
             // could occlude it. Keep both prepared scenes for dismissal.
             Color.clear
-        } else if session.currentAsset == nil {
+        } else if session.currentItem == nil {
             ContentUnavailableView("No items left", systemImage: "photo",
                 description: Text("Moved items stay in their destination album."))
         } else if media.isLoading {
-            ProgressView("\(session.currentAsset?.mediaType == .video ? "Loading video" : "Preparing photo")…")
+            ProgressView("\(session.currentItem?.mediaType == .video ? "Loading video" : "Preparing photo")…")
                 .tint(.white).foregroundStyle(.white)
         } else if let player = media.player, media.error == nil {
             if media.isSpatialVideo {
@@ -382,8 +444,8 @@ private struct GalleryViewerPane: View {
                     .multilineTextAlignment(.center).font(.callout)
                 Button("Retry") {
                     Task {
-                        if let asset = session.currentAsset {
-                            await media.load(asset: asset, spatialEnabled: spatialEnabled)
+                        if let item = session.currentItem {
+                            await media.load(item: item, spatialEnabled: spatialEnabled)
                         }
                     }
                 }
@@ -394,7 +456,7 @@ private struct GalleryViewerPane: View {
 
     private var controls: some View {
         // Bind a tap to the displayed photo without a fresh Photos lookup on press.
-        let displayedAssetID = session.currentAsset?.localIdentifier
+        let displayedAssetID = session.currentItem?.localIdentifier
         return HStack(spacing: 52) {
             Button {
                 actionError = nil
@@ -405,7 +467,7 @@ private struct GalleryViewerPane: View {
             .disabled(!session.canGoPrevious)
             .accessibilityIdentifier("gallery-viewer-previous")
 
-            if session.currentAsset?.mediaType == .image {
+            if session.currentItem?.mediaType == .image {
                 Button { spatialEnabled.toggle() } label: {
                     Label(spatialEnabled ? "Show Original" : "Spatial Scene",
                         systemImage: spatialEnabled ? "photo" : "cube")
@@ -414,7 +476,7 @@ private struct GalleryViewerPane: View {
                 .accessibilityValue(media.isShowingSpatial ? "Spatial" : "2D")
             }
 
-            if session.currentAsset?.mediaType == .video {
+            if session.currentItem?.mediaType == .video {
                 Button { loopVideos.toggle() } label: {
                     VStack(spacing: 2) {
                         Image(systemName: "repeat")
@@ -471,7 +533,7 @@ private struct GalleryViewerPane: View {
                         if isRecycling { ProgressView().controlSize(.small).accessibilityHidden(true) }
                     }
             }
-            .disabled(displayedAssetID == nil || store.isPerformingOperation || isRecycling)
+            .disabled(session.currentAsset == nil || store.isPerformingOperation || isRecycling)
             .accessibilityLabel(isRecycling ? "Moving to Recycle Bin" : (isInRecycleBin ? "Delete Permanently" : "Move to Recycle Bin"))
             .accessibilityIdentifier("gallery-viewer-recycle")
             .accessibilityHint(isInRecycleBin ? "Permanently deletes this item from Photos after confirmation." : "Moves this item to the Recycle Bin album.")

@@ -7,9 +7,9 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Simple Vision Gallery creates destination albums, including a recycle bin, when you move items.</string>
+	<string>Simple Vision Gallery creates destination albums and restores the private vault items you choose to your Photos library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Simple Vision Gallery uses your Photos library to show albums, create spatial scenes from photos, play videos, and move the items you choose between albums.</string>
+	<string>Simple Vision Gallery shows and organizes your photos and videos. Moving to Private Vault saves verified encrypted copies before asking Photos to delete the originals; restoring adds them back.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>
@@ -19,5 +19,7 @@
 		<key>UISceneConfigurations</key>
 		<dict/>
 	</dict>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlock your private vault using device authentication.</string>
 </dict>
 </plist>

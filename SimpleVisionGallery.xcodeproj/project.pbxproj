@@ -32,6 +32,12 @@
 		F00E86CF97859A6D821E32B1 /* GalleryHoverIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = F51E0AABEDDF3E6939C1F561 /* GalleryHoverIcon.swift */; };
 		F96FB16641FC5655FC4AB438 /* GalleryThumbnailDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B781F544AB9EDF7164A7619 /* GalleryThumbnailDelivery.swift */; };
 		FE93CB745E2756C11873BDA4 /* GalleryRecycleBin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12F0D3BB0C482C7DA7C806CD /* GalleryRecycleBin.swift */; };
+		D44D0339BBC7EC0D9E907047 /* GalleryMediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAD10E1AE16B69B5E44B907D /* GalleryMediaItem.swift */; };
+		ADA9A1C0536FCFAB7F2FB941 /* GalleryVaultModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52E81CEBB222308A3A023B47 /* GalleryVaultModels.swift */; };
+		FB24BCA87D273F026683808A /* GalleryVaultStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65E5EAAA615B003E63A849E8 /* GalleryVaultStorage.swift */; };
+		2284893F9484BD708BB2DD6D /* GalleryVaultService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F585DCF38F25ECECF3953595 /* GalleryVaultService.swift */; };
+		CE356981F056F98CAB243ACC /* GalleryVaultPhotoLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = F943AD39F3FE93F498E59D42 /* GalleryVaultPhotoLibrary.swift */; };
+		5CBF9999EB2C4FE3B31DA64E /* GalleryVaultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F07254AE65518413B251F4C6 /* GalleryVaultView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -61,12 +67,24 @@
 		F51001D77F49DBBC9CABD947 /* GalleryCinemaDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryCinemaDesign.swift; sourceTree = "<group>"; };
 		F51E0AABEDDF3E6939C1F561 /* GalleryHoverIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryHoverIcon.swift; sourceTree = "<group>"; };
 		FC8F866950CAFDB851D8B66F /* GalleryVisibilityPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVisibilityPreferences.swift; sourceTree = "<group>"; };
+		BAD10E1AE16B69B5E44B907D /* GalleryMediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryMediaItem.swift; sourceTree = "<group>"; };
+		52E81CEBB222308A3A023B47 /* GalleryVaultModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultModels.swift; sourceTree = "<group>"; };
+		65E5EAAA615B003E63A849E8 /* GalleryVaultStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultStorage.swift; sourceTree = "<group>"; };
+		F585DCF38F25ECECF3953595 /* GalleryVaultService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultService.swift; sourceTree = "<group>"; };
+		F943AD39F3FE93F498E59D42 /* GalleryVaultPhotoLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultPhotoLibrary.swift; sourceTree = "<group>"; };
+		F07254AE65518413B251F4C6 /* GalleryVaultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		20C18D1C79443308237BE1D2 /* Gallery */ = {
 			isa = PBXGroup;
 			children = (
+				F07254AE65518413B251F4C6 /* GalleryVaultView.swift */,
+				F943AD39F3FE93F498E59D42 /* GalleryVaultPhotoLibrary.swift */,
+				F585DCF38F25ECECF3953595 /* GalleryVaultService.swift */,
+				65E5EAAA615B003E63A849E8 /* GalleryVaultStorage.swift */,
+				52E81CEBB222308A3A023B47 /* GalleryVaultModels.swift */,
+				BAD10E1AE16B69B5E44B907D /* GalleryMediaItem.swift */,
 				521A76D1C9035D980FC17DEC /* GalleryAboutView.swift */,
 				5FE38F44101D7C25A7551345 /* GalleryAlbumSearch.swift */,
 				73F3275C94BF86DDA0E3C502 /* GalleryManager.swift */,
@@ -199,6 +217,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5CBF9999EB2C4FE3B31DA64E /* GalleryVaultView.swift in Sources */,
+				CE356981F056F98CAB243ACC /* GalleryVaultPhotoLibrary.swift in Sources */,
+				2284893F9484BD708BB2DD6D /* GalleryVaultService.swift in Sources */,
+				FB24BCA87D273F026683808A /* GalleryVaultStorage.swift in Sources */,
+				ADA9A1C0536FCFAB7F2FB941 /* GalleryVaultModels.swift in Sources */,
+				D44D0339BBC7EC0D9E907047 /* GalleryMediaItem.swift in Sources */,
 				2FEAA809275F95AE8A4CC7C8 /* GalleryAboutView.swift in Sources */,
 				19C3E9CDCF1B1DBB5BECB35A /* GalleryAlbumSearch.swift in Sources */,
 				D7D46C44EB3B44FD9E5EC048 /* GalleryAppearance.swift in Sources */,

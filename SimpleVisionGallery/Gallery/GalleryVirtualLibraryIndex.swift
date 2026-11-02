@@ -71,14 +71,60 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
     private var snapshots: [GalleryVirtualSnapshotKey: GalleryVirtualLibrarySnapshot] = [:]
     private var buildGeneration = 0
     private var membershipGeneration = 0
+    private var authorizationGeneration = UUID()
     private var buildTask: Task<Void, Never>?
     private var changeTask: Task<Void, Never>?
     private var needsFullRefresh = false
     private var snapshotNeedsRebuild = false
     private var observing = false
     private var authorized = false
+    private var vaultBusySubscription: AnyCancellable?
+    private var vaultChanges = GalleryVaultChangeCoalescer()
+    private var vaultRefreshTask: Task<Void, Never>?
+    private var isVaultRebuilding = false
 
-    private override init() { super.init() }
+    private override init() {
+        super.init()
+        vaultBusySubscription = GalleryVaultService.shared.$isBusy.sink { [weak self] busy in
+            guard let self else { return }
+            self.vaultChanges.setBusy(busy)
+            if busy {
+                self.vaultRefreshTask?.cancel()
+                if self.isVaultRebuilding {
+                    self.buildGeneration += 1
+                    _ = self.vaultChanges.deferChange()
+                }
+            } else if self.vaultChanges.settling {
+                self.scheduleVaultRefresh()
+            }
+        }
+    }
+
+    /// Manager waits for the single fresh snapshot before it reloads album counts.
+    func waitForVaultChanges() async {
+        await vaultRefreshTask?.value
+    }
+
+    private func scheduleVaultRefresh() {
+        vaultRefreshTask?.cancel()
+        vaultRefreshTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            guard let self, !self.vaultChanges.isBusy else { return }
+            guard self.vaultChanges.drain() else { return }
+            // Finish any delta already queued before the batch began. Changes during
+            // the rebuild request another fresh snapshot instead of replaying deltas.
+            await self.changeTask?.value
+            guard !Task.isCancelled, !self.vaultChanges.isBusy else {
+                _ = self.vaultChanges.deferChange()
+                return
+            }
+            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            guard status == .authorized || status == .limited else { self.reset(); return }
+            self.isVaultRebuilding = true
+            await self.buildInitialIndex()
+            self.isVaultRebuilding = false
+        }
+    }
 
     func snapshot(
         for scope: GalleryVirtualScope,
@@ -91,8 +137,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
         let hasAccess = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
             || PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
         guard hasAccess else {
-            authorized = false
-            reset()
+            clearDeniedPhotoStateIfNeeded()
             return GalleryVirtualLibrarySnapshot(fetch: emptyFetch(), displayOrder: [], photoCount: 0, videoCount: 0)
         }
         if !authorized {
@@ -111,15 +156,47 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
                 buildTask = nil
             }
         }
+        // Authorization may have changed while the initial index was building.
+        let currentStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard currentStatus == .authorized || currentStatus == .limited else {
+            clearDeniedPhotoStateIfNeeded()
+            return GalleryVirtualLibrarySnapshot(fetch: emptyFetch(), displayOrder: [], photoCount: 0, videoCount: 0)
+        }
         if let snapshot = snapshots[key] { return snapshot }
         let result = GalleryVirtualLibrarySnapshot(fetch: assetFetch ?? emptyFetch(), displayOrder: [], photoCount: 0, videoCount: 0)
         snapshots[key] = result
         return result
     }
 
+    /// A denied read must not repeatedly publish a revision to its own observers.
+    private func clearDeniedPhotoStateIfNeeded() {
+        let hasState = authorized || assetFetch != nil || collectionFetch != nil || buildTask != nil
+            || isVaultRebuilding || !snapshots.isEmpty || !albums.isEmpty || !assetIDs.isEmpty
+            || !assetIsVideo.isEmpty || !indexByID.isEmpty || !albumRefCounts.isEmpty || !binRefCounts.isEmpty
+            || canonicalBinID != nil || needsFullRefresh || snapshotNeedsRebuild
+            || !removedFromPhotos.isEmpty || !removedFromUnfiled.isEmpty
+        authorized = false
+        guard hasState else { return }
+        isVaultRebuilding = false
+        reset()
+    }
+
     func mediaCounts(for scope: GalleryVirtualScope) -> GalleryVirtualMediaCounts {
         let snapshot = snapshots[GalleryVirtualSnapshotKey(scope: scope, mediaFilter: .all)]
         return GalleryVirtualMediaCounts(photos: snapshot?.photoCount ?? 0, videos: snapshot?.videoCount ?? 0)
+    }
+
+    /// Forget all Photos-backed data immediately when access is narrowed or revoked.
+    func resetForAuthorizationChange() {
+        authorizationGeneration = UUID()
+        changeTask?.cancel()
+        changeTask = nil
+        vaultRefreshTask?.cancel()
+        vaultRefreshTask = nil
+        authorized = false
+        isVaultRebuilding = false
+        reset()
+        if vaultChanges.deferChange(), !vaultChanges.isBusy { scheduleVaultRefresh() }
     }
 
     /// Call after a local Photos mutation; PhotoKit's observer supplies incremental details.
@@ -137,6 +214,9 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
         deletedAssetIDs: Set<String> = []
     ) {
         guard assetFetch != nil, !changedIDs.isEmpty else { return }
+        // A concurrent local move updates the live index immediately. The frozen
+        // rebuild must refetch before committing so it cannot erase that move.
+        if isVaultRebuilding { needsFullRefresh = true }
         membershipGeneration &+= 1
         var touched = Set<String>()
         if let removedAlbumID, var record = albums[removedAlbumID] {
@@ -189,10 +269,23 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
     func sourceIndex(forAssetID id: String) -> Int? { indexByID[id] }
 
     func photoLibraryDidChange(_ changeInstance: PHChange) {
+        if isVaultRebuilding {
+            // The current rebuild uses a frozen fetch; include any later change.
+            needsFullRefresh = true
+            return
+        }
+        if vaultChanges.deferChange() {
+            if !vaultChanges.isBusy { scheduleVaultRefresh() }
+            return
+        }
         let previous = changeTask
         changeTask = Task { @MainActor [weak self] in
             await previous?.value
-            guard let self else { return }
+            guard !Task.isCancelled, let self else { return }
+            if self.vaultChanges.deferChange() {
+                if !self.vaultChanges.isBusy { self.scheduleVaultRefresh() }
+                return
+            }
             guard self.assetFetch != nil else {
                 self.needsFullRefresh = true
                 return
@@ -300,8 +393,10 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
     private func apply(_ change: PHChange) async {
         guard let oldFetch = assetFetch else { return }
         membershipGeneration &+= 1
+        let authGeneration = authorizationGeneration
         guard let assetDetails = change.changeDetails(for: oldFetch) else {
             let touched = await applyAlbumDeltas(change)
+            guard authGeneration == authorizationGeneration else { return }
             if snapshotNeedsRebuild {
                 snapshotNeedsRebuild = false
                 await rebuildSnapshotsOffMain(removedCandidateIDs: touched)
@@ -323,6 +418,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
                 assetFetch = updatedFetch
             }
             let touched = await applyAlbumDeltas(change)
+            guard authGeneration == authorizationGeneration else { return }
             let globalIndexesChanged = !(assetDetails.insertedIndexes?.isEmpty ?? true)
                 || !(assetDetails.removedIndexes?.isEmpty ?? true)
             if globalIndexesChanged || snapshotNeedsRebuild {
@@ -338,12 +434,14 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
             assetFetch = updatedFetch
             rebuildAssetIDMap(updatedFetch)
             await rebuildAllAlbumsOffMain()
+            guard authGeneration == authorizationGeneration else { return }
             await rebuildSnapshotsOffMain()
         }
     }
 
     @discardableResult
     private func applyAlbumDeltas(_ change: PHChange) async -> Set<String> {
+        let authGeneration = authorizationGeneration
         var touched = Set<String>()
         guard let collectionFetch else { return touched }
         if let collectionDetails = change.changeDetails(for: collectionFetch) {
@@ -351,6 +449,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
             if !collectionDetails.hasIncrementalChanges {
                 self.collectionFetch = after
                 await rebuildAllAlbumsOffMain()
+                guard authGeneration == authorizationGeneration else { return [] }
                 snapshotNeedsRebuild = true
                 return []
             }
@@ -383,6 +482,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
                         albums[collection.localIdentifier] = existing
                     } else {
                         let ids = await Task.detached(priority: .utility) { Self.ids(in: fetch) }.value
+                        guard authGeneration == authorizationGeneration else { return [] }
                         albums[collection.localIdentifier] = AlbumRecord(
                             fetch: fetch, ids: ids, isBin: false, title: collection.localizedTitle
                         )
@@ -459,6 +559,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
 
     private func rebuildAllAlbumsOffMain() async {
         guard let collectionFetch else { return }
+        let authGeneration = authorizationGeneration
         let selectedBinID = GalleryRecycleBin.existingCollection()?.localIdentifier
         let built = await Task.detached(priority: .utility) {
             var values: [(String, PHFetchResult<PHAsset>, Set<String>, Bool, String?)] = []
@@ -479,6 +580,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
             }
             return (values, albumCounts, binCounts)
         }.value
+        guard authGeneration == authorizationGeneration else { return }
         canonicalBinID = selectedBinID
         albums.removeAll(keepingCapacity: true)
         for (id, fetch, ids, isBin, title) in built.0 {
@@ -707,6 +809,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
     }
 
     private func reset() {
+        authorizationGeneration = UUID()
         buildGeneration += 1
         membershipGeneration &+= 1
         assetFetch = nil

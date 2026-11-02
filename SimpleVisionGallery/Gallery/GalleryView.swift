@@ -57,6 +57,12 @@ struct GalleryView: View {
     @State private var selectedAlbumIDs: Set<String> = []
     @State private var deletionReview: GalleryDeletionPlan?
     @StateObject private var sharing = GalleryShareController()
+    @ObservedObject private var vault = GalleryVaultService.shared
+    @State private var showingVault = false
+    @State private var vaultTransfer: GalleryVaultTransferRequest?
+    @State private var vaultMessage: String?
+    @State private var vaultAlbumRetryIDs: [UUID] = []
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("gallery.thumbnailSize.v1") private var thumbnailSize = 112.0
     #if os(visionOS)
         @Environment(\.openWindow) private var openWindow
@@ -83,6 +89,10 @@ struct GalleryView: View {
         .sheet(isPresented: $showingSettings) {
             GallerySettingsView(manager: manager)
         }
+        .sheet(isPresented: $showingVault) {
+            GalleryVaultView(resultMessage: $vaultMessage, albumRetryIDs: $vaultAlbumRetryIDs)
+        }
+        .modifier(GalleryVaultConfirmation(request: $vaultTransfer, showingVault: $showingVault, resultMessage: $vaultMessage))
         .sheet(item: $albumToRename) { album in
             GalleryRenameAlbumSheet(album: album, manager: manager)
         }
@@ -116,6 +126,19 @@ struct GalleryView: View {
         .onChange(of: albumVisibility) {
             clearAlbumSelection()
         }
+        .onChange(of: vault.isUnlocked) { _, unlocked in
+            if !unlocked {
+                sharing.tearDown()
+                vaultMessage = nil
+                vaultAlbumRetryIDs = []
+            }
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active { Task { await manager.refreshPhotoAuthorization() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .galleryPhotosAccessDidRevoke)) { _ in
+            sharing.tearDown()
+        }
         .onChange(of: manager.selectedAlbum?.id) {
             showingThumbnailSize = false
             mediaSearch = ""
@@ -130,7 +153,7 @@ struct GalleryView: View {
 
     @ViewBuilder
     private var content: some View {
-        if manager.hasPhotoAccess {
+        if manager.hasPhotoAccess || vault.isUnlocked {
             GalleryCinemaDesign(context: designContext)
         } else {
             classicContent
@@ -155,6 +178,8 @@ struct GalleryView: View {
                 if manager.isAlbumHidden(album) { manager.unhideAlbums(withIDs: [album.id]) }
                 else { manager.hideAlbums(withIDs: [album.id]) }
             },
+            moveAlbumToVault: prepareAlbumVaultTransfer,
+            restoreAlbumFromVault: restoreAlbumFromVault,
             selectSection: { section in
                 clearAlbumSelection()
                 Task { await manager.openLibrarySection(section) }
@@ -171,7 +196,8 @@ struct GalleryView: View {
                 manager.reorderAlbum(movingID: movingID, beforeID: beforeID)
                 reorderAlbumID = nil
             },
-            showSettings: { showingSettings = true }
+            showSettings: { showingSettings = true },
+            showVault: { showingVault = true }
         )
     }
 
@@ -597,7 +623,7 @@ struct GalleryView: View {
 
     private func overflowMenu(compact: Bool) -> some View {
         Menu {
-            if manager.hasPhotoAccess {
+            if manager.hasPhotoAccess || vault.isUnlocked {
                 if compact {
                     if manager.selectedAlbum != nil {
                         sortMenu
@@ -634,9 +660,10 @@ struct GalleryView: View {
                 Button("Refresh", systemImage: "arrow.clockwise") {
                     Task { await manager.loadAlbums() }
                 }
-                .disabled(manager.isLoadingAlbums || manager.isPerformingOperation)
+                .disabled(!manager.hasPhotoAccess || manager.isLoadingAlbums || manager.isPerformingOperation)
                 Divider()
             }
+            Button("Private Vault", systemImage: "lock") { showingVault = true }
             Button("Gallery Settings", systemImage: "gearshape") {
                 showingSettings = true
             }
@@ -654,6 +681,12 @@ struct GalleryView: View {
 
     private var selectionMenuOptions: some View {
         Group {
+            Button("Move to Private Vault", systemImage: "lock") { prepareSelectionVaultTransfer() }
+                .disabled(vault.isBusy)
+            if vault.isUnlocked {
+                Button("Restore to Photos", systemImage: "lock.open") { restoreSelection() }
+                    .disabled(vault.isBusy)
+            }
             Button("Share", systemImage: "square.and.arrow.up") {
                 do { sharing.start(assets: try manager.selectedAssets()) }
                 catch { sharing.error = error.localizedDescription }
@@ -822,17 +855,29 @@ struct GalleryView: View {
                             )
                             .frame(maxWidth: .infinity, alignment: .top)
                             .contextMenu {
+                                if manager.hasVaultRecords(in: album) {
+                                    Button("Restore Private Items to Photos", systemImage: "lock.open") {
+                                        restoreAlbumFromVault(album)
+                                    }
+                                    .disabled(vault.isBusy)
+                                }
+                                if album.collection != nil {
+                                    Button("Move Album to Private Vault", systemImage: "lock") {
+                                        prepareAlbumVaultTransfer(album)
+                                    }
+                                    .disabled(vault.isBusy)
+                                }
                                 if manager.isAlbumHidden(album) {
                                     Button {
                                         manager.unhideAlbums(withIDs: [album.id])
                                     } label: {
-                                        Label("Unhide Album", systemImage: "eye")
+                                        Label("Show Album in List", systemImage: "eye")
                                     }
                                 } else {
                                     Button {
                                         manager.hideAlbums(withIDs: [album.id])
                                     } label: {
-                                        Label("Hide Album", systemImage: "eye.slash")
+                                        Label("Hide Album from List", systemImage: "eye.slash")
                                     }
                                 }
                                 if album.collection?.canPerform(.rename) == true {
@@ -983,6 +1028,75 @@ struct GalleryView: View {
         #endif
     }
 
+    private func prepareAlbumVaultTransfer(_ album: GalleryAlbum) {
+        guard !vault.isBusy, let fetch = manager.vaultAlbumAssets(album), fetch.count > 0 else {
+            vaultMessage = "This album has no available Photos items to move."
+            showingVault = true
+            return
+        }
+        vaultTransfer = .album(album.title, fetch: fetch, id: album.id)
+    }
+
+    private func prepareSelectionVaultTransfer() {
+        guard !vault.isBusy else { return }
+        do {
+            let items = try manager.selectedMediaItems()
+            let assets = items.compactMap(\.photosAsset)
+            guard assets.count == items.count else {
+                vaultMessage = "Select only Photos-library items to move into the vault."
+                showingVault = true
+                return
+            }
+            vaultTransfer = .items(assets)
+        } catch {
+            vaultMessage = error.localizedDescription
+            showingVault = true
+        }
+    }
+
+    private func restoreSelection() {
+        guard !vault.isBusy else { return }
+        do {
+            let items = try manager.selectedMediaItems()
+            let records = items.compactMap(\.vaultRecord)
+            guard records.count == items.count else {
+                vaultMessage = "Select only private items to restore to Photos."
+                showingVault = true
+                return
+            }
+            restoreVaultRecords(records)
+        } catch {
+            vaultMessage = error.localizedDescription
+            showingVault = true
+        }
+    }
+
+    private func restoreAlbumFromVault(_ album: GalleryAlbum) {
+        guard !vault.isBusy else { return }
+        restoreVaultRecords(manager.vaultRecords(in: album))
+    }
+
+    private func restoreVaultRecords(_ records: [GalleryVaultRecord]) {
+        guard !records.isEmpty else { return }
+        let ids = records.map(\.id)
+        vaultAlbumRetryIDs = []
+        showingVault = true
+        vaultMessage = nil
+        Task { @MainActor in
+            do {
+                try await vault.restore(recordIDs: ids)
+                vaultMessage = "Restored \(ids.count) item\(ids.count == 1 ? "" : "s") to Photos."
+                manager.clearSelection()
+            } catch {
+                if vault.isUnlocked {
+                    vaultMessage = error.localizedDescription
+                    if let failure = error as? GalleryVaultTransferError,
+                       case .albumUnavailable = failure { vaultAlbumRetryIDs = ids }
+                }
+            }
+        }
+    }
+
     private func deletionConfirmationMessage(for review: GalleryDeletionPlan) -> String {
         "Gallery will ask Photos to delete exactly "
             + "\(review.totalCount) selected item\(review.totalCount == 1 ? "" : "s") "
@@ -1029,9 +1143,9 @@ private struct GalleryAssetGrid: View {
 
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(0..<manager.visibleAssetCount, id: \.self) { index in
-                    if let asset = manager.asset(at: index) {
+                    if let item = manager.mediaItem(at: index) {
                         GalleryAssetCell(
-                            asset: asset,
+                            item: item,
                             index: index,
                             isSelected: manager.selectedIndexes.contains(index),
                             hasRangeAnchor: manager.rangeAnchorIndex == index,
@@ -1078,7 +1192,7 @@ private struct GalleryAssetGrid: View {
 }
 
 private struct GalleryAssetCell: View {
-    let asset: PHAsset
+    let item: GalleryMediaItem
     let index: Int
     let isSelected: Bool
     let hasRangeAnchor: Bool
@@ -1090,14 +1204,14 @@ private struct GalleryAssetCell: View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
             .overlay {
-                GalleryThumbnail(asset: asset, manager: manager)
+                GalleryThumbnail(item: item, manager: manager)
                     .clipped()
             }
             .clipped()
             .overlay(alignment: .topLeading) {
-                if asset.mediaType == .video {
+                if item.mediaType == .video {
                     GalleryAssetBadge(
-                        text: GalleryAssetCell.videoDurationText(asset.duration),
+                        text: GalleryAssetCell.videoDurationText(item.duration),
                         icon: "video.fill",
                         tint: LensLabTheme.previewSurface.opacity(0.82)
                     )
@@ -1121,6 +1235,16 @@ private struct GalleryAssetCell: View {
                 if hasRangeAnchor {
                     GalleryAssetBadge(text: "Range start", icon: "flag.fill", tint: LensLabTheme.orange)
                         .padding(6)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if item.vaultRecord != nil {
+                    Image(systemName: "lock.fill")
+                        .font(.caption.weight(.semibold))
+                        .padding(7)
+                        .background(.black.opacity(0.75), in: Circle())
+                        .padding(6)
+                        .accessibilityHidden(true)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1177,8 +1301,8 @@ private struct GalleryAssetCell: View {
     }
 
     private var accessibilityLabel: String {
-        let mediaName = asset.mediaType == .video ? "Video" : "Photo"
-        return "\(mediaName) \(index + 1)\(isSelected ? ", selected" : "")"
+        let mediaName = item.mediaType == .video ? "Video" : "Photo"
+        return "\(mediaName) \(index + 1)\(item.vaultRecord != nil ? ", private" : "")\(isSelected ? ", selected" : "")"
     }
 
     private static func videoDurationText(_ duration: TimeInterval) -> String {
