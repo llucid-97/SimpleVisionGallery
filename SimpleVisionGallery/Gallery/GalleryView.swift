@@ -16,28 +16,23 @@ private enum GalleryAlbumVisibility: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-private struct GalleryVisibilityMenu: View {
+private struct GalleryVisibilityToggle: View {
     @Binding var selection: GalleryAlbumVisibility
     let visibleCount: Int
     let hiddenCount: Int
 
+    private var actionTitle: String { selection == .visible ? "Show Hidden Albums" : "Show Albums" }
+
     var body: some View {
-        Menu {
-            Picker("Album visibility", selection: $selection) {
-                Text("Albums (\(visibleCount))").tag(GalleryAlbumVisibility.visible)
-                Text("Hidden (\(hiddenCount))").tag(GalleryAlbumVisibility.hidden)
-            }
-            .pickerStyle(.inline)
+        Button {
+            selection = selection == .visible ? .hidden : .visible
         } label: {
-            Label("Visibility", systemImage: selection == .visible ? "eye" : "eye.slash")
-                .labelStyle(.iconOnly)
-                .frame(width: 40, height: 40)
+            Label(actionTitle, systemImage: selection == .visible ? "eye.slash" : "eye")
         }
-        .buttonStyle(LensLabSecondaryButtonStyle())
-        .galleryHoverLabel("Visibility")
-        .accessibilityLabel("Visibility")
         .accessibilityIdentifier("svt-gallery-visibility")
-        .help("Show albums or hidden albums")
+        .help(selection == .visible
+            ? "Showing \(visibleCount) albums. Switch to hidden albums."
+            : "Showing \(hiddenCount) hidden albums. Switch to albums.")
     }
 }
 
@@ -207,7 +202,6 @@ struct GalleryView: View {
             albumSortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort albums")
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 16) {
-                    visibilityMenu
                     albumSelectionButton
                     if isSelectingAlbums { albumVisibilityAction }
                     mediaFilterMenu
@@ -423,7 +417,6 @@ struct GalleryView: View {
                             moveSelectionButton
                         }
                     } else {
-                        visibilityMenu
                         albumSelectionButton
                         if isSelectingAlbums {
                             albumVisibilityAction
@@ -463,7 +456,7 @@ struct GalleryView: View {
     }
 
     private var visibilityMenu: some View {
-        GalleryVisibilityMenu(
+        GalleryVisibilityToggle(
             selection: $albumVisibility,
             visibleCount: manager.visibleAlbums.count,
             hiddenCount: manager.hiddenAlbums.count
@@ -644,6 +637,7 @@ struct GalleryView: View {
     private func overflowMenu(compact: Bool) -> some View {
         Menu {
             if manager.hasPhotoAccess || vault.isUnlocked {
+                if manager.selectedAlbum == nil { visibilityMenu }
                 if compact {
                     if manager.selectedAlbum != nil {
                         sortMenu
@@ -653,7 +647,6 @@ struct GalleryView: View {
                         #endif
                         if manager.selectedCount > 0 { moveSelectionButton }
                     } else {
-                        visibilityMenu
                         albumSelectionButton
                         if isSelectingAlbums { albumVisibilityAction }
                     }
@@ -1943,7 +1936,7 @@ private struct GalleryDestructiveButtonStyle: ButtonStyle {
                             .font(.callout.weight(.medium))
                             .foregroundStyle(LensLabTheme.ink)
 
-                        GalleryVisibilityMenu(
+                        GalleryVisibilityToggle(
                             selection: $albumVisibility,
                             visibleCount: samples.count,
                             hiddenCount: 0
