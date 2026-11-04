@@ -41,6 +41,7 @@ final class GalleryVaultService: ObservableObject {
     @Published private(set) var records: [GalleryVaultRecord] = []
     @Published private(set) var pendingAlbumDeletion: GalleryVaultAlbumDeletion?
     @Published private(set) var albumDeletionRecoveryError: String?
+    @Published private(set) var albumDeletionRemainingCount = 0
     var needsAlbumDeletionReview: Bool { pendingAlbumDeletion != nil || albumDeletionRecoveryError != nil }
     @Published private(set) var unreadableRecordCount = 0
     @Published private(set) var isBusy = false
@@ -88,6 +89,7 @@ final class GalleryVaultService: ObservableObject {
             records = []
             pendingAlbumDeletion = nil
             albumDeletionRecoveryError = nil
+            albumDeletionRemainingCount = 0
             unreadableRecordCount = 0
             isUnlocked = false
             authEpoch = UUID()
@@ -107,6 +109,7 @@ final class GalleryVaultService: ObservableObject {
         records = []
         pendingAlbumDeletion = nil
         albumDeletionRecoveryError = nil
+        albumDeletionRemainingCount = 0
         isReviewingAlbumDeletion = false
         unreadableRecordCount = 0
         progress = nil
@@ -610,6 +613,7 @@ final class GalleryVaultService: ObservableObject {
     private func recoverAlbumDeletion() {
         pendingAlbumDeletion = nil
         albumDeletionRecoveryError = nil
+        albumDeletionRemainingCount = 0
         do {
             pendingAlbumDeletion = try storage.readAlbumDeletion()
             if pendingAlbumDeletion?.photosCommitted == true { try finishAlbumDeletionVaultStep() }
@@ -630,6 +634,16 @@ final class GalleryVaultService: ObservableObject {
         guard pendingAlbumDeletion == nil, albumDeletionRecoveryError != nil else { throw GalleryAlbumDeletionError.changed }
         try storage.writeAlbumDeletion(nil)
         albumDeletionRecoveryError = nil
+    }
+
+    func finishAlbumDeletionWithoutRemainingItems() throws {
+        guard isUnlocked else { throw GalleryVaultTransferError.locked }
+        guard !isBusy else { throw GalleryVaultTransferError.busy }
+        guard pendingAlbumDeletion?.photosCommitted == true, albumDeletionRecoveryError != nil else { throw GalleryAlbumDeletionError.interrupted }
+        try storage.writeAlbumDeletion(nil)
+        pendingAlbumDeletion = nil
+        albumDeletionRecoveryError = nil
+        albumDeletionRemainingCount = 0
     }
 
     func keepInterruptedAlbum() async throws {
@@ -729,6 +743,7 @@ final class GalleryVaultService: ObservableObject {
                 if firstError == nil { firstError = error.localizedDescription }
             }
         }
+        albumDeletionRemainingCount = remaining
         if remaining > 0 { throw GalleryAlbumDeletionError.cleanupIncomplete(remaining, firstError ?? "") }
         try storage.writeAlbumDeletion(nil)
         pendingAlbumDeletion = nil

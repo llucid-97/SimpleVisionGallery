@@ -72,6 +72,7 @@ struct GalleryVaultView: View {
     @State private var confirmDiscard = false
     @State private var confirmAlbumRetry = false
     @State private var confirmDiscardAlbumDeletion = false
+    @State private var confirmFinishAlbumDeletion = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -98,6 +99,11 @@ struct GalleryVaultView: View {
                                     .accessibilityIdentifier("gallery-album-recovery-error")
                                 Button("Retry Album Cleanup") { vault.retryAlbumDeletionRecovery() }
                                     .disabled(vault.isBusy)
+                                if vault.pendingAlbumDeletion?.photosCommitted == true {
+                                    Button("Finish Without Remaining Items") { confirmFinishAlbumDeletion = true }
+                                        .disabled(vault.isBusy)
+                                        .accessibilityIdentifier("gallery-album-cleanup-finish")
+                                }
                             }
                             if vault.pendingAlbumDeletion == nil {
                                 Button("Discard Unreadable Recovery Note…") { confirmDiscardAlbumDeletion = true }
@@ -266,6 +272,7 @@ struct GalleryVaultView: View {
                 resultMessage = nil
                 albumDeletion = nil
                 confirmDiscardAlbumDeletion = false
+                confirmFinishAlbumDeletion = false
                 unlockError = nil
                 pendingCopies = []
                 discardIDs = []
@@ -301,6 +308,15 @@ struct GalleryVaultView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Photos cannot restore some original albums because they are missing or cannot be edited. Restored items will be added to available albums, but not to those unavailable albums.")
+        }
+        .confirmationDialog("Finish Without Remaining Items?", isPresented: $confirmFinishAlbumDeletion, titleVisibility: .visible) {
+            Button("Finish Without Remaining Items") {
+                do { try vault.finishAlbumDeletionWithoutRemainingItems() }
+                catch { unlockError = error.localizedDescription }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(vault.albumDeletionRemainingCount) item\(vault.albumDeletionRemainingCount == 1 ? "" : "s") will keep “\(vault.pendingAlbumDeletion?.plan.title ?? "this album")” in their vault memberships. This clears the cleanup note only. No photos or vault items will be changed or deleted.")
         }
         .confirmationDialog("Discard unreadable recovery note?", isPresented: $confirmDiscardAlbumDeletion, titleVisibility: .visible) {
             Button("Discard Recovery Note") {
