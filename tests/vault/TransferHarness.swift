@@ -121,18 +121,18 @@ import CoreLocation
             precondition(GalleryVaultStorage.shared.record(id: id) == nil && FakePhotos.assets.count == 1)
             let restored = FakePhotos.assets.values.first!
             precondition(restored.parents == ["album"] && restored.resources[0].bytes == Data("bytes-a".utf8))
-            print("PASS missing album blocks default restore; explicit fallback keeps available parent and bytes")
+            print("PASS non-editable album blocks default restore; explicit fallback keeps available parent and bytes")
         }
         do {
             let items = try await start(["a"])
             _ = try await service.moveToVault(assets: items)
             let id = service.records[0].id
             FakePhotos.missingParents = ["other"]
-            do { try await service.restore(recordID: id); fatalError("missing parent restored without explicit fallback") } catch {}
-            precondition(GalleryVaultStorage.shared.record(id: id) != nil && FakePhotos.assets.isEmpty)
-            try await service.restore(recordID: id, omittingUnavailableAlbums: true)
-            precondition(GalleryVaultStorage.shared.record(id: id) == nil && FakePhotos.assets.values.first?.parents == ["album"])
-            print("PASS deleted album requires explicit restore fallback")
+            try await service.restore(recordID: id)
+            let createdAlbum = FakePhotos.albumTitles.first { $0.value == "other" }!.key
+            precondition(GalleryVaultStorage.shared.record(id: id) == nil)
+            precondition(Set(FakePhotos.assets.values.first!.parents) == Set(["album", createdAlbum]))
+            print("PASS deleted album is recreated and verified by its new ID")
         }
         do {
             service.lock()
@@ -237,14 +237,18 @@ import CoreLocation
             let items = try await start(["a"])
             _ = try await service.moveToVault(assets: items)
             let id = service.records[0].id
+            FakePhotos.missingParents = ["other"]
             FakePhotos.cancelImportAfterCommit = true
             do { try await service.restore(recordID: id); fatalError("injected cancellation unexpectedly succeeded") } catch {}
             precondition(GalleryVaultStorage.shared.record(id: id)?.state == .restoring)
             precondition(FakePhotos.assets.count == 1 && FakePhotos.creationCalls == 1)
+            let replacement = FakePhotos.albumTitles.first { $0.value == "other" }!.key
+            precondition(GalleryVaultStorage.shared.record(id: id)!.albums.contains { $0.id == replacement })
             FakePhotos.cancelImportAfterCommit = false
             try await service.restore(recordID: id)
             precondition(GalleryVaultStorage.shared.record(id: id) == nil && FakePhotos.assets.count == 1 && FakePhotos.creationCalls == 1)
-            print("PASS uncertain committed restore reconciles without duplicate")
+            precondition(FakePhotos.albumTitles.count == 1 && FakePhotos.assets.values.first!.parents.contains(replacement))
+            print("PASS uncertain committed restore verifies recreated album without duplicate")
         }
         do {
             let items = try await start(["a"])
