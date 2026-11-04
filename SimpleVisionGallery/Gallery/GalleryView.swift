@@ -202,7 +202,9 @@ struct GalleryView: View {
     }
 
     private var designActions: some View {
-        ViewThatFits(in: .horizontal) {
+        HStack(spacing: 16) {
+            GalleryVaultSessionButton()
+            ViewThatFits(in: .horizontal) {
             HStack(spacing: 16) {
                 visibilityMenu
                 albumSelectionButton
@@ -219,6 +221,7 @@ struct GalleryView: View {
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await manager.loadAlbums() } }
             } label: { Image(systemName: "ellipsis").frame(width: 40, height: 40) }
             .buttonStyle(LensLabSecondaryButtonStyle())
+            }
         }
     }
 
@@ -307,6 +310,7 @@ struct GalleryView: View {
             .padding(.horizontal, 16)
             .frame(minWidth: 160, maxWidth: .infinity, minHeight: 68)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+            GalleryVaultSessionButton()
             if !compact {
                 sortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort")
                 thumbnailSizeButton.labelStyle(.iconOnly).galleryHoverLabel("Thumbnail size")

@@ -22,8 +22,8 @@ for platform_import in ("@preconcurrency import Photos\n", "import UIKit\n"):
     body = body.replace(platform_import, "", 1)
 assert "UIApplication.protectedDataWillBecomeUnavailableNotification" in body
 app = (repo / "SimpleVisionGallery/SimpleVisionGalleryApp.swift").read_text()
-assert re.search(r"@Environment\(\\\.scenePhase\)\s+private var scenePhase", app), "app phase observer missing"
-assert re.search(r"\.onChange\(of:\s*scenePhase\).*?phase\s*==\s*\.background\s*\{\s*GalleryVaultService\.shared\.lock\(\)", app, re.S), "app background lock missing"
+assert "GalleryVaultService.shared.lock()" not in app, "switching apps must preserve the vault session"
+assert "protectedDataWillBecomeUnavailableNotification" in body, "device locking must still lock the vault"
 # The source-version predicate is also production code; fake Photos supplies its inputs.
 photo_source = (repo / "SimpleVisionGallery/Gallery/GalleryVaultPhotoLibrary.swift").read_text()
 fake_source = (HERE / "vault/FakePhotoKit.swift").read_text()

@@ -298,3 +298,22 @@ struct GalleryVaultView: View {
         return outcome.message.map { summary + " " + $0 } ?? summary
     }
 }
+
+/// One shared session indicator for gallery and viewer toolbars.
+struct GalleryVaultSessionButton: View {
+    @ObservedObject private var vault = GalleryVaultService.shared
+
+    var body: some View {
+        if vault.isUnlocked {
+            Button { vault.lock() } label: {
+                Label("Lock Private Vault", systemImage: "lock.open")
+            }
+            .labelStyle(.iconOnly)
+            .frame(width: 44, height: 44)
+            .buttonStyle(.borderless)
+            .help("Private Vault is open. Private items are included in albums and slideshows. Select to lock.")
+            .accessibilityLabel("Private Vault open. Lock Private Vault")
+            .accessibilityIdentifier("gallery-vault-session-lock")
+        }
+    }
+}

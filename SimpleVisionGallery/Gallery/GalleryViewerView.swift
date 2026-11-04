@@ -271,6 +271,7 @@ private struct GalleryViewerPane: View {
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 Spacer()
+                GalleryVaultSessionButton()
                 Menu {
                     if let asset = session.currentAsset {
                         Button("Move to Private Vault", systemImage: "lock") {
