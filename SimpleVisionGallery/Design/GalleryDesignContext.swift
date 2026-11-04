@@ -15,6 +15,7 @@ struct GalleryDesignContext {
     let cover: (GalleryAlbum) -> AnyView
     let openAlbum: (GalleryAlbum) -> Void
     let renameAlbum: (GalleryAlbum) -> Void
+    let deleteAlbum: (GalleryAlbum) -> Void
     let toggleVisibility: (GalleryAlbum) -> Void
     let moveAlbumToVault: (GalleryAlbum) -> Void
     let restoreAlbumFromVault: (GalleryAlbum) -> Void
@@ -33,6 +34,11 @@ struct GalleryDesignAlbumActions: View {
     let context: GalleryDesignContext
     let album: GalleryAlbum
     var body: some View {
+        if context.manager.canDeleteAlbum(album) {
+            Button("Delete Album…", systemImage: "trash", role: .destructive) { context.deleteAlbum(album) }
+                .disabled(context.manager.isPerformingOperation || GalleryVaultService.shared.isBusy)
+                .accessibilityIdentifier("gallery-album-delete")
+        }
         Button("Sort", systemImage: "arrow.up.arrow.down") { context.beginReordering(album) }
         if context.manager.hasVaultRecords(in: album) {
             Button("Restore Private Items to Photos", systemImage: "lock.open") {

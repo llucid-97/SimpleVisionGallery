@@ -65,6 +65,7 @@ struct GalleryVaultView: View {
     @Binding var albumRetryIDs: [UUID]
     @Environment(\.dismiss) private var dismiss
     @State private var unlockError: String?
+    @State private var albumDeletion: GalleryAlbumDeletionPlan?
     @State private var pendingCopies: [GalleryVaultRecord] = []
     @State private var pendingVisibleCount = 50
     @State private var discardIDs: [UUID] = []
@@ -89,6 +90,19 @@ struct GalleryVaultView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     if vault.isUnlocked {
+                        if vault.pendingAlbumDeletion != nil {
+                            Text("An album deletion was interrupted. Its remaining vault files were kept. Review the action before moving or restoring items.")
+                            Button("Review Interrupted Album Deletion") {
+                                Task { @MainActor in
+                                    do {
+                                        let plan = try await vault.reviewInterruptedAlbumDeletion()
+                                        vault.isReviewingAlbumDeletion = true
+                                        albumDeletion = plan
+                                    }
+                                    catch { unlockError = error.localizedDescription }
+                                }
+                            }.disabled(vault.isBusy)
+                        }
                         Button("Lock Vault", systemImage: "lock") { vault.lock() }
                             .buttonStyle(LensLabSecondaryButtonStyle())
                             .accessibilityIdentifier("gallery-vault-lock")
@@ -238,6 +252,7 @@ struct GalleryVaultView: View {
         .onChange(of: vault.isUnlocked) { _, unlocked in
             if !unlocked {
                 resultMessage = nil
+                albumDeletion = nil
                 unlockError = nil
                 pendingCopies = []
                 discardIDs = []
@@ -274,6 +289,8 @@ struct GalleryVaultView: View {
         } message: {
             Text("Photos cannot restore some original albums because they are missing or cannot be edited. Restored items will be added to available albums, but not to those unavailable albums.")
         }
+        .sheet(item: $albumDeletion, onDismiss: { vault.isReviewingAlbumDeletion = false }) { plan in GalleryAlbumDeletionSheet(plan: plan) }
+
     }
 
     private func restore(_ ids: [UUID], omittingUnavailableAlbums: Bool = false) {

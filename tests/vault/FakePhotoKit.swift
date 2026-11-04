@@ -8,6 +8,7 @@ nonisolated enum UIApplication {
     static let protectedDataWillBecomeUnavailableNotification = Notification.Name("UIApplicationProtectedDataWillBecomeUnavailable")
 }
 extension Notification.Name {
+    static let galleryAlbumWasDeleted = Notification.Name("GalleryAlbumWasDeleted")
     static let galleryVaultWillLock = Notification.Name("GalleryVaultWillLock")
     static let galleryVaultDidLock = Notification.Name("GalleryVaultDidLock")
     static let galleryVaultDidHideItems = Notification.Name("GalleryVaultDidHideItems")
@@ -17,13 +18,35 @@ nonisolated enum PHAuthorizationStatus { case authorized, limited }
 nonisolated enum PHAccessLevel { case readWrite }
 nonisolated enum PHAssetCollectionType { case album }
 nonisolated enum PHAssetCollectionSubtype { case albumRegular }
+nonisolated struct GalleryAlbum {
+    let id: String
+    let title: String
+    let collection: PHAssetCollection?
+    var virtualScope: Int? = nil
+}
 nonisolated enum GalleryRecycleBin {
+    static func isRecycleBin(_ album: GalleryAlbum) -> Bool { isRecycleBinTitle(album.title) }
+    static func albumDeletionSnapshot(id: String) throws -> (ids: [String], shared: Int)? {
+        if FakePhotos.missingParents.contains(id) { return nil }
+        let assets = FakePhotos.assets.values.filter { $0.parents.contains(id) }
+        return (assets.map(\.localIdentifier).sorted(), assets.filter { $0.parents.contains(where: { $0 != id && $0 != "bin" }) }.count)
+    }
+    @MainActor static func deleteAlbum(_ plan: GalleryAlbumDeletionPlan, includingItems: Bool) async throws {
+        if FakePhotos.failDelete { throw FakeError.injected }
+        let assets = FakePhotos.assets.values.filter { $0.parents.contains(plan.albumID) }
+        guard assets.map(\.localIdentifier).sorted() == plan.photoIDs else { throw GalleryAlbumDeletionError.changed }
+        for asset in assets {
+            asset.parents.removeAll { $0 == plan.albumID }
+            if includingItems && !asset.parents.contains("bin") { asset.parents.append("bin") }
+        }
+        FakePhotos.missingParents.insert(plan.albumID)
+    }
     static func isRecycleBinTitle(_ title: String?) -> Bool { title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "recycle bin" }
 }
 nonisolated enum PHAssetResourceType: Int { case photo = 1, video = 2, alternatePhoto = 4, pairedVideo = 9, fullSizePhoto = 5, fullSizeVideo = 6, adjustmentData = 7, adjustmentBasePhoto = 8, fullSizePairedVideo = 10, adjustmentBasePairedVideo = 11, adjustmentBaseVideo = 12 }
 nonisolated enum PHAssetMediaType: Int { case image = 1, video = 2 }
 nonisolated enum PHAssetEditOperation { case delete }
-nonisolated enum PHCollectionEditOperation { case addContent }
+nonisolated enum PHCollectionEditOperation { case addContent, delete }
 nonisolated struct PHAssetMediaSubtype: OptionSet, Sendable { let rawValue: UInt; static let photoLive = Self(rawValue: 1 << 3) }
 typealias PHAssetResourceDataRequestID = Int32
 nonisolated final class PHFetchResult<T>: @unchecked Sendable {
@@ -221,8 +244,14 @@ nonisolated final class GalleryVaultStagingItem {
     var durable: [UUID: GalleryVaultRecord] = [:]
     var blobs: [UUID: Data] = [:]
     var sourceParents: [UUID: [GalleryVaultAlbum]] = [:]
+    var albumIntent: GalleryVaultAlbumDeletion?
+    var hasStoredItems: Bool { !durable.isEmpty || albumIntent != nil }
+    func authoritativeRecords() async throws -> [GalleryVaultRecord] { records }
+    func authoritativeRecord(id: UUID) throws -> GalleryVaultRecord? { durable[id] }
+    func readAlbumDeletion() throws -> GalleryVaultAlbumDeletion? { albumIntent }
+    func writeAlbumDeletion(_ intent: GalleryVaultAlbumDeletion?) throws { albumIntent = intent }
     var records: [GalleryVaultRecord] { Array(durable.values) }
-    func reset() { isUnlocked = false; unreadableRecordCount = 0; cleanupWarning = nil; simulatedCleanupFailure = false; generation = UUID(); pendingUnlock = nil; delayUnlock = false; lockAtUnlockReturn = false; lockAtEndBatch = false; failCommitSource = nil; failVerifyIDs = []; durable = [:]; blobs = [:]; sourceParents = [:] }
+    func reset() { isUnlocked = false; unreadableRecordCount = 0; cleanupWarning = nil; simulatedCleanupFailure = false; generation = UUID(); pendingUnlock = nil; delayUnlock = false; lockAtUnlockReturn = false; lockAtEndBatch = false; failCommitSource = nil; failVerifyIDs = []; durable = [:]; blobs = [:]; sourceParents = [:]; albumIntent = nil }
     func unlock() async throws {
         let expected = generation
         if delayUnlock { await withCheckedContinuation { pendingUnlock = $0 } }

@@ -39,3 +39,37 @@ nonisolated struct GalleryVaultRecord: Codable, Equatable, Sendable, Identifiabl
     var state: State
     var restoredIdentifier: String?
 }
+
+/// Frozen confirmation counts and IDs; persisted only inside an encrypted operation intent.
+nonisolated struct GalleryAlbumDeletionPlan: Codable, Equatable, Sendable, Identifiable {
+    var id = UUID()
+    let albumID: String
+    let title: String
+    let hadPhotosAlbum: Bool
+    let photoIDs: [String]
+    let sharedPhotoCount: Int
+    let vaultRecords: [GalleryVaultRecord]
+
+    var permanentVaultIDs: Set<UUID> {
+        Set(vaultRecords.filter { $0.albums.allSatisfy { $0.id == albumID } }.map(\.id))
+    }
+}
+
+nonisolated struct GalleryVaultAlbumDeletion: Codable, Equatable, Sendable {
+    let plan: GalleryAlbumDeletionPlan
+    let deleteItems: Bool
+    var photosCommitted = false
+}
+
+nonisolated enum GalleryAlbumDeletionError: LocalizedError {
+    case changed, interrupted, unreadable, restoring, notDeletable
+    var errorDescription: String? {
+        switch self {
+        case .changed: "The album changed. Review its current items before deleting it."
+        case .interrupted: "Review the interrupted album deletion in Private Vault before continuing."
+        case .unreadable: "Some vault records could not be read. The album and saved files were kept."
+        case .restoring: "Finish restoring the album's private items before deleting it."
+        case .notDeletable: "This album cannot be deleted."
+        }
+    }
+}

@@ -493,6 +493,60 @@ final class GalleryVaultStorage: ObservableObject {
         try Self.syncDirectory(items)
     }
 
+    var hasStoredItems: Bool {
+        if FileManager.default.fileExists(atPath: root.appendingPathComponent("album-deletion.enc").path) { return true }
+        do { return try !FileManager.default.contentsOfDirectory(at: items, includingPropertiesForKeys: nil).isEmpty }
+        catch { return !Self.isMissingFile(error) }
+    }
+
+    func authoritativeRecords() async throws -> [GalleryVaultRecord] {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        let expectedGeneration = generation, directory = items
+        let scan = try await Task.detached(priority: .userInitiated) {
+            try Self.readRecords(in: directory, cached: nil, session: session)
+        }.value
+        guard generation == expectedGeneration, isUnlocked else { throw GalleryVaultStorageError.locked }
+        guard scan.unreadable == 0 else { throw GalleryAlbumDeletionError.unreadable }
+        return scan.records
+    }
+
+    func authoritativeRecord(id: UUID) throws -> GalleryVaultRecord? {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        do { return try Self.readRecord(in: itemURL(id), id: id, session: session) }
+        catch { if Self.isMissingFile(error) { return nil }; throw error }
+    }
+
+    func readAlbumDeletion() throws -> GalleryVaultAlbumDeletion? {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        let data: Data
+        do { data = try Data(contentsOf: root.appendingPathComponent("album-deletion.enc")) }
+        catch { if Self.isMissingFile(error) { return nil }; throw error }
+        return try session.withKey { key in
+            try JSONDecoder().decode(GalleryVaultAlbumDeletion.self,
+                from: AES.GCM.open(AES.GCM.SealedBox(combined: data), using: key,
+                    authenticating: Data("SVGAlbumDeletion1".utf8)))
+        }
+    }
+
+    func writeAlbumDeletion(_ intent: GalleryVaultAlbumDeletion?) throws {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        let url = root.appendingPathComponent("album-deletion.enc")
+        if let intent {
+            let bytes = try session.withKey { key in
+                try AES.GCM.seal(JSONEncoder().encode(intent), using: key,
+                    authenticating: Data("SVGAlbumDeletion1".utf8)).combined
+            }
+            guard let bytes else { throw GalleryVaultStorageError.corruptRecord }
+            try bytes.write(to: url, options: [.atomic, .completeFileProtection])
+            try Self.syncFile(url)
+            // Authenticate the durable intent before any Photos mutation.
+            guard try readAlbumDeletion() == intent else { throw GalleryVaultStorageError.corruptRecord }
+        } else if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        try Self.syncDirectory(root)
+    }
+
     func sourceAlbums(for record: GalleryVaultRecord) async throws -> [GalleryVaultAlbum] {
         (try await sourceVersions(for: [record]))[0].albums
     }

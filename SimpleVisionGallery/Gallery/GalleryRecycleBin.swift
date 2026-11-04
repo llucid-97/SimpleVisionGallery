@@ -46,6 +46,63 @@ enum GalleryRecycleBin {
         }.value
     }
 
+    nonisolated static func albumDeletionSnapshot(id: String) throws -> (ids: [String], shared: Int)? {
+        guard let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject else { return nil }
+        guard album.canPerform(.delete), !isRecycleBinTitle(album.localizedTitle) else { throw GalleryAlbumDeletionError.notDeletable }
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        options.includeAllBurstAssets = true
+        let fetch = PHAsset.fetchAssets(in: album, options: options)
+        var ids: [String] = [], shared = 0
+        for index in 0..<fetch.count {
+            let asset = fetch.object(at: index)
+            ids.append(asset.localIdentifier)
+            let parents = PHAssetCollection.fetchAssetCollectionsContaining(asset, with: .album, options: nil)
+            if (0..<parents.count).contains(where: {
+                let parent = parents.object(at: $0)
+                return parent.localIdentifier != id && !isRecycleBinTitle(parent.localizedTitle)
+            }) { shared += 1 }
+        }
+        return (ids.sorted(), shared)
+    }
+
+    static func deleteAlbum(_ plan: GalleryAlbumDeletionPlan, includingItems: Bool) async throws {
+        if moving { await withCheckedContinuation { waiters.append($0) } }
+        moving = true
+        defer {
+            if waiters.isEmpty { moving = false }
+            else { waiters.removeFirst().resume() }
+        }
+        try await Task.detached(priority: .userInitiated) {
+            guard let source = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [plan.albumID], options: nil).firstObject,
+                  source.canPerform(.delete), source.localizedTitle == plan.title, !isRecycleBinTitle(source.localizedTitle) else { throw GalleryAlbumDeletionError.changed }
+            let bin = includingItems && !plan.photoIDs.isEmpty ? existingCollection() : nil
+            if let bin, !bin.canPerform(.addContent) { throw GalleryRecycleBinError.binNotEditable }
+            var staged = false
+            try await PHPhotoLibrary.shared().performChanges {
+                // Recheck the frozen item set before staging either half of the transaction.
+                let options = PHFetchOptions()
+                options.includeHiddenAssets = true
+                options.includeAllBurstAssets = true
+                let fetch = PHAsset.fetchAssets(in: source, options: options)
+                let assets = (0..<fetch.count).map { fetch.object(at: $0) }
+                guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+                      assets.map(\.localIdentifier).sorted() == plan.photoIDs else { return }
+                if includingItems && !assets.isEmpty {
+                    let request: PHAssetCollectionChangeRequest
+                    if let bin {
+                        guard let existing = PHAssetCollectionChangeRequest(for: bin) else { return }
+                        request = existing
+                    } else { request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: title) }
+                    request.addAssets(assets as NSFastEnumeration)
+                }
+                PHAssetCollectionChangeRequest.deleteAssetCollections([source] as NSArray)
+                staged = true
+            }
+            guard staged else { throw GalleryAlbumDeletionError.changed }
+        }.value
+    }
+
     private nonisolated static func performMove(_ assets: [PHAsset], from source: PHAssetCollection?) async throws -> String {
         // Collections are immutable snapshots. Resolve current title/editability
         // so a rename cannot leave recycle behavior attached to the old name.

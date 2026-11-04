@@ -39,8 +39,10 @@ final class GalleryVaultService: ObservableObject {
     @Published private(set) var isUnlocked = false
     @Published private(set) var authEpoch = UUID()
     @Published private(set) var records: [GalleryVaultRecord] = []
+    @Published private(set) var pendingAlbumDeletion: GalleryVaultAlbumDeletion?
     @Published private(set) var unreadableRecordCount = 0
     @Published private(set) var isBusy = false
+    @Published var isReviewingAlbumDeletion = false
     @Published private(set) var progress: GalleryVaultProgress?
     @Published private(set) var error: String?
 
@@ -74,13 +76,16 @@ final class GalleryVaultService: ObservableObject {
             isUnlocked = true
             // A deletion can commit just before the app terminates. Resolve it only
             // with full library access, and never delete an existing source here.
-            let unreadablePending = try await reconcilePendingAfterUnlock()
+            pendingAlbumDeletion = try storage.readAlbumDeletion()
+            if pendingAlbumDeletion?.photosCommitted == true { try finishAlbumDeletionVaultStep() }
+            let unreadablePending = pendingAlbumDeletion == nil ? try await reconcilePendingAfterUnlock() : 0
             guard isCurrent(epoch), storage.isUnlocked else { throw GalleryVaultTransferError.locked }
             records = storage.records
             unreadableRecordCount = storage.unreadableRecordCount + unreadablePending
         } catch {
             let wasLockedDuringAttempt = authEpoch != (unlockedEpoch ?? attemptEpoch)
             records = []
+            pendingAlbumDeletion = nil
             unreadableRecordCount = 0
             isUnlocked = false
             authEpoch = UUID()
@@ -98,6 +103,8 @@ final class GalleryVaultService: ObservableObject {
         authEpoch = UUID()
         isUnlocked = false
         records = []
+        pendingAlbumDeletion = nil
+        isReviewingAlbumDeletion = false
         unreadableRecordCount = 0
         progress = nil
         error = nil
@@ -581,9 +588,99 @@ final class GalleryVaultService: ObservableObject {
         return error.localizedDescription
     }
 
+    func prepareAlbumDeletion(_ album: GalleryAlbum) async throws -> GalleryAlbumDeletionPlan {
+        guard album.virtualScope == nil, !GalleryRecycleBin.isRecycleBin(album),
+              album.collection == nil || album.collection?.canPerform(.delete) == true else { throw GalleryAlbumDeletionError.notDeletable }
+        if album.collection != nil { try GalleryVaultPhotoLibrary.requireFullAccess() }
+        if storage.hasStoredItems && !isUnlocked { try await unlock() }
+        guard !isBusy else { throw GalleryVaultTransferError.busy }
+        guard pendingAlbumDeletion == nil else { throw GalleryAlbumDeletionError.interrupted }
+        return try await albumDeletionPlan(id: album.id, title: album.title, allowMissing: album.collection == nil)
+    }
+
+    func reviewInterruptedAlbumDeletion() async throws -> GalleryAlbumDeletionPlan {
+        guard isUnlocked, let intent = pendingAlbumDeletion, !intent.photosCommitted else { throw GalleryAlbumDeletionError.interrupted }
+        guard !isBusy else { throw GalleryVaultTransferError.busy }
+        return try await albumDeletionPlan(id: intent.plan.albumID, title: intent.plan.title, allowMissing: true)
+    }
+
+    private func albumDeletionPlan(id: String, title: String, allowMissing: Bool) async throws -> GalleryAlbumDeletionPlan {
+        isBusy = true
+        let epoch = authEpoch, hadUnlock = isUnlocked
+        defer { isBusy = false }
+        let actual = hadUnlock ? try await storage.authoritativeRecords() : []
+        let records = actual.filter { $0.albums.contains { $0.id == id } }
+        guard !records.contains(where: { $0.state == .restoring }) else { throw GalleryAlbumDeletionError.restoring }
+        let photos = try await Task.detached(priority: .userInitiated) { try GalleryRecycleBin.albumDeletionSnapshot(id: id) }.value
+        guard !hadUnlock || isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+        guard photos != nil || allowMissing else { throw GalleryAlbumDeletionError.changed }
+        return GalleryAlbumDeletionPlan(albumID: id, title: title, hadPhotosAlbum: photos != nil,
+            photoIDs: photos?.ids ?? [], sharedPhotoCount: photos?.shared ?? 0, vaultRecords: records)
+    }
+
+    func deleteAlbum(_ plan: GalleryAlbumDeletionPlan, includingItems: Bool) async throws {
+        guard !isBusy else { throw GalleryVaultTransferError.busy }
+        guard pendingAlbumDeletion == nil || (pendingAlbumDeletion?.plan.albumID == plan.albumID && pendingAlbumDeletion?.photosCommitted == false) else { throw GalleryAlbumDeletionError.interrupted }
+        if plan.hadPhotosAlbum { try GalleryVaultPhotoLibrary.requireFullAccess() }
+        if storage.hasStoredItems { guard isUnlocked else { throw GalleryVaultTransferError.locked } }
+        isBusy = true
+        let epoch = authEpoch, hadUnlock = isUnlocked
+        defer { publishIfCurrent(epoch); isBusy = false }
+        if hadUnlock {
+            let actual = try await storage.authoritativeRecords().filter { $0.albums.contains { $0.id == plan.albumID } }
+            guard Dictionary(uniqueKeysWithValues: actual.map { ($0.id, $0) }) == Dictionary(uniqueKeysWithValues: plan.vaultRecords.map { ($0.id, $0) }) else { throw GalleryAlbumDeletionError.changed }
+            guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+        }
+        let needsJournal = !plan.vaultRecords.isEmpty || pendingAlbumDeletion != nil
+        var intent = GalleryVaultAlbumDeletion(plan: plan, deleteItems: includingItems)
+        if needsJournal {
+            try storage.writeAlbumDeletion(intent)
+            pendingAlbumDeletion = intent
+        }
+        do {
+            if plan.hadPhotosAlbum { try await GalleryRecycleBin.deleteAlbum(plan, includingItems: includingItems) }
+        } catch {
+            if needsJournal && isCurrent(epoch) {
+                try storage.writeAlbumDeletion(nil)
+                pendingAlbumDeletion = nil
+            }
+            throw error
+        }
+        if needsJournal {
+            guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+            intent.photosCommitted = true
+            try storage.writeAlbumDeletion(intent)
+            pendingAlbumDeletion = intent
+            try finishAlbumDeletionVaultStep()
+        }
+        NotificationCenter.default.post(name: .galleryAlbumWasDeleted, object: nil, userInfo: ["albumID": plan.albumID])
+    }
+
+    private func finishAlbumDeletionVaultStep() throws {
+        guard let intent = pendingAlbumDeletion, intent.photosCommitted else { throw GalleryAlbumDeletionError.interrupted }
+        storage.beginBatch()
+        defer { storage.endBatch() }
+        let permanentIDs = intent.plan.permanentVaultIDs
+        for original in intent.plan.vaultRecords {
+            guard var record = try storage.authoritativeRecord(id: original.id),
+                  record.albums.contains(where: { $0.id == intent.plan.albumID }) else { continue }
+            if intent.deleteItems, permanentIDs.contains(record.id),
+               record.albums.allSatisfy({ $0.id == intent.plan.albumID }) {
+                try storage.remove(id: record.id)
+            } else {
+                record.albums.removeAll { $0.id == intent.plan.albumID }
+                try storage.update(record)
+            }
+        }
+        try storage.writeAlbumDeletion(nil)
+        pendingAlbumDeletion = nil
+        NotificationCenter.default.post(name: .galleryAlbumWasDeleted, object: nil, userInfo: ["albumID": intent.plan.albumID])
+    }
+
     private func beginOperation() throws {
         guard isUnlocked else { throw GalleryVaultTransferError.locked }
         guard !isBusy else { throw GalleryVaultTransferError.busy }
+        guard pendingAlbumDeletion == nil else { throw GalleryAlbumDeletionError.interrupted }
         try GalleryVaultPhotoLibrary.requireFullAccess()
         isBusy = true
         wantsCancel = false

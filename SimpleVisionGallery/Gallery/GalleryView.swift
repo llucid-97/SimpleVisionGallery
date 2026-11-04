@@ -47,6 +47,8 @@ struct GalleryView: View {
     @AppStorage(GalleryAppearance.accentColorKey) private var accentRGB = GalleryAppearance.defaultAccentRGB
     @State private var showingThumbnailSize = false
     @State private var albumToRename: GalleryAlbum?
+    @State private var albumDeletion: GalleryAlbumDeletionPlan?
+    @State private var albumDeletionError: String?
     @State private var albumVisibility: GalleryAlbumVisibility = .visible
     @State private var albumSearch = ""
     @State private var mediaSearch = ""
@@ -97,6 +99,12 @@ struct GalleryView: View {
             GalleryVaultView(resultMessage: $vaultMessage, albumRetryIDs: $vaultAlbumRetryIDs)
         }
         .modifier(GalleryVaultConfirmation(request: $vaultTransfer, showingVault: $showingVault, resultMessage: $vaultMessage))
+        .sheet(item: $albumDeletion, onDismiss: { vault.isReviewingAlbumDeletion = false }) { plan in
+            GalleryAlbumDeletionSheet(plan: plan) { Task { await manager.loadAlbums() } }
+        }
+        .alert("Album deletion", isPresented: Binding(get: { albumDeletionError != nil }, set: { if !$0 { albumDeletionError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(albumDeletionError ?? "") }
         .sheet(item: $albumToRename) { album in
             GalleryRenameAlbumSheet(album: album, manager: manager)
         }
@@ -137,6 +145,8 @@ struct GalleryView: View {
                 vaultAlbumRetryIDs = []
                 pendingVaultMove = nil
                 vaultTransfer = nil
+                albumDeletion = nil
+                albumDeletionError = nil
             }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
@@ -179,6 +189,7 @@ struct GalleryView: View {
                 else { Task { await manager.openAlbum(album) } }
             },
             renameAlbum: { albumToRename = $0 },
+            deleteAlbum: prepareAlbumDeletion,
             toggleVisibility: { album in
                 clearAlbumSelection()
                 if manager.isAlbumHidden(album) { manager.unhideAlbums(withIDs: [album.id]) }
@@ -871,6 +882,11 @@ struct GalleryView: View {
                             )
                             .frame(maxWidth: .infinity, alignment: .top)
                             .contextMenu {
+                                if manager.canDeleteAlbum(album) {
+                                    Button("Delete Album…", systemImage: "trash", role: .destructive) { prepareAlbumDeletion(album) }
+                                        .disabled(vault.isBusy || manager.isPerformingOperation)
+                                        .accessibilityIdentifier("gallery-album-delete")
+                                }
                                 if manager.hasVaultRecords(in: album) {
                                     Button("Restore Private Items to Photos", systemImage: "lock.open") {
                                         restoreAlbumFromVault(album)
@@ -1068,6 +1084,16 @@ struct GalleryView: View {
         } catch {
             vaultMessage = error.localizedDescription
             showingVault = true
+        }
+    }
+
+    private func prepareAlbumDeletion(_ album: GalleryAlbum) {
+        Task { @MainActor in
+            do {
+                let plan = try await vault.prepareAlbumDeletion(album)
+                vault.isReviewingAlbumDeletion = true
+                albumDeletion = plan
+            } catch { albumDeletionError = error.localizedDescription }
         }
     }
 
@@ -2209,3 +2235,50 @@ extension View {
     }
 }
 #endif
+
+struct GalleryAlbumDeletionSheet: View {
+    let plan: GalleryAlbumDeletionPlan
+    var completed: () -> Void = {}
+    @ObservedObject private var vault = GalleryVaultService.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Delete “\(plan.title)”?").font(.title2)
+            Text("\(plan.photoIDs.count) Photos items and \(plan.vaultRecords.count) vault items.")
+                .accessibilityIdentifier("gallery-album-delete-counts")
+            Text("\(plan.sharedPhotoCount) Photos items also belong to other albums and will stay visible there.")
+            Button("Delete Album Only") { perform(includingItems: false) }
+                .buttonStyle(LensLabSecondaryButtonStyle())
+                .accessibilityIdentifier("gallery-album-delete-only")
+            Text("Photos items stay in your library. Vault items stay private. Items with no other album appear in Unfiled. Restore will not recreate this album.")
+                .font(.callout)
+            Button("Delete Album and Items", role: .destructive) { perform(includingItems: true) }
+                .buttonStyle(LensLabPrimaryButtonStyle())
+                .accessibilityIdentifier("gallery-album-delete-items")
+            Text("\(plan.photoIDs.count) Photos items move to this app's Recycle Bin. \(plan.permanentVaultIDs.count) vault items will be permanently deleted and cannot be undone. \(plan.vaultRecords.count - plan.permanentVaultIDs.count) vault items in other albums will stay there.")
+                .font(.callout)
+                .accessibilityIdentifier("gallery-album-delete-warning")
+            if vault.isBusy { ProgressView("Deleting album…") }
+            if let error { Text(error).foregroundStyle(.red) }
+            Button("Cancel") { dismiss() }.buttonStyle(LensLabSecondaryButtonStyle())
+        }
+        .padding(24).frame(width: 600)
+        .disabled(vault.isBusy)
+        .onDisappear { vault.isReviewingAlbumDeletion = false }
+        .onChange(of: vault.isUnlocked) { _, unlocked in
+            if !unlocked { dismiss() }
+        }
+    }
+
+    private func perform(includingItems: Bool) {
+        Task { @MainActor in
+            do {
+                try await vault.deleteAlbum(plan, includingItems: includingItems)
+                completed()
+                dismiss()
+            } catch { if plan.vaultRecords.isEmpty || vault.isUnlocked { self.error = error.localizedDescription } }
+        }
+    }
+}
