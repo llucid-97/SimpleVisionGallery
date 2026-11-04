@@ -241,18 +241,22 @@ final class GalleryVaultService: ObservableObject {
             var current: [(PHAsset, GalleryVaultRecord)] = []
             var absent: [GalleryVaultRecord] = []
             var changed = 0
+            var editsDiscarded = 0
             for record in candidates {
                 guard let asset = live[record.sourceIdentifier] else { absent.append(record); continue }
-                if GalleryVaultPhotoLibrary.isSameVersion(asset, as: record) { current.append((asset, record)) }
+                if GalleryVaultPhotoLibrary.isSameVersion(asset, as: record) {
+                    current.append((asset, record))
+                    if GalleryVaultPhotoLibrary.hasEdits(PHAssetResource.assetResources(for: asset)) { editsDiscarded += 1 }
+                }
                 else { changed += 1 }
             }
-            return (current, absent, changed)
+            return (current, absent, changed, editsDiscarded)
         }.value
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         let current = classified.0
         let alreadyAbsent = classified.1
         let changed = classified.2
-        let editsDiscarded = current.filter { GalleryVaultPhotoLibrary.hasEdits(PHAssetResource.assetResources(for: $0.0)) }.count
+        let editsDiscarded = classified.3
         let deletedIDs = current.map { $0.1.sourceIdentifier }
         for var record in alreadyAbsent {
             record.state = .privateItem
