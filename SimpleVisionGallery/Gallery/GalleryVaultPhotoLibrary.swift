@@ -74,6 +74,7 @@ nonisolated enum GalleryVaultPhotoLibrary {
     }
 
     private static func originals(_ resources: [PHAssetResource], asset: PHAsset) throws -> [PHAssetResource] {
+        guard hasEdits(resources) else { return resources }
         let paired: Set<PHAssetResourceType> = [.pairedVideo, .fullSizePairedVideo, .adjustmentBasePairedVideo]
         guard !asset.mediaSubtypes.contains(.photoLive), !resources.contains(where: { paired.contains($0.type) })
         else { throw GalleryVaultTransferError.unsupportedResources }

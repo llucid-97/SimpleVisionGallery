@@ -57,7 +57,7 @@ Private Vault stores encrypted originals on this device, separate from Apple's H
 
 The vault has no backup or device sync. App deletion, device loss or removal of the device passcode can make vault items unrecoverable. Restore important items before doing any of these. Photos deletions sync through iCloud Photos, and Recently Deleted may keep using disk space.
 
-A partial batch keeps unfinished originals in Photos and saved copies in the vault. Retry can finish a declined deletion. Edited photos and non-Live videos are saved as originals only: edits are discarded once the item leaves Photos. Results count these items. Live Photos, missing originals and items with multiple originals stay in Photos. Vault items appear after native items in grids; known whole-album order is retained, but exact order in every parent album and Photos-specific history are not guaranteed. Private video thumbnails use a video symbol to avoid decrypting whole videos while scrolling.
+A partial batch keeps unfinished originals in Photos and saved copies in the vault. Retry can finish a declined deletion. Edited photos and non-Live videos are saved as originals only: edits are discarded once the item leaves Photos. Results count these items. Unedited items keep all their resources, including Live Photo pairs. Edited Live Photos, missing originals and edited items with multiple originals stay in Photos. Vault items appear after native items in grids; known whole-album order is retained, but exact order in every parent album and Photos-specific history are not guaranteed. Private video thumbnails use a video symbol to avoid decrypting whole videos while scrolling.
 
 ## App Store
 
