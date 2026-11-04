@@ -131,7 +131,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
         }
         emptyAlbumTask = task
         if let empty = await task.value, !task.isCancelled {
-            emptyAlbumIDs = empty
+            if emptyAlbumIDs != empty { emptyAlbumIDs = empty }
             emptyAlbumTask = nil
         }
     }
