@@ -27,6 +27,8 @@ nonisolated enum GalleryVaultStorageError: LocalizedError {
 nonisolated final class GalleryVaultSession: @unchecked Sendable {
     private let lock = NSLock()
     private var key: SymmetricKey?
+    private var thumbnailTotals: (count: Int, bytes: Int)?
+    private var removedThumbnailRecords = Set<UUID>()
 
     init(key: SymmetricKey) { self.key = key }
 
@@ -37,9 +39,72 @@ nonisolated final class GalleryVaultSession: @unchecked Sendable {
         return try body(key)
     }
 
+    func storeThumbnail(_ data: Data, recordID: UUID, at url: URL) throws {
+        try withKey { key in
+            guard !removedThumbnailRecords.contains(recordID) else { return }
+            let manager = FileManager.default
+            let directory = url.deletingLastPathComponent()
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.complete])
+            let box = try AES.GCM.seal(data, using: key, authenticating: Data(url.lastPathComponent.utf8))
+            guard let bytes = box.combined else { return }
+            let previous = (try? manager.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            let added = previous == 0 ? 1 : 0
+            if thumbnailTotals == nil || thumbnailTotals!.count + added > 2048
+                || thumbnailTotals!.bytes + bytes.count - previous > 64 * 1024 * 1024 {
+                let entries = try manager.contentsOfDirectory(at: directory,
+                    includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])
+                let dated = try entries.map { entry in
+                    let values = try entry.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    return (entry, values.contentModificationDate ?? .distantPast, values.fileSize ?? 0)
+                }.sorted { $0.1 < $1.1 }
+                var totals = (count: dated.count, bytes: dated.reduce(0) { $0 + $1.2 })
+                let needsEviction = totals.count + added > 2048 || totals.bytes + bytes.count - previous > 64 * 1024 * 1024
+                let countTarget = needsEviction ? 1920 : 2048
+                let byteTarget = (needsEviction ? 56 : 64) * 1024 * 1024
+                // Evict in batches, oldest-written first; reads do not change file dates.
+                for entry in dated where entry.0 != url {
+                    guard totals.count + added > countTarget || totals.bytes + bytes.count - previous > byteTarget else { break }
+                    try manager.removeItem(at: entry.0)
+                    totals.count -= 1
+                    totals.bytes -= entry.2
+                }
+                thumbnailTotals = totals
+            }
+            try bytes.write(to: url, options: [.atomic, .completeFileProtection])
+            thumbnailTotals!.count += added
+            thumbnailTotals!.bytes += bytes.count - previous
+        }
+    }
+
+    func removeThumbnails(recordID: UUID, urls: [URL]) throws {
+        try withKey { _ in
+            // Fence thumbnail writes already queued when the record was removed.
+            removedThumbnailRecords.insert(recordID)
+            for url in urls {
+                do {
+                    let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+                    try FileManager.default.removeItem(at: url)
+                    if thumbnailTotals != nil {
+                        thumbnailTotals!.count -= 1
+                        thumbnailTotals!.bytes -= size
+                    }
+                } catch {
+                    let value = error as NSError
+                    let missing = value.domain == NSCocoaErrorDomain
+                        && (value.code == NSFileNoSuchFileError || value.code == NSFileReadNoSuchFileError)
+                        || value.domain == NSPOSIXErrorDomain && value.code == Int(ENOENT)
+                    if !missing { throw error }
+                }
+            }
+        }
+    }
+
     func revoke() {
         lock.lock()
         key = nil
+        thumbnailTotals = nil
+        removedThumbnailRecords.removeAll()
         lock.unlock()
     }
 }
@@ -265,6 +330,15 @@ final class GalleryVaultStorage: ObservableObject {
     @Published private(set) var unreadableRecordCount = 0
     @Published private(set) var cleanupWarning: String?
     private var recordsByID: [UUID: GalleryVaultRecord] = [:]
+    private var recordDates: [UUID: Date] = [:]
+    private var manifestDirty = false
+    private var manifestTask: Task<Void, Never>?
+    private var manifestPreload: Task<Data?, Never>?
+    private nonisolated struct ManifestEntry: Codable, Sendable {
+        let record: GalleryVaultRecord
+        let date: Date
+    }
+    private nonisolated static let manifestAAD = Data("SVGManifest1".utf8)
     private var idsBySource: [String: UUID] = [:]
     private var batchDepth = 0
     private var recordsChanged = false
@@ -286,6 +360,13 @@ final class GalleryVaultStorage: ObservableObject {
         plaintext = FileManager.default.temporaryDirectory.appendingPathComponent("PrivateVaultLeases", isDirectory: true)
         // A crash must never leave a decrypted playback file available on relaunch.
         try? cleanupPlaintext()
+        preloadManifest()
+    }
+
+    private func preloadManifest() {
+        let url = root.appendingPathComponent("manifest.enc")
+        // No key or plaintext metadata is touched before device authentication.
+        manifestPreload = Task.detached(priority: .utility) { try? Data(contentsOf: url) }
     }
 
     func unlock() async throws {
@@ -319,6 +400,13 @@ final class GalleryVaultStorage: ObservableObject {
             session = newSession
             let itemDirectory = items
             let stagingDirectory = staging
+            let preloaded = await manifestPreload?.value
+            manifestPreload = nil
+            let manifestURL = root.appendingPathComponent("manifest.enc")
+            // Complete protection can reject a preload while the headset is off.
+            let cached = if let preloaded { preloaded } else {
+                await Task.detached(priority: .userInitiated) { try? Data(contentsOf: manifestURL) }.value
+            }
             let scan = try await Task.detached {
                 // A staged item is never eligible for Photos deletion until its directory is committed.
                 // Stale interrupted exports therefore contain no unique user data.
@@ -327,16 +415,19 @@ final class GalleryVaultStorage: ObservableObject {
                         try? FileManager.default.removeItem(at: entry)
                     }
                 }
-                return try Self.readRecords(in: itemDirectory, session: newSession)
+                return try Self.readRecords(in: itemDirectory, cached: cached, session: newSession)
             }.value
             guard generation == expectedGeneration else { throw GalleryVaultStorageError.locked }
             let loaded = scan.records
             recordsByID = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0) })
             idsBySource = [:]
             for record in loaded { idsBySource[record.sourceIdentifier] = record.id }
-            records = loaded.sorted { $0.id.uuidString < $1.id.uuidString }
+            records = Self.sortedRecords(loaded)
+            recordDates = scan.dates
+            manifestDirty = scan.changed
             unreadableRecordCount = scan.unreadable
             isUnlocked = true
+            saveManifestIfNeeded()
         } catch {
             newSession.revoke()
             if session === newSession { session = nil }
@@ -347,11 +438,16 @@ final class GalleryVaultStorage: ObservableObject {
     func lock() {
         generation = UUID()
         isUnlocked = false
+        manifestTask?.cancel()
+        manifestTask = nil
         session?.revoke()
         session = nil
         records.removeAll(keepingCapacity: false)
         unreadableRecordCount = 0
         recordsByID.removeAll(keepingCapacity: false)
+        recordDates.removeAll(keepingCapacity: false)
+        manifestDirty = false
+        preloadManifest()
         idsBySource.removeAll(keepingCapacity: false)
         batchDepth = 0
         recordsChanged = false
@@ -390,6 +486,8 @@ final class GalleryVaultStorage: ObservableObject {
         // Index it as pending so retry verifies the same copy instead of duplicating it.
         recordsByID[record.id] = record
         idsBySource[record.sourceIdentifier] = record.id
+        recordDates[record.id] = try? Self.recordDate(itemURL(record.id))
+        manifestDirty = true
         publishChangesIfNeeded()
         try Self.syncDirectory(items)
     }
@@ -402,15 +500,20 @@ final class GalleryVaultStorage: ObservableObject {
         if previous.sourceIdentifier != record.sourceIdentifier { idsBySource.removeValue(forKey: previous.sourceIdentifier) }
         recordsByID[record.id] = record
         idsBySource[record.sourceIdentifier] = record.id
+        recordDates[record.id] = try? Self.recordDate(itemURL(record.id))
+        manifestDirty = true
         publishChangesIfNeeded()
     }
 
     func remove(id: UUID) throws {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
-        try session.withKey { _ in () }
+        guard let record = recordsByID[id] else { throw GalleryVaultStorageError.corruptRecord }
+        try session.removeThumbnails(recordID: id, urls: record.resources.map { thumbnailURL(id, $0.id) })
         try FileManager.default.removeItem(at: itemURL(id))
         try Self.syncDirectory(items)
         if let old = recordsByID.removeValue(forKey: id) { idsBySource.removeValue(forKey: old.sourceIdentifier) }
+        recordDates.removeValue(forKey: id)
+        manifestDirty = true
         publishChangesIfNeeded()
     }
 
@@ -429,8 +532,64 @@ final class GalleryVaultStorage: ObservableObject {
     private func publishChangesIfNeeded() {
         recordsChanged = true
         guard batchDepth == 0 else { return }
-        records = recordsByID.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        records = Self.sortedRecords(Array(recordsByID.values))
         recordsChanged = false
+        saveManifestIfNeeded()
+    }
+
+    private nonisolated static func sortedRecords(_ records: [GalleryVaultRecord]) -> [GalleryVaultRecord] {
+        records.map { ($0.id.uuidString, $0) }.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    private func saveManifestIfNeeded() {
+        guard manifestDirty, let session, isUnlocked else { return }
+        manifestDirty = false
+        let entries = recordsByID.values.compactMap { record in
+            recordDates[record.id].map { ManifestEntry(record: record, date: $0) }
+        }
+        let url = root.appendingPathComponent("manifest.enc")
+        manifestTask?.cancel()
+        manifestTask = Task.detached(priority: .utility) {
+            // A failed or interrupted cache write only makes the next unlock scan the records.
+            try? session.withKey { key in
+                try Task.checkCancellation()
+                let data = try JSONEncoder().encode(entries)
+                let sealed = try AES.GCM.seal(data, using: key, authenticating: Self.manifestAAD)
+                try Task.checkCancellation()
+                guard let bytes = sealed.combined else { return }
+                try bytes.write(to: url, options: [.atomic, .completeFileProtection])
+            }
+        }
+    }
+
+    func thumbnail(recordID: UUID, resourceID: UUID) async throws -> Data? {
+        guard let session, isUnlocked, recordsByID[recordID]?.resources.contains(where: { $0.id == resourceID }) == true else {
+            throw GalleryVaultStorageError.locked
+        }
+        let expectedGeneration = generation
+        let url = thumbnailURL(recordID, resourceID)
+        let data = try await Task.detached(priority: .utility) {
+            try session.withKey { key -> Data? in
+                guard let bytes = try? Data(contentsOf: url) else { return nil }
+                return try? AES.GCM.open(AES.GCM.SealedBox(combined: bytes), using: key,
+                    authenticating: Data(url.lastPathComponent.utf8))
+            }
+        }.value
+        guard generation == expectedGeneration, isUnlocked else { throw GalleryVaultStorageError.locked }
+        return data
+    }
+
+    func cacheThumbnail(_ data: Data, recordID: UUID, resourceID: UUID) async {
+        guard let session, isUnlocked, data.count <= 128 * 1024 else { return }
+        let url = thumbnailURL(recordID, resourceID)
+        try? await Task.detached(priority: .utility) {
+            try session.storeThumbnail(data, recordID: recordID, at: url)
+        }.value
+    }
+
+    private func thumbnailURL(_ recordID: UUID, _ resourceID: UUID) -> URL {
+        root.appendingPathComponent("thumbnails", isDirectory: true)
+            .appendingPathComponent(recordID.uuidString + "-" + resourceID.uuidString + ".enc")
     }
 
     func decryptResource(recordID: UUID, resourceID: UUID) async throws -> URL {
@@ -484,6 +643,13 @@ final class GalleryVaultStorage: ObservableObject {
             return record
         }.value
         guard generation == expectedGeneration, isUnlocked else { throw GalleryVaultStorageError.locked }
+        if let old = recordsByID[id], old.sourceIdentifier != record.sourceIdentifier {
+            idsBySource.removeValue(forKey: old.sourceIdentifier)
+        }
+        if recordsByID[id] != record {
+            recordDates[id] = try? Self.recordDate(directory)
+            manifestDirty = true
+        }
         recordsByID[id] = record
         idsBySource[record.sourceIdentifier] = id
         publishChangesIfNeeded()
@@ -568,10 +734,31 @@ final class GalleryVaultStorage: ObservableObject {
         }
     }
 
-    private nonisolated static func readRecords(in directory: URL, session: GalleryVaultSession) throws -> (records: [GalleryVaultRecord], unreadable: Int) {
-        let entries = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+    private nonisolated static func recordDate(_ directory: URL) throws -> Date {
+        guard let date = try FileManager.default.attributesOfItem(atPath: directory.path)[.modificationDate] as? Date else {
+            throw GalleryVaultStorageError.corruptRecord
+        }
+        return date
+    }
+
+    private nonisolated static func readRecords(in directory: URL, cached: Data?, session: GalleryVaultSession) throws
+        -> (records: [GalleryVaultRecord], dates: [UUID: Date], unreadable: Int, changed: Bool) {
+        var cache: [UUID: ManifestEntry] = [:]
+        var validCache = false
+        if let cached, let entries = try? session.withKey({ key in
+            let data = try AES.GCM.open(AES.GCM.SealedBox(combined: cached), using: key, authenticating: manifestAAD)
+            return try JSONDecoder().decode([ManifestEntry].self, from: data)
+        }) {
+            validCache = true
+            for entry in entries { cache[entry.record.id] = entry }
+        }
+        let entries = try FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey])
         var records: [GalleryVaultRecord] = []
+        records.reserveCapacity(entries.count)
+        var dates: [UUID: Date] = [:]
         var unreadable = 0
+        var changed = !validCache || cache.count != entries.count
         for entry in entries {
             try session.withKey { _ in () }
             guard let id = UUID(uuidString: entry.lastPathComponent) else {
@@ -579,15 +766,24 @@ final class GalleryVaultStorage: ObservableObject {
                 continue
             }
             do {
-                records.append(try readRecord(in: entry, id: id, session: session))
+                let date = try entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                if let date, let existing = cache[id], existing.date == date {
+                    records.append(existing.record)
+                    dates[id] = date
+                } else {
+                    records.append(try readRecord(in: entry, id: id, session: session))
+                    dates[id] = date
+                    changed = true
+                }
             } catch GalleryVaultStorageError.locked {
                 throw GalleryVaultStorageError.locked
             } catch {
                 // Preserve the damaged entry for recovery; it is never eligible for deletion.
                 unreadable += 1
+                changed = true
             }
         }
-        return (records, unreadable)
+        return (records, dates, unreadable, changed)
     }
 
     private nonisolated static func readRecord(in directory: URL, id: UUID, session: GalleryVaultSession) throws -> GalleryVaultRecord {

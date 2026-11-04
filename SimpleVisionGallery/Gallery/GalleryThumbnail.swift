@@ -82,7 +82,15 @@ struct GalleryThumbnail: View {
             do {
                 try await GalleryVaultThumbnailGate.shared.acquire()
                 defer { GalleryVaultThumbnailGate.shared.release() }
-                let url = try await GalleryVaultStorage.shared.decryptResource(recordID: record.id, resourceID: resource.id)
+                let storage = GalleryVaultStorage.shared
+                if let data = try await storage.thumbnail(recordID: record.id, resourceID: resource.id),
+                   let cached = UIImage(data: data) {
+                    try Task.checkCancellation()
+                    guard requestGeneration == generation, storage.isUnlocked else { return }
+                    image = cached
+                    return
+                }
+                let url = try await storage.decryptResource(recordID: record.id, resourceID: resource.id)
                 defer { GalleryVaultStorage.shared.releasePlaintext(url) }
                 try Task.checkCancellation()
                 let thumbnail = await Task.detached(priority: .utility) { () -> UIImage? in
@@ -99,6 +107,9 @@ struct GalleryThumbnail: View {
                 try Task.checkCancellation()
                 guard requestGeneration == generation, GalleryVaultStorage.shared.isUnlocked else { return }
                 image = thumbnail
+                if let data = thumbnail?.jpegData(compressionQuality: 0.75) {
+                    await storage.cacheThumbnail(data, recordID: record.id, resourceID: resource.id)
+                }
             } catch {
                 // An unavailable or locked item keeps its neutral placeholder.
             }

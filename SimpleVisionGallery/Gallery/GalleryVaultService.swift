@@ -299,14 +299,17 @@ final class GalleryVaultService: ObservableObject {
         defer { storage.endBatch() }
         var unreadable = 0
         var reconciled: [String] = []
-        for var record in missing {
-            do { _ = try await storage.verifyCommitted(id: record.id) }
+        for cachedRecord in missing {
+            let verified: GalleryVaultRecord
+            do { verified = try await storage.verifyCommitted(id: cachedRecord.id) }
             catch {
                 guard isUnlocked else { throw GalleryVaultTransferError.locked }
                 unreadable += 1
                 continue
             }
             guard isUnlocked else { throw GalleryVaultTransferError.locked }
+            guard verified.state == .copiedAwaitingDeletion else { continue }
+            var record = verified
             record.state = .privateItem
             try storage.update(record)
             reconciled.append(record.sourceIdentifier)
@@ -368,6 +371,7 @@ final class GalleryVaultService: ObservableObject {
         try GalleryVaultPhotoLibrary.requireFullAccess()
         let verifiedRecord = try await storage.verifyCommitted(id: record.id)
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+        guard verifiedRecord.state != .copiedAwaitingDeletion else { throw GalleryVaultTransferError.pendingCopyUnavailable }
         let parents = try await Task.detached { try GalleryVaultPhotoLibrary.usableParents(verifiedRecord, omittingUnavailable: omittingUnavailableAlbums) }.value
         var leases: [URL] = []
         defer { for url in leases { storage.releasePlaintext(url) } }
