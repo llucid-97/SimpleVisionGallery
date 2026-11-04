@@ -963,7 +963,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func setAlbumSortMode(_ mode: GalleryAlbumSortMode) {
-        guard albumSortMode != mode else { return }
+        guard albumSortMode != mode || mode == .random else { return }
         albumSortMode = mode
         if mode == .random {
             randomAlbumOrder = (albums.filter { !isRecycleBin(album: $0) } + [virtualAlbum(for: .unfiled)])
@@ -1131,7 +1131,10 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func setAssetSortMode(_ mode: GalleryAssetSortMode) async {
-        guard mode != assetSortMode else { return }
+        guard mode != assetSortMode else {
+            if mode == .random { reshuffleAssets() }
+            return
+        }
 
         assetSortMode = mode
         persistAssetSortPreferences()
