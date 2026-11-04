@@ -624,6 +624,7 @@ private struct GalleryViewerMoveSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var vaultAlbums = false
+    @State private var vaultDestinations: [GalleryVaultAlbum] = []
     @State private var newAlbumName = ""
     @State private var error: String?
 
@@ -656,7 +657,7 @@ private struct GalleryViewerMoveSheet: View {
                     Button("Create and Move") {
                         let name = newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)
                         if vaultAlbums {
-                            chooseVaultAlbum(vault.destinationAlbums.first { $0.title == name }
+                            chooseVaultAlbum(vaultDestinations.first { $0.title == name }
                                 ?? GalleryVaultAlbum(id: "vault-album:" + UUID().uuidString, title: name, position: nil))
                         } else {
                             performMove { try await store.move(sessionID, toNewAlbumNamed: name, expectedAssetID: assetID) }
@@ -677,11 +678,11 @@ private struct GalleryViewerMoveSheet: View {
                 }
                 Section("Move to album") {
                     if vaultAlbums && vault.isUnlocked {
-                        ForEach(vault.destinationAlbums.filter { query.isEmpty || $0.title.localizedStandardContains(query) }, id: \.id) { album in
+                        ForEach(vaultDestinations.filter { query.isEmpty || $0.title.localizedStandardContains(query) }, id: \.id) { album in
                             Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
                                 .accessibilityIdentifier("gallery-viewer-move-vault-destination-" + album.id)
                         }
-                        if vault.destinationAlbums.isEmpty { Text("Create a Private Vault album above.") }
+                        if vaultDestinations.isEmpty { Text("Create a Private Vault album above.") }
                     } else { ForEach(destinations) { album in
                         Button(album.title) {
                             performMove { try await store.move(sessionID, to: album, expectedAssetID: assetID) }
@@ -711,8 +712,14 @@ private struct GalleryViewerMoveSheet: View {
         }
         .frame(width: 500, height: 550)
         .task { await store.refreshAlbums() }
+        .task(id: vault.isUnlocked && !vault.isBusy) {
+            guard vault.isUnlocked, !vault.isBusy else { return }
+            let destinations = await vault.albumDestinations()
+            guard vault.isUnlocked, !Task.isCancelled else { return }
+            vaultDestinations = destinations
+        }
         .onChange(of: vault.isUnlocked) { _, unlocked in
-            if !unlocked { vaultAlbums = false; query = ""; newAlbumName = ""; error = nil }
+            if !unlocked { vaultDestinations = []; vaultAlbums = false; query = ""; newAlbumName = ""; error = nil }
         }
     }
 

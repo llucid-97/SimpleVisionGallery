@@ -494,25 +494,33 @@ final class GalleryVaultStorage: ObservableObject {
     }
 
     func sourceAlbums(for record: GalleryVaultRecord) async throws -> [GalleryVaultAlbum] {
+        (try await sourceVersions(for: [record]))[0].albums
+    }
+
+    func sourceVersions(for records: [GalleryVaultRecord]) async throws -> [GalleryVaultRecord] {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
         let expectedGeneration = generation
-        let directory = itemURL(record.id)
-        let albums = try await Task.detached {
-            let url = directory.appendingPathComponent("source-albums.enc")
-            let data: Data
-            do { data = try Data(contentsOf: url) }
-            catch { if Self.isMissingFile(error) { return record.albums }; throw error }
-            do {
-                return try session.withKey { key in
-                    let decoded = try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: key,
-                        authenticating: Data((record.id.uuidString + ".source-albums").utf8))
-                    return try JSONDecoder().decode([GalleryVaultAlbum].self, from: decoded)
-                }
-            } catch let error as GalleryVaultStorageError { throw error }
-            catch { throw GalleryVaultStorageError.corruptRecord }
+        let directory = items
+        let versions = try await Task.detached(priority: .userInitiated) {
+            try records.map { record in
+                let url = directory.appendingPathComponent(record.id.uuidString).appendingPathComponent("source-albums.enc")
+                let data: Data
+                do { data = try Data(contentsOf: url) }
+                catch { if Self.isMissingFile(error) { return record }; throw error }
+                do {
+                    var source = record
+                    source.albums = try session.withKey { key in
+                        let decoded = try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: key,
+                            authenticating: Data((record.id.uuidString + ".source-albums").utf8))
+                        return try JSONDecoder().decode([GalleryVaultAlbum].self, from: decoded)
+                    }
+                    return source
+                } catch let error as GalleryVaultStorageError { throw error }
+                catch { throw GalleryVaultStorageError.corruptRecord }
+            }
         }.value
         guard generation == expectedGeneration, isUnlocked else { throw GalleryVaultStorageError.locked }
-        return albums
+        return versions
     }
 
     func setDestination(_ destination: GalleryVaultAlbum, sourceAlbumID: String?, for record: GalleryVaultRecord) async throws -> GalleryVaultRecord {
