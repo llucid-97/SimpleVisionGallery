@@ -106,11 +106,9 @@ struct GalleryAlbum: Identifiable, Hashable {
         lhs.id == rhs.id
     }
 
-    var visibleWithLockedVault: Bool {
-        if virtualScope != nil || GalleryRecycleBin.isRecycleBin(self) { return true }
-        guard let collection else { return false }
-        // Card counts can lag a just-finished move; this lazy Photos count has no vault metadata.
-        return PHAsset.fetchAssets(in: collection, options: nil).count > 0
+    func visibleWithLockedVault(emptyAlbumIDs: Set<String>) -> Bool {
+        virtualScope != nil || GalleryRecycleBin.isRecycleBin(self)
+            || (collection != nil && !emptyAlbumIDs.contains(id))
     }
 }
 
@@ -666,6 +664,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     private var deletionReviewAuthority = GalleryDeletionReviewAuthority()
     private let imageManager = PHCachingImageManager()
     private var photoAccessEpoch = UUID()
+    private var albumEmptinessSubscription: AnyCancellable?
     private var virtualLibrarySubscription: AnyCancellable?
     private var vaultSubscription: AnyCancellable?
     private var vaultIndex = GalleryVaultIndex()
@@ -748,6 +747,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             .sink { [weak self] records, unlocked in
                 self?.vaultRecordsDidChange(unlocked ? records : [])
             }
+        albumEmptinessSubscription = GalleryVirtualLibraryIndex.shared.$emptyAlbumIDs.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         virtualLibrarySubscription = GalleryVirtualLibraryIndex.shared.$revision
             .sink { [weak self] revision in
                 guard let self else { return }
@@ -867,7 +869,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func vaultCover(in album: GalleryAlbum) -> GalleryVaultRecord? {
-        guard GalleryVaultService.shared.isUnlocked, !isRecycleBin(album: album) else { return nil }
+        guard GalleryVaultService.shared.isUnlocked, !isRecycleBin(album: album), mediaFilter != .videos else { return nil }
         let candidates: [GalleryVaultRecord]
         switch album.virtualScope {
         case .photos: candidates = vaultIndex.all
@@ -876,9 +878,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         case nil: candidates = vaultIndex.byAlbum[album.id] ?? []
         }
         return candidates.first {
-            !vaultIndex.excluded.contains($0.id) && (mediaFilter == .all
-                || (mediaFilter == .photos && $0.mediaType == PHAssetMediaType.image.rawValue)
-                || (mediaFilter == .videos && $0.mediaType == PHAssetMediaType.video.rawValue))
+            $0.mediaType == PHAssetMediaType.image.rawValue && !vaultIndex.excluded.contains($0.id)
         }
     }
 
@@ -916,7 +916,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     var browsableAlbums: [GalleryAlbum] {
-        albums.filter { GalleryVaultService.shared.isUnlocked || $0.visibleWithLockedVault }
+        albums.filter { GalleryVaultService.shared.isUnlocked || $0.visibleWithLockedVault(emptyAlbumIDs: GalleryVirtualLibraryIndex.shared.emptyAlbumIDs) }
     }
 
     var visibleAlbums: [GalleryAlbum] {
@@ -1264,6 +1264,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func loadAlbums(refreshSelectedAlbumAssets: Bool = true) async {
+        Task { await GalleryVirtualLibraryIndex.shared.refreshAlbumEmptiness() }
         guard hasPhotoAccess else { return }
         Task { @MainActor [weak self] in await self?.warmVirtualLibraryIndex() }
 

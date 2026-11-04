@@ -75,7 +75,7 @@ struct GalleryThumbnail: View {
             }
             return
         }
-        guard let record = item.vaultRecord,
+        guard let record = item.vaultRecord, record.mediaType == PHAssetMediaType.image.rawValue,
               let resource = GalleryVaultResourceSelection.displayResource(for: record) else { return }
         vaultTask = Task { @MainActor in
             defer { if requestGeneration == generation { vaultTask = nil } }
@@ -85,14 +85,7 @@ struct GalleryThumbnail: View {
                 let url = try await GalleryVaultStorage.shared.decryptResource(recordID: record.id, resourceID: resource.id)
                 defer { GalleryVaultStorage.shared.releasePlaintext(url) }
                 try Task.checkCancellation()
-                let thumbnail = await Task.detached(priority: .utility) { () async -> UIImage? in
-                    if record.mediaType == PHAssetMediaType.video.rawValue {
-                        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-                        generator.appliesPreferredTrackTransform = true
-                        generator.maximumSize = CGSize(width: 320, height: 320)
-                        guard let frame = try? await generator.image(at: .zero) else { return nil }
-                        return UIImage(cgImage: frame.image)
-                    }
+                let thumbnail = await Task.detached(priority: .utility) { () -> UIImage? in
                     let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
                     guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else { return nil }
                     let options = [

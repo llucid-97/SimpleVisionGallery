@@ -51,6 +51,8 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
     @Published private(set) var revision = 0
     @Published private(set) var removedFromPhotos: Set<String> = []
     @Published private(set) var removedFromUnfiled: Set<String> = []
+    @Published private(set) var emptyAlbumIDs: Set<String> = []
+    private var emptyAlbumTask: Task<Set<String>?, Never>?
 
     private struct AlbumRecord {
         var fetch: PHFetchResult<PHAsset>
@@ -103,6 +105,35 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
     /// Manager waits for the single fresh snapshot before it reloads album counts.
     func waitForVaultChanges() async {
         await vaultRefreshTask?.value
+    }
+
+    func refreshAlbumEmptiness() async {
+        if !observing {
+            PHPhotoLibrary.shared().register(self)
+            observing = true
+        }
+        emptyAlbumTask?.cancel()
+        let task = Task.detached(priority: .utility) { () -> Set<String>? in
+            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            guard status == .authorized || status == .limited else { return [] }
+            let collections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
+            let options = PHFetchOptions()
+            options.fetchLimit = 1
+            var empty = Set<String>()
+            for index in 0..<collections.count {
+                guard !Task.isCancelled else { return nil }
+                let collection = collections.object(at: index)
+                if PHAsset.fetchAssets(in: collection, options: options).firstObject == nil {
+                    empty.insert(collection.localIdentifier)
+                }
+            }
+            return empty
+        }
+        emptyAlbumTask = task
+        if let empty = await task.value, !task.isCancelled {
+            emptyAlbumIDs = empty
+            emptyAlbumTask = nil
+        }
     }
 
     private func scheduleVaultRefresh() {
@@ -269,6 +300,7 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
     func sourceIndex(forAssetID id: String) -> Int? { indexByID[id] }
 
     func photoLibraryDidChange(_ changeInstance: PHChange) {
+        Task { await refreshAlbumEmptiness() }
         if isVaultRebuilding {
             // The current rebuild uses a frozen fetch; include any later change.
             needsFullRefresh = true
@@ -809,6 +841,11 @@ final class GalleryVirtualLibraryIndex: NSObject, ObservableObject, PHPhotoLibra
     }
 
     private func reset() {
+        if !authorized {
+            emptyAlbumTask?.cancel()
+            emptyAlbumTask = nil
+            emptyAlbumIDs = []
+        }
         authorizationGeneration = UUID()
         buildGeneration += 1
         membershipGeneration &+= 1

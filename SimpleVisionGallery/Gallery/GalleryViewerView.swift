@@ -609,6 +609,7 @@ private struct GalleryViewerMoveSheet: View {
     let sessionID: UUID
     let assetID: String
     @ObservedObject private var store = GalleryViewerStore.shared
+    @ObservedObject private var albumEmptiness = GalleryVirtualLibraryIndex.shared
     @ObservedObject private var vault = GalleryVaultService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -616,7 +617,7 @@ private struct GalleryViewerMoveSheet: View {
     @State private var error: String?
 
     private var availableAlbums: [GalleryAlbum] {
-        store.albums.filter { vault.isUnlocked || $0.visibleWithLockedVault }
+        store.albums.filter { vault.isUnlocked || $0.visibleWithLockedVault(emptyAlbumIDs: albumEmptiness.emptyAlbumIDs) }
     }
 
     private var destinations: [GalleryAlbum] {
