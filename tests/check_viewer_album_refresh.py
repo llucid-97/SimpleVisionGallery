@@ -35,6 +35,7 @@ final class PHAssetCollection {
     let localizedTitle: String?
     init(id: String, title: String?) { localIdentifier = id; localizedTitle = title }
 }
+enum GalleryRecycleBin { static func isRecycleBin(_ album: GalleryAlbum) -> Bool { false } }
 final class PHFetchOptions { var predicate: NSPredicate? }
 enum PHAssetMediaType: Int { case image = 1, video = 2 }
 struct GalleryVirtualScope: Hashable {}
