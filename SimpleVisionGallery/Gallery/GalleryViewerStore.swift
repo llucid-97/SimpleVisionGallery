@@ -332,6 +332,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     }
 
     func refreshAlbums() async {
+        Task { await GalleryVirtualLibraryIndex.shared.refreshAlbumEmptiness() }
         let generation = UUID()
         albumRefreshGeneration = generation
         let fetch = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)

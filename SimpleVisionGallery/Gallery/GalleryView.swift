@@ -729,7 +729,7 @@ struct GalleryView: View {
         switch manager.authorizationStatus {
         case .authorized, .limited:
             if manager.isLoadingAlbums {
-                return manager.totalAlbumCount > 0
+                return vault.isUnlocked && manager.totalAlbumCount > 0
                     ? "\(manager.loadedAlbumCount)/\(manager.totalAlbumCount) albums"
                     : "Loading"
             }
@@ -1327,6 +1327,7 @@ private struct GalleryAssetCell: View {
 private struct GalleryAlbumCover: View {
     let album: GalleryAlbum
     let manager: GalleryManager
+    @ObservedObject private var vault = GalleryVaultService.shared
 
     @State private var coverAsset: PHAsset?
 
@@ -1334,6 +1335,8 @@ private struct GalleryAlbumCover: View {
         Group {
             if let coverAsset = coverAsset ?? album.coverAsset {
                 GalleryThumbnail(asset: coverAsset, manager: manager)
+            } else if vault.isUnlocked, let record = manager.vaultCover(in: album) {
+                GalleryThumbnail(item: .vault(record), manager: manager)
             } else {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(LensLabTheme.cyan.opacity(0.12))
@@ -1572,7 +1575,7 @@ private struct GalleryMoveSheet: View {
 
     private var recentDestinations: [GalleryAlbum] {
         let recent = GalleryMoveHistory.shared.recentAlbums(
-            from: manager.albums,
+            from: manager.browsableAlbums,
             excluding: manager.selectedAlbum?.id
         )
         return GalleryAlbumSearch.filter(recent, query: albumFilter)
@@ -1580,7 +1583,7 @@ private struct GalleryMoveSheet: View {
 
     private var destinationAlbums: [GalleryAlbum] {
         let recentIDs = Set(recentDestinations.map(\.id))
-        let available = manager.albums.filter {
+        let available = manager.browsableAlbums.filter {
             $0.id != manager.selectedAlbum?.id && $0.collection?.canPerform(.addContent) == true
         }
         return GalleryAlbumSearch.filter(available, query: albumFilter)

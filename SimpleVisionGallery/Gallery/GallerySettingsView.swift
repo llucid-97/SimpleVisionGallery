@@ -101,7 +101,7 @@ struct GallerySettingsView: View {
                         .tint(LensLabTheme.cyan)
                         .accessibilityIdentifier("svt-gallery-auto-hide-empty")
 
-                        Text("Empty albums appear in Hidden. Unhide an album to keep it visible, even when it is empty.")
+                        Text("While unlocked, empty albums appear in Hidden. Unhide one to keep it visible. Albums with no Photos items are hidden while the vault is locked.")
                             .font(.callout)
                             .foregroundStyle(Color.white.opacity(0.64))
                             .fixedSize(horizontal: false, vertical: true)

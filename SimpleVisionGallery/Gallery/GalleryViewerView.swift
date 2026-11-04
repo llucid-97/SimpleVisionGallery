@@ -609,14 +609,20 @@ private struct GalleryViewerMoveSheet: View {
     let sessionID: UUID
     let assetID: String
     @ObservedObject private var store = GalleryViewerStore.shared
+    @ObservedObject private var albumEmptiness = GalleryVirtualLibraryIndex.shared
+    @ObservedObject private var vault = GalleryVaultService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var newAlbumName = ""
     @State private var error: String?
 
+    private var availableAlbums: [GalleryAlbum] {
+        store.albums.filter { vault.isUnlocked || $0.visibleWithLockedVault(emptyAlbumIDs: albumEmptiness.emptyAlbumIDs) }
+    }
+
     private var destinations: [GalleryAlbum] {
         let recentIDs = Set(query.isEmpty ? recentDestinations.map(\.id) : [])
-        return GalleryAlbumSearch.filter(store.albums.filter {
+        return GalleryAlbumSearch.filter(availableAlbums.filter {
             $0.id != store.session(sessionID)?.albumID
                 && $0.collection?.canPerform(.addContent) == true
                 && !GalleryRecycleBin.isRecycleBin($0)
@@ -625,7 +631,7 @@ private struct GalleryViewerMoveSheet: View {
     }
 
     private var recentDestinations: [GalleryAlbum] {
-        GalleryMoveHistory.shared.recentAlbums(from: store.albums,
+        GalleryMoveHistory.shared.recentAlbums(from: availableAlbums,
             excluding: store.session(sessionID)?.albumID)
             .filter { !GalleryRecycleBin.isRecycleBin($0) }
     }
