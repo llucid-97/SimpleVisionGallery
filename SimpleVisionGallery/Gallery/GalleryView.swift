@@ -1006,6 +1006,7 @@ struct GalleryView: View {
                 GalleryAssetGrid(
                     manager: manager,
                     thumbnailSize: CGFloat(thumbnailSize),
+                    showsSourceBadge: vault.isUnlocked,
                     onOpen: openMedia
                 )
                 .allowsHitTesting(!manager.isSortingAssets && !manager.isPerformingOperation)
@@ -1119,6 +1120,7 @@ struct GalleryView: View {
 private struct GalleryAssetGrid: View {
     @ObservedObject var manager: GalleryManager
     let thumbnailSize: CGFloat
+    let showsSourceBadge: Bool
     let onOpen: (Int) -> Void
 
     private var columns: [GridItem] {
@@ -1156,6 +1158,7 @@ private struct GalleryAssetGrid: View {
                     if let item = manager.mediaItem(at: index) {
                         GalleryAssetCell(
                             item: item,
+                            showsSourceBadge: showsSourceBadge,
                             index: index,
                             isSelected: manager.selectedIndexes.contains(index),
                             hasRangeAnchor: manager.rangeAnchorIndex == index,
@@ -1203,6 +1206,7 @@ private struct GalleryAssetGrid: View {
 
 private struct GalleryAssetCell: View {
     let item: GalleryMediaItem
+    let showsSourceBadge: Bool
     let index: Int
     let isSelected: Bool
     let hasRangeAnchor: Bool
@@ -1218,43 +1222,41 @@ private struct GalleryAssetCell: View {
                     .clipped()
             }
             .clipped()
-            .overlay(alignment: .topLeading) {
-                if item.mediaType == .video {
-                    GalleryAssetBadge(
-                        text: GalleryAssetCell.videoDurationText(item.duration),
-                        icon: "video.fill",
-                        tint: LensLabTheme.previewSurface.opacity(0.82)
-                    )
-                    .padding(6)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if isSelected {
-                    ZStack {
-                        Circle()
-                            .fill(LensLabTheme.cyan)
-                            .frame(width: 28, height: 28)
-                        Image(systemName: "checkmark")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(LensLabTheme.primaryButtonInk)
+            .overlay(alignment: .top) {
+                HStack(alignment: .top, spacing: 4) {
+                    if item.mediaType == .video {
+                        GalleryAssetBadge(
+                            text: GalleryAssetCell.videoDurationText(item.duration),
+                            icon: "video.fill",
+                            tint: LensLabTheme.previewSurface.opacity(0.82)
+                        )
                     }
-                    .padding(6)
+                    Spacer(minLength: 0)
+                    VStack(spacing: 0) {
+                        if showsSourceBadge {
+                            Image(systemName: item.vaultRecord != nil ? "lock.fill" : "photo")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 24, height: 24)
+                                .background(.black.opacity(0.8), in: Circle())
+                                .accessibilityLabel(sourceLabel)
+                        }
+                        if isSelected {
+                            ZStack {
+                                Circle().fill(LensLabTheme.cyan).frame(width: 28, height: 28)
+                                Image(systemName: "checkmark")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(LensLabTheme.primaryButtonInk)
+                            }
+                        }
+                    }
                 }
+                .padding(6)
             }
             .overlay(alignment: .bottomLeading) {
                 if hasRangeAnchor {
                     GalleryAssetBadge(text: "Range start", icon: "flag.fill", tint: LensLabTheme.orange)
                         .padding(6)
-                }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if item.vaultRecord != nil {
-                    Image(systemName: "lock.fill")
-                        .font(.caption.weight(.semibold))
-                        .padding(7)
-                        .background(.black.opacity(0.75), in: Circle())
-                        .padding(6)
-                        .accessibilityHidden(true)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1310,9 +1312,11 @@ private struct GalleryAssetCell: View {
         return LensLabTheme.cardLine.opacity(0.65)
     }
 
+    private var sourceLabel: String { item.vaultRecord != nil ? "In Private Vault" : "In Photos" }
+
     private var accessibilityLabel: String {
         let mediaName = item.mediaType == .video ? "Video" : "Photo"
-        return "\(mediaName) \(index + 1)\(item.vaultRecord != nil ? ", private" : "")\(isSelected ? ", selected" : "")"
+        return "\(mediaName) \(index + 1)\(item.vaultRecord != nil ? ", private" : "")\(isSelected ? ", selected" : "")\(showsSourceBadge ? ", " + sourceLabel : "")"
     }
 
     private static func videoDurationText(_ duration: TimeInterval) -> String {
