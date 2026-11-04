@@ -217,6 +217,7 @@ struct GalleryView: View {
                 albumSelectionButton
                 if isSelectingAlbums { albumVisibilityAction }
                 Divider()
+                Button("Private Vault", systemImage: "lock") { showingVault = true }
                 Button("Gallery Settings", systemImage: "gearshape") { showingSettings = true }
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await manager.loadAlbums() } }
             } label: { Image(systemName: "ellipsis").frame(width: 40, height: 40) }
