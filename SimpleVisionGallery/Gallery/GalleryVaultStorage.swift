@@ -466,7 +466,7 @@ final class GalleryVaultStorage: ObservableObject {
         return GalleryVaultStagingItem(id: id, directory: directory, session: session)
     }
 
-    func commit(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem) throws {
+    func commit(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem, sourceAlbums: [GalleryVaultAlbum]? = nil) throws {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
         guard record.id == item.id, item.belongs(to: session), record.state == .copiedAwaitingDeletion,
               !record.resources.isEmpty,
@@ -476,6 +476,7 @@ final class GalleryVaultStorage: ObservableObject {
         }
         try session.withKey { _ in () }
         guard !FileManager.default.fileExists(atPath: itemURL(record.id).path) else { throw GalleryVaultStorageError.duplicateItem }
+        if let sourceAlbums { try Self.writeSourceAlbums(sourceAlbums, in: item.directory, id: record.id, session: session) }
         try Self.writeRecord(record, in: item.directory, session: session)
         try Self.syncDirectory(item.directory)
         // rename() on the same volume makes the item and its complete encrypted journal visible together.
@@ -490,6 +491,45 @@ final class GalleryVaultStorage: ObservableObject {
         manifestDirty = true
         publishChangesIfNeeded()
         try Self.syncDirectory(items)
+    }
+
+    func sourceAlbums(for record: GalleryVaultRecord) async throws -> [GalleryVaultAlbum] {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        let expectedGeneration = generation
+        let directory = itemURL(record.id)
+        let albums = try await Task.detached {
+            let url = directory.appendingPathComponent("source-albums.enc")
+            let data: Data
+            do { data = try Data(contentsOf: url) }
+            catch { if Self.isMissingFile(error) { return record.albums }; throw error }
+            do {
+                return try session.withKey { key in
+                    let decoded = try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: key,
+                        authenticating: Data((record.id.uuidString + ".source-albums").utf8))
+                    return try JSONDecoder().decode([GalleryVaultAlbum].self, from: decoded)
+                }
+            } catch let error as GalleryVaultStorageError { throw error }
+            catch { throw GalleryVaultStorageError.corruptRecord }
+        }.value
+        guard generation == expectedGeneration, isUnlocked else { throw GalleryVaultStorageError.locked }
+        return albums
+    }
+
+    func setDestination(_ destination: GalleryVaultAlbum, sourceAlbumID: String?, for record: GalleryVaultRecord) async throws -> GalleryVaultRecord {
+        let original = try await sourceAlbums(for: record)
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        // Preserve the source version separately from the chosen restore memberships.
+        try Self.writeSourceAlbums(original, in: itemURL(record.id), id: record.id, session: session)
+        var updated = record
+        updated.albums = Self.destinationAlbums(original, destination: destination, sourceAlbumID: sourceAlbumID)
+        try update(updated)
+        return updated
+    }
+
+    nonisolated static func destinationAlbums(_ original: [GalleryVaultAlbum], destination: GalleryVaultAlbum, sourceAlbumID: String?) -> [GalleryVaultAlbum] {
+        var albums = original.filter { $0.id != sourceAlbumID && $0.id != destination.id }
+        albums.append(destination)
+        return albums
     }
 
     func update(_ record: GalleryVaultRecord) throws {
@@ -707,6 +747,24 @@ final class GalleryVaultStorage: ObservableObject {
         let handle = try FileHandle(forUpdating: url)
         defer { try? handle.close() }
         try handle.synchronize()
+    }
+
+    private nonisolated static func writeSourceAlbums(_ albums: [GalleryVaultAlbum], in directory: URL, id: UUID, session: GalleryVaultSession) throws {
+        let aad = Data((id.uuidString + ".source-albums").utf8)
+        let bytes = try session.withKey { key in
+            try AES.GCM.seal(JSONEncoder().encode(albums), using: key, authenticating: aad).combined
+        }
+        guard let bytes else { throw GalleryVaultStorageError.corruptRecord }
+        let url = directory.appendingPathComponent("source-albums.enc")
+        try bytes.write(to: url, options: [.atomic, .completeFileProtection])
+        try syncFile(url)
+        let stored = try Data(contentsOf: url)
+        let verified = try session.withKey { key in
+            try JSONDecoder().decode([GalleryVaultAlbum].self,
+                from: AES.GCM.open(AES.GCM.SealedBox(combined: stored), using: key, authenticating: aad))
+        }
+        guard verified == albums else { throw GalleryVaultStorageError.corruptRecord }
+        try syncDirectory(directory)
     }
 
     private nonisolated static func writeRecord(_ record: GalleryVaultRecord, in directory: URL, session: GalleryVaultSession) throws {

@@ -40,6 +40,9 @@ struct GalleryView: View {
     @Binding var isPresented: Bool
     @StateObject private var manager = GalleryManager()
     @State private var showingMoveSheet = false
+    @State private var moveAssets: [PHAsset] = []
+    @State private var moveSourceAlbumID: String?
+    @State private var pendingVaultMove: GalleryVaultTransferRequest?
     @State private var showingSettings = false
     @AppStorage(GalleryAppearance.accentColorKey) private var accentRGB = GalleryAppearance.defaultAccentRGB
     @State private var showingThumbnailSize = false
@@ -75,8 +78,14 @@ struct GalleryView: View {
                     .zIndex(10)
             }
         }
-        .sheet(isPresented: $showingMoveSheet) {
-            GalleryMoveSheet(manager: manager, isPresented: $showingMoveSheet)
+        .sheet(isPresented: $showingMoveSheet, onDismiss: {
+            if let pending = pendingVaultMove, vault.isUnlocked { vaultTransfer = pending }
+            pendingVaultMove = nil
+            moveAssets = []
+        }) {
+            GalleryMoveSheet(manager: manager, isPresented: $showingMoveSheet, canMoveToVault: !moveAssets.isEmpty) { destination in
+                pendingVaultMove = .items(moveAssets, destination: destination, sourceAlbumID: moveSourceAlbumID)
+            }
         }
         .gallerySharing(sharing)
         .preferredColorScheme(.dark)
@@ -126,6 +135,8 @@ struct GalleryView: View {
                 sharing.tearDown()
                 vaultMessage = nil
                 vaultAlbumRetryIDs = []
+                pendingVaultMove = nil
+                vaultTransfer = nil
             }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
@@ -624,6 +635,8 @@ struct GalleryView: View {
 
     private var moveSelectionButton: some View {
         Button {
+            moveAssets = (try? manager.selectedAssets()) ?? []
+            moveSourceAlbumID = manager.selectedAlbum?.virtualScope == nil ? manager.selectedAlbum?.id : nil
             showingMoveSheet = true
         } label: {
             Label("Move", systemImage: "arrowshape.turn.up.right")
@@ -1570,6 +1583,10 @@ private struct GalleryRenameAlbumSheet: View {
 private struct GalleryMoveSheet: View {
     @ObservedObject var manager: GalleryManager
     @Binding var isPresented: Bool
+    let canMoveToVault: Bool
+    let moveToVault: (GalleryVaultAlbum) -> Void
+    @ObservedObject private var vault = GalleryVaultService.shared
+    @State private var vaultAlbums = false
     @State private var newAlbumName = ""
     @State private var albumFilter = ""
 
@@ -1655,7 +1672,13 @@ private struct GalleryMoveSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    if manager.selectedAlbum?.collection?.canPerform(.removeContent) == true {
+                    GalleryVaultAlbumsToggle(isOn: $vaultAlbums)
+                        .disabled(!canMoveToVault)
+                    if !canMoveToVault {
+                        Text("Select only Photos items to move to Private Vault.")
+                            .font(.caption).foregroundStyle(LensLabTheme.mutedInk)
+                    }
+                    if !vaultAlbums, manager.selectedAlbum?.collection?.canPerform(.removeContent) == true {
                         Button("Remove from Album", systemImage: "rectangle.stack.badge.minus") {
                             isPresented = false
                             Task { await manager.removeSelectionFromAlbum() }
@@ -1668,7 +1691,7 @@ private struct GalleryMoveSheet: View {
                     }
             GalleryAlbumSearchField(query: $albumFilter, accessibilityID: "gallery-move-album-search")
 
-            if !recentDestinations.isEmpty {
+            if !vaultAlbums, !recentDestinations.isEmpty {
                 LensLabSection(title: "Recent Destinations", subtitle: "Your three latest successful moves.") {
                     LazyVStack(spacing: 8) {
                         ForEach(recentDestinations) { album in
@@ -1688,10 +1711,13 @@ private struct GalleryMoveSheet: View {
                         .textFieldStyle(.roundedBorder)
 
                     Button {
-                        let name = newAlbumName
-                        isPresented = false
-                        Task {
-                            await manager.moveSelectionToNewAlbum(named: name)
+                        let name = newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if vaultAlbums {
+                            chooseVaultAlbum(vault.destinationAlbums.first { $0.title == name }
+                                ?? GalleryVaultAlbum(id: "vault-album:" + UUID().uuidString, title: name, position: nil))
+                        } else {
+                            isPresented = false
+                            Task { await manager.moveSelectionToNewAlbum(named: name) }
                         }
                     } label: {
                         Label("Create & Move", systemImage: "rectangle.stack.badge.plus")
@@ -1699,12 +1725,22 @@ private struct GalleryMoveSheet: View {
                     .buttonStyle(LensLabPrimaryButtonStyle())
                     .disabled(
                         newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || manager.isPerformingOperation)
+                            || manager.isPerformingOperation
+                            || (vaultAlbums && GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines))))
                 }
             }
 
             LensLabSection(title: "Existing Albums", subtitle: "Filter by album name, then choose a destination.") {
-                if destinationAlbums.isEmpty {
+                if vaultAlbums && vault.isUnlocked {
+                    ForEach(vault.destinationAlbums.filter { albumFilter.isEmpty || $0.title.localizedStandardContains(albumFilter) }, id: \.id) { album in
+                        Button { chooseVaultAlbum(album) } label: {
+                            Label(album.title, systemImage: "lock.fill")
+                        }
+                        .buttonStyle(LensLabSecondaryButtonStyle())
+                        .accessibilityIdentifier("gallery-move-vault-destination-" + album.id)
+                    }
+                    if vault.destinationAlbums.isEmpty { Text("Create a Private Vault album above.") }
+                } else if destinationAlbums.isEmpty {
                     Text(
                         albumFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             ? "No other albums are available."
@@ -1730,6 +1766,15 @@ private struct GalleryMoveSheet: View {
         .padding(18)
         .frame(width: 580, height: 680)
         .background(LensLabTheme.card)
+        .onChange(of: vault.isUnlocked) { _, unlocked in
+            if !unlocked { vaultAlbums = false; albumFilter = ""; newAlbumName = "" }
+        }
+    }
+
+    private func chooseVaultAlbum(_ album: GalleryVaultAlbum) {
+        guard vault.isUnlocked, canMoveToVault else { return }
+        moveToVault(album)
+        isPresented = false
     }
 }
 

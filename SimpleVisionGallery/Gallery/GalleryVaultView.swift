@@ -5,16 +5,17 @@ import SwiftUI
 struct GalleryVaultTransferRequest: Identifiable {
     let id = UUID()
     let title: String
+    let destinationTitle: String?
     let transfer: @MainActor () async throws -> GalleryVaultTransferOutcome
 
-    static func items(_ assets: [PHAsset]) -> Self {
-        Self(title: "\(assets.count) item\(assets.count == 1 ? "" : "s")") {
-            try await GalleryVaultService.shared.moveToVault(assets: assets)
+    static func items(_ assets: [PHAsset], destination: GalleryVaultAlbum? = nil, sourceAlbumID: String? = nil) -> Self {
+        Self(title: "\(assets.count) item\(assets.count == 1 ? "" : "s")", destinationTitle: destination?.title) {
+            try await GalleryVaultService.shared.moveToVault(assets: assets, destination: destination, sourceAlbumID: sourceAlbumID)
         }
     }
 
     static func album(_ title: String, fetch: PHFetchResult<PHAsset>, id: String) -> Self {
-        Self(title: "Album \(title)") {
+        Self(title: "Album \(title)", destinationTitle: nil) {
             try await GalleryVaultService.shared.moveToVault(fetch: fetch, sourceAlbumID: id)
         }
     }
@@ -26,7 +27,7 @@ struct GalleryVaultConfirmation: ViewModifier {
     @Binding var resultMessage: String?
     func body(content: Content) -> some View {
         content.alert(
-            "Move \(request?.title ?? "items") to Private Vault?",
+            "Move \(request?.title ?? "items") to \(request?.destinationTitle.map { "Private Vault album “" + $0 + "”" } ?? "Private Vault")?",
             isPresented: Binding(get: { request != nil }, set: { if !$0 { request = nil } }),
             presenting: request
         ) { target in
@@ -321,5 +322,28 @@ struct GalleryVaultSessionButton: View {
             .accessibilityLabel("Private Vault open. Lock Private Vault")
             .accessibilityIdentifier("gallery-vault-session-lock")
         }
+    }
+}
+
+/// Authenticate before exposing encrypted destination titles.
+struct GalleryVaultAlbumsToggle: View {
+    @Binding var isOn: Bool
+    @ObservedObject private var vault = GalleryVaultService.shared
+    @State private var error: String?
+
+    var body: some View {
+        Toggle("Vault Albums", isOn: Binding(get: { isOn && vault.isUnlocked }, set: { enabled in
+            error = nil
+            if !enabled { isOn = false; return }
+            Task { @MainActor in
+                do {
+                    try await vault.unlock()
+                    isOn = vault.isUnlocked
+                } catch { self.error = error.localizedDescription }
+            }
+        }))
+        .disabled(vault.isBusy)
+        .accessibilityIdentifier("gallery-move-vault-albums")
+        if let error { Text(error).font(.caption).foregroundStyle(.red) }
     }
 }
