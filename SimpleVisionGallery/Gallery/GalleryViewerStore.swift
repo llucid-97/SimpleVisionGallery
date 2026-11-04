@@ -163,6 +163,7 @@ final class GalleryViewerSession: ObservableObject, Identifiable {
 
     var albumID: String { playlist.snapshot.album.id }
     var albumTitle: String { playlist.snapshot.album.title }
+    var sourceAlbumID: String? { playlist.snapshot.album.virtualScope == nil ? albumID : nil }
     var canRemoveFromSourceAlbum: Bool {
         let album = playlist.snapshot.album
         return album.virtualScope == nil && album.collection?.canPerform(.removeContent) == true

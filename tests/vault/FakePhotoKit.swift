@@ -220,8 +220,9 @@ nonisolated final class GalleryVaultStagingItem {
     var failVerifyIDs: Set<UUID> = []
     var durable: [UUID: GalleryVaultRecord] = [:]
     var blobs: [UUID: Data] = [:]
+    var sourceParents: [UUID: [GalleryVaultAlbum]] = [:]
     var records: [GalleryVaultRecord] { Array(durable.values) }
-    func reset() { isUnlocked = false; unreadableRecordCount = 0; cleanupWarning = nil; simulatedCleanupFailure = false; generation = UUID(); pendingUnlock = nil; delayUnlock = false; lockAtUnlockReturn = false; lockAtEndBatch = false; failCommitSource = nil; failVerifyIDs = []; durable = [:]; blobs = [:] }
+    func reset() { isUnlocked = false; unreadableRecordCount = 0; cleanupWarning = nil; simulatedCleanupFailure = false; generation = UUID(); pendingUnlock = nil; delayUnlock = false; lockAtUnlockReturn = false; lockAtEndBatch = false; failCommitSource = nil; failVerifyIDs = []; durable = [:]; blobs = [:]; sourceParents = [:] }
     func unlock() async throws {
         let expected = generation
         if delayUnlock { await withCheckedContinuation { pendingUnlock = $0 } }
@@ -235,7 +236,22 @@ nonisolated final class GalleryVaultStagingItem {
     func record(id: UUID) -> GalleryVaultRecord? { durable[id] }
     func record(sourceIdentifier: String) -> GalleryVaultRecord? { durable.values.first { $0.sourceIdentifier == sourceIdentifier } }
     func createItem(id: UUID) throws -> GalleryVaultStagingItem { guard isUnlocked else { throw GalleryVaultTransferError.locked }; return GalleryVaultStagingItem(id) }
-    func commit(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem) throws { guard isUnlocked else { throw GalleryVaultTransferError.locked }; if failCommitSource == record.sourceIdentifier { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }; for (id,w) in item.writers { blobs[id] = w.bytes }; durable[record.id] = record }
+    func commit(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem, sourceAlbums: [GalleryVaultAlbum]? = nil) throws { guard isUnlocked else { throw GalleryVaultTransferError.locked }; if failCommitSource == record.sourceIdentifier { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }; for (id,w) in item.writers { blobs[id] = w.bytes }; durable[record.id] = record; sourceParents[record.id] = sourceAlbums }
+    nonisolated static func destinationAlbums(_ original: [GalleryVaultAlbum], destination: GalleryVaultAlbum, sourceAlbumID: String?) -> [GalleryVaultAlbum] {
+        var albums = original.filter { $0.id != sourceAlbumID && $0.id != destination.id }
+        albums.append(destination)
+        return albums
+    }
+
+    func sourceAlbums(for record: GalleryVaultRecord) async throws -> [GalleryVaultAlbum] { sourceParents[record.id] ?? record.albums }
+    func setDestination(_ destination: GalleryVaultAlbum, sourceAlbumID: String?, for record: GalleryVaultRecord) async throws -> GalleryVaultRecord {
+        let original = try await sourceAlbums(for: record)
+        sourceParents[record.id] = original
+        var updated = record
+        updated.albums = Self.destinationAlbums(original, destination: destination, sourceAlbumID: sourceAlbumID)
+        try update(updated)
+        return updated
+    }
     func update(_ record: GalleryVaultRecord) throws { guard isUnlocked else { throw GalleryVaultTransferError.locked }; durable[record.id] = record }
     func remove(id: UUID) throws { durable.removeValue(forKey: id) }
     func verifyCommitted(id: UUID) async throws -> GalleryVaultRecord { guard isUnlocked, let r = durable[id] else { throw GalleryVaultTransferError.locked }; if failVerifyIDs.contains(id) { throw FakeError.injected }; return r }

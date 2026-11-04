@@ -24,6 +24,7 @@ struct GalleryViewerWindowRoot: View {
     @State private var moreSessionID: UUID?
     @State private var morePopoverCovered = false
     @State private var moveTarget: GalleryViewerMoveTarget?
+    @State private var pendingVaultMove: GalleryVaultTransferRequest?
     @State private var vaultTransfer: GalleryVaultTransferRequest?
     @State private var showingVault = false
     @State private var vaultSheetCovered = false
@@ -119,8 +120,16 @@ struct GalleryViewerWindowRoot: View {
                 unavailableView.frame(width: 500, height: 450)
             }
         }
-        .sheet(item: $moveTarget) { target in
-            GalleryViewerMoveSheet(sessionID: target.sessionID, assetID: target.assetID)
+        .sheet(item: $moveTarget, onDismiss: {
+            if let pending = pendingVaultMove, vault.isUnlocked { vaultTransfer = pending }
+            pendingVaultMove = nil
+        }) { target in
+            GalleryViewerMoveSheet(sessionID: target.sessionID, assetID: target.assetID) { request in
+                pendingVaultMove = request
+            }
+        }
+        .onChange(of: vault.isUnlocked) { _, unlocked in
+            if !unlocked { pendingVaultMove = nil; vaultTransfer = nil }
         }
         .sheet(isPresented: $showingVault, onDismiss: { vaultSheetCovered = false }) {
             GalleryVaultView(resultMessage: $vaultMessage, albumRetryIDs: $vaultAlbumRetryIDs)
@@ -608,11 +617,13 @@ private struct GalleryViewerDeleteTarget: Identifiable {
 private struct GalleryViewerMoveSheet: View {
     let sessionID: UUID
     let assetID: String
+    let moveToVault: (GalleryVaultTransferRequest) -> Void
     @ObservedObject private var store = GalleryViewerStore.shared
     @ObservedObject private var albumEmptiness = GalleryVirtualLibraryIndex.shared
     @ObservedObject private var vault = GalleryVaultService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var vaultAlbums = false
     @State private var newAlbumName = ""
     @State private var error: String?
 
@@ -639,14 +650,22 @@ private struct GalleryViewerMoveSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                GalleryVaultAlbumsToggle(isOn: $vaultAlbums)
                 Section("Create an album") {
                     TextField("Album name", text: $newAlbumName)
                     Button("Create and Move") {
-                        performMove { try await store.move(sessionID, toNewAlbumNamed: newAlbumName, expectedAssetID: assetID) }
+                        let name = newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if vaultAlbums {
+                            chooseVaultAlbum(vault.destinationAlbums.first { $0.title == name }
+                                ?? GalleryVaultAlbum(id: "vault-album:" + UUID().uuidString, title: name, position: nil))
+                        } else {
+                            performMove { try await store.move(sessionID, toNewAlbumNamed: name, expectedAssetID: assetID) }
+                        }
                     }
-                    .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPerformingOperation)
+                    .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPerformingOperation
+                        || (vaultAlbums && GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines))))
                 }
-                if query.isEmpty, !recentDestinations.isEmpty {
+                if !vaultAlbums, query.isEmpty, !recentDestinations.isEmpty {
                     Section("Recent destinations") {
                         ForEach(recentDestinations) { album in
                             Button(album.title) {
@@ -657,14 +676,21 @@ private struct GalleryViewerMoveSheet: View {
                     }
                 }
                 Section("Move to album") {
-                    ForEach(destinations) { album in
+                    if vaultAlbums && vault.isUnlocked {
+                        ForEach(vault.destinationAlbums.filter { query.isEmpty || $0.title.localizedStandardContains(query) }, id: \.id) { album in
+                            Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
+                                .accessibilityIdentifier("gallery-viewer-move-vault-destination-" + album.id)
+                        }
+                        if vault.destinationAlbums.isEmpty { Text("Create a Private Vault album above.") }
+                    } else { ForEach(destinations) { album in
                         Button(album.title) {
                             performMove { try await store.move(sessionID, to: album, expectedAssetID: assetID) }
                         }
                         .disabled(store.isPerformingOperation)
                     }
                 }
-                Section("Current album") {
+                }
+                if !vaultAlbums { Section("Current album") {
                     Button("Remove from Album", systemImage: "minus.circle") {
                         performMove {
                             try await store.removeFromSourceAlbum(sessionID: sessionID, expectedAssetID: assetID)
@@ -672,6 +698,7 @@ private struct GalleryViewerMoveSheet: View {
                     }
                     .disabled(!canRemoveFromSource || store.isPerformingOperation)
                     .accessibilityIdentifier("gallery-viewer-remove-from-album")
+                }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             }
@@ -684,6 +711,16 @@ private struct GalleryViewerMoveSheet: View {
         }
         .frame(width: 500, height: 550)
         .task { await store.refreshAlbums() }
+        .onChange(of: vault.isUnlocked) { _, unlocked in
+            if !unlocked { vaultAlbums = false; query = ""; newAlbumName = ""; error = nil }
+        }
+    }
+
+    private func chooseVaultAlbum(_ album: GalleryVaultAlbum) {
+        guard vault.isUnlocked, let session = store.session(sessionID),
+              let asset = session.currentAsset, asset.localIdentifier == assetID else { return }
+        moveToVault(.items([asset], destination: album, sourceAlbumID: session.sourceAlbumID))
+        dismiss()
     }
 
     private func performMove(_ action: @escaping @MainActor () async throws -> Void) {

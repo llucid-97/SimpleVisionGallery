@@ -38,7 +38,18 @@ final class GalleryVaultService: ObservableObject {
     static let shared = GalleryVaultService()
     @Published private(set) var isUnlocked = false
     @Published private(set) var authEpoch = UUID()
-    @Published private(set) var records: [GalleryVaultRecord] = []
+    @Published private(set) var records: [GalleryVaultRecord] = [] {
+        didSet {
+            var albums: [String: GalleryVaultAlbum] = [:]
+            for record in records {
+                for album in record.albums where !GalleryRecycleBin.isRecycleBinTitle(album.title) {
+                    albums[album.id] = GalleryVaultAlbum(id: album.id, title: album.title, position: nil)
+                }
+            }
+            destinationAlbums = albums.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }
+    }
+    @Published private(set) var destinationAlbums: [GalleryVaultAlbum] = []
     @Published private(set) var unreadableRecordCount = 0
     @Published private(set) var isBusy = false
     @Published private(set) var progress: GalleryVaultProgress?
@@ -117,11 +128,11 @@ final class GalleryVaultService: ObservableObject {
     }
 
     @discardableResult
-    func moveToVault(assets: [PHAsset]) async throws -> GalleryVaultTransferOutcome {
-        try await move(count: assets.count, sourceAlbumID: nil) { assets[$0] }
+    func moveToVault(assets: [PHAsset], destination: GalleryVaultAlbum? = nil, sourceAlbumID: String? = nil) async throws -> GalleryVaultTransferOutcome {
+        try await move(count: assets.count, sourceAlbumID: sourceAlbumID, destination: destination) { assets[$0] }
     }
 
-    private func move(count: Int, sourceAlbumID: String?, assetAt: (Int) -> PHAsset) async throws -> GalleryVaultTransferOutcome {
+    private func move(count: Int, sourceAlbumID: String?, destination: GalleryVaultAlbum? = nil, assetAt: (Int) -> PHAsset) async throws -> GalleryVaultTransferOutcome {
         try beginOperation()
         let epoch = authEpoch
         storage.beginBatch()
@@ -139,7 +150,8 @@ final class GalleryVaultService: ObservableObject {
             do {
                 if let existing = storage.record(sourceIdentifier: asset.localIdentifier), existing.state == .copiedAwaitingDeletion {
                     // A previously interrupted commit must be verified again before it can be deleted.
-                    let record = try await storage.verifyCommitted(id: existing.id)
+                    var record = try await storage.verifyCommitted(id: existing.id)
+                    if let destination { record = try await storage.setDestination(destination, sourceAlbumID: sourceAlbumID, for: record) }
                     guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
                     candidates.append(record)
                     reused += 1
@@ -160,7 +172,12 @@ final class GalleryVaultService: ObservableObject {
                     catch { cancelPreparation = nil; throw error }
                     cancelPreparation = nil
                     guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
-                    let item = try storage.createItem(id: prepared.record.id)
+                    var record = prepared.record
+                    let sourceAlbums = destination == nil ? nil : record.albums
+                    if let destination {
+                        record.albums = GalleryVaultStorage.destinationAlbums(record.albums, destination: destination, sourceAlbumID: sourceAlbumID)
+                    }
+                    let item = try storage.createItem(id: record.id)
                     do {
                         for (resource, descriptor) in zip(prepared.resources, prepared.record.resources) {
                             guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.cancelled }
@@ -171,9 +188,9 @@ final class GalleryVaultService: ObservableObject {
                             activeStream = nil
                         }
                         guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.cancelled }
-                        try storage.commit(prepared.record, from: item)
+                        try storage.commit(record, from: item, sourceAlbums: sourceAlbums)
                         // A successful commit already verified the bytes; the source is never touched on a thrown commit.
-                        candidates.append(prepared.record)
+                        candidates.append(record)
                         copied += 1
                     } catch {
                         activeStream = nil
@@ -234,9 +251,17 @@ final class GalleryVaultService: ObservableObject {
     private func deleteConfirmed(_ candidates: [GalleryVaultRecord], epoch: UUID) async throws -> (deleted: Int, message: String?, editsDiscarded: Int) {
         guard !candidates.isEmpty else { return (0, nil, 0) }
         progress = .init(phase: "Checking Photos", processed: 0, total: candidates.count, detail: nil)
+        var comparisons: [UUID: GalleryVaultRecord] = [:]
+        for record in candidates {
+            var source = record
+            source.albums = try await storage.sourceAlbums(for: record)
+            comparisons[record.id] = source
+        }
+        guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         let ids = candidates.map(\.sourceIdentifier)
         let live = try await Task.detached(priority: .userInitiated) { try GalleryVaultPhotoLibrary.fetch(ids: ids) }.value
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+        let sourceVersions = comparisons
         let classified = await Task.detached(priority: .userInitiated) {
             var current: [(PHAsset, GalleryVaultRecord)] = []
             var absent: [GalleryVaultRecord] = []
@@ -244,8 +269,9 @@ final class GalleryVaultService: ObservableObject {
             var editsDiscarded = 0
             for record in candidates {
                 guard let asset = live[record.sourceIdentifier] else { absent.append(record); continue }
-                if GalleryVaultPhotoLibrary.isSameVersion(asset, as: record) {
-                    current.append((asset, record))
+                let source = sourceVersions[record.id] ?? record
+                if GalleryVaultPhotoLibrary.isSameVersion(asset, as: source) {
+                    current.append((asset, source))
                     if GalleryVaultPhotoLibrary.hasEdits(PHAssetResource.assetResources(for: asset)) { editsDiscarded += 1 }
                 }
                 else { changed += 1 }
