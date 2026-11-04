@@ -169,19 +169,37 @@ nonisolated enum GalleryVaultPhotoLibrary {
         guard valid else { throw GalleryVaultTransferError.changedOriginal }
     }
 
-    static func usableParents(_ record: GalleryVaultRecord, omittingUnavailable: Bool = false) throws -> [(GalleryVaultAlbum, PHAssetCollection)] {
-        let ids = record.albums.map(\.id)
-        let fetched = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: ids, options: nil)
+    static func usableParents(_ record: GalleryVaultRecord, omittingUnavailable: Bool = false) throws -> [(GalleryVaultAlbum, PHAssetCollection?)] {
+        let fetched = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: record.albums.map(\.id), options: nil)
         var byID: [String: PHAssetCollection] = [:]
         for i in 0..<fetched.count { let album = fetched.object(at: i); byID[album.localIdentifier] = album }
-        return try record.albums.compactMap { album in
-            guard let collection = byID[album.id], collection.canPerform(.addContent) else {
-                if omittingUnavailable { return nil }
-                throw GalleryVaultTransferError.albumUnavailable(album.title)
+        let missingTitles = Set(record.albums.filter { byID[$0.id] == nil && !GalleryRecycleBin.isRecycleBinTitle($0.title) }.map(\.title))
+        var replacements: [String: PHAssetCollection] = [:]
+        if !missingTitles.isEmpty {
+            let regular = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
+            for i in 0..<regular.count {
+                let album = regular.object(at: i)
+                if let title = album.localizedTitle, missingTitles.contains(title), album.canPerform(.addContent), replacements[title] == nil {
+                    replacements[title] = album
+                }
             }
-            return (album, collection)
+        }
+        return try record.albums.compactMap { album in
+            if GalleryRecycleBin.isRecycleBinTitle(album.title) { return nil }
+            if let collection = byID[album.id] {
+                guard collection.canPerform(.addContent) else {
+                    if omittingUnavailable { return nil }
+                    throw GalleryVaultTransferError.albumUnavailable(album.title)
+                }
+                return (album, collection)
+            }
+            var resolved = album
+            let collection = replacements[album.title]
+            if let collection { resolved.id = collection.localIdentifier }
+            return (resolved, collection)
         }
     }
+
 }
 
 /// Cancelling resumes the waiter even when PhotoKit never delivers its completion.

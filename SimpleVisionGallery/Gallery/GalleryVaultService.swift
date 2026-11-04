@@ -389,20 +389,29 @@ final class GalleryVaultService: ObservableObject {
         guard let created = try GalleryVaultPhotoLibrary.fetch(ids: [restoredID])[restoredID] else {
             throw GalleryVaultTransferError.interruptedRestore
         }
-        try await verifyRestored(created, record: verifiedRecord, parents: parents, sourceHashes: sourceHashes, epoch: epoch)
+        guard let journaled = storage.record(id: record.id) else { throw GalleryVaultTransferError.interruptedRestore }
+        let resolvedParents = try await Task.detached { try GalleryVaultPhotoLibrary.usableParents(journaled, omittingUnavailable: omittingUnavailableAlbums) }.value
+        guard resolvedParents.allSatisfy({ $0.1 != nil }) else { throw GalleryVaultTransferError.interruptedRestore }
+        try await verifyRestored(created, record: journaled, parents: resolvedParents, sourceHashes: sourceHashes, epoch: epoch)
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         NotificationCenter.default.post(name: .galleryVaultDidRestoreItem, object: nil,
-            userInfo: ["record": verifiedRecord, "restoredIdentifier": restoredID])
+            userInfo: ["record": journaled, "restoredIdentifier": restoredID])
         try storage.remove(id: record.id)
     }
 
-    private func importAsset(_ record: GalleryVaultRecord, leases: [URL], parents: [(GalleryVaultAlbum, PHAssetCollection)], epoch: UUID) async throws -> String {
+    private func importAsset(_ record: GalleryVaultRecord, leases: [URL], parents: [(GalleryVaultAlbum, PHAssetCollection?)], epoch: UUID) async throws -> String {
+        guard leases.count == record.resources.count else { throw GalleryVaultTransferError.importFailed }
+        let types = try record.resources.map { descriptor in
+            guard let type = PHAssetResourceType(rawValue: descriptor.type) else { throw GalleryVaultTransferError.unsupportedResources }
+            return type
+        }
         var createdIdentifier: String?
         var transactionError: Error?
         do {
             try await PHPhotoLibrary.shared().performChanges {
                 var requests: [(GalleryVaultAlbum, PHAssetCollectionChangeRequest, Int)] = []
-                for (album, collection) in parents {
+                for (album, optionalCollection) in parents {
+                    guard let collection = optionalCollection else { continue }
                     let fetch = PHAsset.fetchAssets(in: collection, options: nil)
                     guard let request = PHAssetCollectionChangeRequest(for: collection, assets: fetch) else {
                         transactionError = GalleryVaultTransferError.albumUnavailable(album.title); return
@@ -412,13 +421,22 @@ final class GalleryVaultService: ObservableObject {
                 let creation = PHAssetCreationRequest.forAsset()
                 guard let placeholder = creation.placeholderForCreatedAsset else { transactionError = GalleryVaultTransferError.importFailed; return }
                 let identifier = placeholder.localIdentifier
-                // Persist the placeholder before Photos can commit. A missing ID after a crash
-                // stays in recovery instead of creating a duplicate import.
+                var recreatedTitles = Set<String>()
+                for (album, collection) in parents where collection == nil {
+                    guard recreatedTitles.insert(album.title).inserted else { continue }
+                    let request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: album.title)
+                    var resolved = album
+                    resolved.id = request.placeholderForCreatedAssetCollection.localIdentifier
+                    requests.append((resolved, request, 0))
+                }
+                // Journal both IDs before commit; a journal failure leaves an invalid empty asset,
+                // so Photos rolls back the asset and new albums together.
                 do {
                     try Self.onMainSync {
                         guard self.isCurrent(epoch), var staged = self.storage.record(id: record.id) else { throw GalleryVaultTransferError.locked }
                         staged.state = .restoring
                         staged.restoredIdentifier = identifier
+                        staged.albums = requests.map { $0.0 }
                         try self.storage.update(staged)
                     }
                 } catch { transactionError = error; return }
@@ -428,8 +446,8 @@ final class GalleryVaultService: ObservableObject {
                 if let latitude = record.latitude, let longitude = record.longitude {
                     creation.location = CLLocation(latitude: latitude, longitude: longitude)
                 }
-                for (descriptor, url) in zip(record.resources, leases) {
-                    guard let type = PHAssetResourceType(rawValue: descriptor.type) else { transactionError = GalleryVaultTransferError.unsupportedResources; return }
+                for (index, descriptor) in record.resources.enumerated() {
+                    let type = types[index], url = leases[index]
                     let options = PHAssetResourceCreationOptions()
                     options.originalFilename = descriptor.filename
                     options.uniformTypeIdentifier = descriptor.uniformTypeIdentifier
@@ -449,6 +467,7 @@ final class GalleryVaultService: ObservableObject {
                staged.state == .restoring, staged.restoredIdentifier == id {
                 staged.state = .privateItem
                 staged.restoredIdentifier = nil
+                staged.albums = record.albums
                 try? storage.update(staged)
             }
             throw error
@@ -459,7 +478,7 @@ final class GalleryVaultService: ObservableObject {
     }
 
     private func verifyRestored(_ asset: PHAsset, record: GalleryVaultRecord,
-        parents: [(GalleryVaultAlbum, PHAssetCollection)], sourceHashes: [SHA256.Digest], epoch: UUID) async throws {
+        parents: [(GalleryVaultAlbum, PHAssetCollection?)], sourceHashes: [SHA256.Digest], epoch: UUID) async throws {
         guard asset.mediaType.rawValue == record.mediaType,
               asset.creationDate == record.creationDate, asset.isFavorite == record.isFavorite else { throw GalleryVaultTransferError.importFailed }
         let containing = PHAssetCollection.fetchAssetCollectionsContaining(asset, with: .album, options: nil)

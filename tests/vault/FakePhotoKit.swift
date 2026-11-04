@@ -16,6 +16,10 @@ extension Notification.Name {
 nonisolated enum PHAuthorizationStatus { case authorized, limited }
 nonisolated enum PHAccessLevel { case readWrite }
 nonisolated enum PHAssetCollectionType { case album }
+nonisolated enum PHAssetCollectionSubtype { case albumRegular }
+nonisolated enum GalleryRecycleBin {
+    static func isRecycleBinTitle(_ title: String?) -> Bool { title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "recycle bin" }
+}
 nonisolated enum PHAssetResourceType: Int { case photo = 1, video = 2, alternatePhoto = 4, pairedVideo = 9, fullSizePhoto = 5, fullSizeVideo = 6, adjustmentData = 7, adjustmentBasePhoto = 8, fullSizePairedVideo = 10, adjustmentBasePairedVideo = 11, adjustmentBaseVideo = 12 }
 nonisolated enum PHAssetMediaType: Int { case image = 1, video = 2 }
 nonisolated enum PHAssetEditOperation { case delete }
@@ -51,6 +55,10 @@ nonisolated final class PHAsset: @unchecked Sendable {
 nonisolated final class PHAssetCollection: @unchecked Sendable {
     let localIdentifier: String
     init(_ id: String) { localIdentifier = id }
+    var localizedTitle: String? { FakePhotos.albumTitles[localIdentifier] ?? localIdentifier }
+    static func fetchAssetCollections(with type: PHAssetCollectionType, subtype: PHAssetCollectionSubtype, options: Any?) -> PHFetchResult<PHAssetCollection> {
+        PHFetchResult(FakePhotos.albumTitles.keys.sorted().filter { !FakePhotos.missingParents.contains($0) }.map(PHAssetCollection.init))
+    }
     func canPerform(_ operation: PHCollectionEditOperation) -> Bool { !FakePhotos.unavailableParents.contains(localIdentifier) }
     static func fetchAssetCollections(withLocalIdentifiers ids: [String], options: Any?) -> PHFetchResult<PHAssetCollection> {
         PHFetchResult(ids.filter { !FakePhotos.missingParents.contains($0) }.map(PHAssetCollection.init))
@@ -100,6 +108,12 @@ nonisolated final class PHAssetCreationRequest {
 }
 nonisolated final class PHAssetCollectionChangeRequest {
     let album: PHAssetCollection
+    var placeholderForCreatedAssetCollection: PHObjectPlaceholder { PHObjectPlaceholder(album.localIdentifier) }
+    static func creationRequestForAssetCollection(withTitle title: String) -> PHAssetCollectionChangeRequest {
+        let id = UUID().uuidString
+        FakePhotos.pendingAlbums[id] = title
+        return PHAssetCollectionChangeRequest(for: PHAssetCollection(id), assets: PHFetchResult([]))!
+    }
     init?(for collection: PHAssetCollection, assets: PHFetchResult<PHAsset>) { album = collection }
     func insertAssets(_ assets: NSArray, at indexes: IndexSet) { FakePhotos.pendingParents.append(album.localIdentifier) }
     func addAssets(_ assets: NSArray) { FakePhotos.pendingParents.append(album.localIdentifier) }
@@ -109,21 +123,24 @@ nonisolated final class PHPhotoLibrary {
     static func shared() -> PHPhotoLibrary { sharedValue }
     static func authorizationStatus(for level: PHAccessLevel) -> PHAuthorizationStatus { .authorized }
     func performChanges(_ work: () -> Void) async throws {
-        FakePhotos.pendingCreation = nil; FakePhotos.pendingParents = []
+        FakePhotos.pendingCreation = nil; FakePhotos.pendingParents = []; FakePhotos.pendingAlbums = [:]
         work()
         if FakePhotos.failImport { throw FakeError.injected }
         if FakePhotos.cancelImportBeforeCommit { throw CancellationError() }
+        if let creation = FakePhotos.pendingCreation, creation.resources.isEmpty { throw FakeError.injected }
         if let creation = FakePhotos.pendingCreation, let id = creation.placeholderForCreatedAsset?.localIdentifier, !creation.resources.isEmpty {
             let asset = PHAsset(id, parents: FakePhotos.pendingParents)
             asset.resources = creation.resources; asset.creationDate = creation.creationDate; asset.isFavorite = creation.isFavorite
             FakePhotos.assets[id] = asset
         }
+        FakePhotos.albumTitles.merge(FakePhotos.pendingAlbums) { _, new in new }
         if FakePhotos.cancelImportAfterCommit { throw CancellationError() }
     }
 }
 nonisolated enum FakeError: Error { case injected, outOfSpace }
 nonisolated enum FakePhotos {
     nonisolated(unsafe) static var assets: [String: PHAsset] = [:]
+    nonisolated(unsafe) static var albumTitles: [String: String] = [:], pendingAlbums: [String: String] = [:]
     nonisolated(unsafe) static var deleteCalls: [[String]] = []
     nonisolated(unsafe) static var failDelete = false, failImport = false
     nonisolated(unsafe) static var cancelImportBeforeCommit = false, cancelImportAfterCommit = false
@@ -139,7 +156,7 @@ nonisolated enum FakePhotos {
     nonisolated(unsafe) static var started: Set<String> = []
     static func markStarted(_ id: String) { startedLock.lock(); started.insert(id); startedLock.unlock() }
     static func hasStarted(_ id: String) -> Bool { startedLock.lock(); defer { startedLock.unlock() }; return started.contains(id) }
-    static func reset() { assets = [:]; deleteCalls = []; failDelete = false; failImport = false; cancelImportBeforeCommit = false; cancelImportAfterCommit = false; creationCalls = 0; unavailableParents = []; missingParents = []; failCopyID = nil; delayedID = nil; pendingCreation = nil; pendingParents = []; resourceSource = [:]; startedLock.lock(); started = []; startedLock.unlock() }
+    static func reset() { assets = [:]; albumTitles = [:]; pendingAlbums = [:]; deleteCalls = []; failDelete = false; failImport = false; cancelImportBeforeCommit = false; cancelImportAfterCommit = false; creationCalls = 0; unavailableParents = []; missingParents = []; failCopyID = nil; delayedID = nil; pendingCreation = nil; pendingParents = []; resourceSource = [:]; startedLock.lock(); started = []; startedLock.unlock() }
 }
 nonisolated enum GalleryVaultTransferError: LocalizedError {
     case fullAccessRequired, unsupportedItem, unsupportedResources, missingResources, locked, busy
