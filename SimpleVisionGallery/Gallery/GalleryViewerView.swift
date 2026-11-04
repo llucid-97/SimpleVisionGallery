@@ -62,7 +62,7 @@ struct GalleryViewerWindowRoot: View {
                                 showingVault: $showingVault,
                                 vaultMessage: $vaultMessage,
                                 vaultAlbumRetryIDs: $vaultAlbumRetryIDs,
-                                vaultCovered: vaultTransfer != nil || showingVault || vaultSheetCovered || moreSessionID != nil || morePopoverCovered,
+                                vaultCovered: vault.isReviewingAlbumDeletion || vaultTransfer != nil || showingVault || vaultSheetCovered || moreSessionID != nil || morePopoverCovered,
                                 width: paneWidth,
                                 minimumMediaHeight: minimumMediaHeight,
                                 backingYaw: value.sessionIDs.count == 2
@@ -138,6 +138,12 @@ struct GalleryViewerWindowRoot: View {
             if showing { vaultSheetCovered = true }
         }
         .modifier(GalleryVaultConfirmation(request: $vaultTransfer, showingVault: $showingVault, resultMessage: $vaultMessage))
+        .onReceive(NotificationCenter.default.publisher(for: .galleryViewerAlbumDeleted)) { notification in
+            guard let value, let ids = notification.userInfo?["sessionIDs"] as? Set<UUID>,
+                  value.sessionIDs.allSatisfy({ ids.contains($0) || store.session($0) == nil }) else { return }
+            dismissWindow(id: GalleryViewerWindows.sceneID(for: value), value: value)
+            windows.closed(value)
+        }
         .persistentSystemOverlays(.visible)
     }
 

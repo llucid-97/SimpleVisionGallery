@@ -27,6 +27,8 @@ The vault does not sync or have a backup. Deleting the app, losing this device, 
 
 Private media and vault keys are not sent to the developer. Vault metadata, including original filenames and album names, is encrypted on disk. Existing album names in the Photos library remain unchanged.
 
+Deleting an album in Gallery can keep its items or move its Photos items to the app's Recycle Bin. The second choice permanently removes vault items whose only membership is that album; vault items shared with other albums are kept. Counts and the permanent-delete warning appear before confirmation. An album deliberately deleted in Gallery is removed from vault memberships and is not recreated on restore. An encrypted operation intent protects interrupted membership changes and is removed when the operation finishes.
+
 ## Information collection and sharing
 
 Gallery processes photo and video content on your device and does not send it to the app developer. The app does not use analytics, advertising, tracking, or an app-operated network service. Apple’s Photos and iCloud services may retrieve or sync library content according to your settings and Apple’s terms.

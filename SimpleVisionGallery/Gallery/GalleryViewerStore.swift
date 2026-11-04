@@ -219,6 +219,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     private var membershipSubscription: AnyCancellable?
     private var vaultSubscription: AnyCancellable?
     private var vaultTransferSubscription: AnyCancellable?
+    private var albumDeletionSubscription: AnyCancellable?
     private var vaultRestoreSubscription: AnyCancellable?
     private var restoredVaultIDs: Set<UUID> = []
 
@@ -246,6 +247,9 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 self.restoredVaultIDs.formIntersection(Set(visibleRecords.map(\.id)))
                 self.updateVaultPlaylists(visibleRecords)
             }
+        albumDeletionSubscription = NotificationCenter.default.publisher(for: .galleryAlbumWasDeleted).sink { [weak self] notification in
+            if let id = notification.userInfo?["albumID"] as? String { self?.closeDeletedAlbum(id) }
+        }
         membershipSubscription = GalleryVirtualLibraryIndex.shared.$revision.dropFirst().sink { [weak self] _ in
             guard let self else { return }
             let index = GalleryVirtualLibraryIndex.shared
@@ -720,6 +724,13 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         }
     }
 
+    private func closeDeletedAlbum(_ albumID: String) {
+        let ids = Set(sessions.values.filter { $0.albumID == albumID }.map(\.id))
+        guard !ids.isEmpty else { return }
+        NotificationCenter.default.post(name: .galleryViewerAlbumDeleted, object: nil, userInfo: ["sessionIDs": ids])
+        for id in ids { disposeSession(id) }
+    }
+
     private func applyRemovals(_ removed: IndexSet, to playlist: GalleryViewerPlaylist) {
         guard !removed.subtracting(playlist.index.removed).isEmpty else { return }
         playlist.index.remove(removed)
@@ -752,7 +763,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             let snapshot = playlist.snapshot
             if let collection = snapshot.album.collection,
                change.changeDetails(for: collection)?.objectWasDeleted == true {
-                applyRemovals(IndexSet(integersIn: 0..<snapshot.nativeCount), to: playlist)
+                closeDeletedAlbum(snapshot.album.id)
                 continue
             }
             guard let details = change.changeDetails(for: snapshot.fetch) else { continue }

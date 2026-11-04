@@ -65,11 +65,13 @@ struct GalleryVaultView: View {
     @Binding var albumRetryIDs: [UUID]
     @Environment(\.dismiss) private var dismiss
     @State private var unlockError: String?
+    @State private var albumDeletion: GalleryAlbumDeletionPlan?
     @State private var pendingCopies: [GalleryVaultRecord] = []
     @State private var pendingVisibleCount = 50
     @State private var discardIDs: [UUID] = []
     @State private var confirmDiscard = false
     @State private var confirmAlbumRetry = false
+    @State private var confirmDiscardAlbumDeletion = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -89,6 +91,30 @@ struct GalleryVaultView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     if vault.isUnlocked {
+                        if vault.needsAlbumDeletionReview {
+                            Text("Album cleanup needs review. Your readable private items remain available. Moving and restoring are paused until this is resolved.")
+                            if let error = vault.albumDeletionRecoveryError {
+                                Text(error).foregroundStyle(.red)
+                                    .accessibilityIdentifier("gallery-album-recovery-error")
+                                Button("Retry Album Cleanup") { vault.retryAlbumDeletionRecovery() }
+                                    .disabled(vault.isBusy)
+                            }
+                            if vault.pendingAlbumDeletion == nil {
+                                Button("Discard Unreadable Recovery Note…") { confirmDiscardAlbumDeletion = true }
+                                    .disabled(vault.isBusy)
+                            } else if vault.pendingAlbumDeletion?.photosCommitted == false {
+                                Button("Review Interrupted Album Deletion") {
+                                    Task { @MainActor in
+                                        do {
+                                            let plan = try await vault.reviewInterruptedAlbumDeletion()
+                                            vault.isReviewingAlbumDeletion = true
+                                            albumDeletion = plan
+                                        }
+                                        catch { unlockError = error.localizedDescription }
+                                    }
+                                }.disabled(vault.isBusy)
+                            }
+                        }
                         Button("Lock Vault", systemImage: "lock") { vault.lock() }
                             .buttonStyle(LensLabSecondaryButtonStyle())
                             .accessibilityIdentifier("gallery-vault-lock")
@@ -238,6 +264,8 @@ struct GalleryVaultView: View {
         .onChange(of: vault.isUnlocked) { _, unlocked in
             if !unlocked {
                 resultMessage = nil
+                albumDeletion = nil
+                confirmDiscardAlbumDeletion = false
                 unlockError = nil
                 pendingCopies = []
                 discardIDs = []
@@ -274,6 +302,17 @@ struct GalleryVaultView: View {
         } message: {
             Text("Photos cannot restore some original albums because they are missing or cannot be edited. Restored items will be added to available albums, but not to those unavailable albums.")
         }
+        .confirmationDialog("Discard unreadable recovery note?", isPresented: $confirmDiscardAlbumDeletion, titleVisibility: .visible) {
+            Button("Discard Recovery Note") {
+                do { try vault.discardUnreadableAlbumDeletion() }
+                catch { unlockError = error.localizedDescription }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Discarding this note changes no photos, vault files or vault album memberships. Your vault memberships stay as they are now. Any Photos album change already made is not undone.")
+        }
+        .sheet(item: $albumDeletion, onDismiss: { vault.isReviewingAlbumDeletion = false }) { plan in GalleryAlbumDeletionSheet(plan: plan, isRecoveryReview: true) }
+
     }
 
     private func restore(_ ids: [UUID], omittingUnavailableAlbums: Bool = false) {

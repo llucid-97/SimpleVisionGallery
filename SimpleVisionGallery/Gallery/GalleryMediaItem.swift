@@ -3,6 +3,8 @@ import Foundation
 @preconcurrency import Photos
 
 extension Notification.Name {
+    static let galleryAlbumWasDeleted = Notification.Name("GalleryAlbumWasDeleted")
+    static let galleryViewerAlbumDeleted = Notification.Name("GalleryViewerAlbumDeleted")
     static let galleryPhotosAccessDidRevoke = Notification.Name("GalleryPhotosAccessDidRevoke")
     static let galleryVaultDidRestoreItem = Notification.Name("GalleryVaultDidRestoreItem")
     static let galleryVaultWillLock = Notification.Name("GalleryVaultWillLock")

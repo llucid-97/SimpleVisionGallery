@@ -863,6 +863,12 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         vaultIndex.records(for: album, filter: .all, search: "").filter { $0.state == .privateItem }
     }
 
+    func canDeleteAlbum(_ album: GalleryAlbum) -> Bool {
+        album.virtualScope == nil && !isRecycleBin(album: album)
+            && (album.collection?.canPerform(.delete) == true
+                || (album.collection == nil && GalleryVaultService.shared.isUnlocked && hasVaultRecords(in: album)))
+    }
+
     func hasVaultRecords(in album: GalleryAlbum) -> Bool {
         if album.virtualScope == .recycleBin || GalleryRecycleBin.isRecycleBinTitle(album.title) { return false }
         return (vaultIndex.privateItemCounts[album.virtualScope?.virtualID ?? album.id] ?? 0) > 0
