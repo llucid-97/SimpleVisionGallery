@@ -26,6 +26,7 @@ nonisolated struct GalleryAlbum {
 }
 nonisolated enum GalleryRecycleBin {
     static func isRecycleBin(_ album: GalleryAlbum) -> Bool { isRecycleBinTitle(album.title) }
+    static func albumExists(id: String) -> Bool { !FakePhotos.missingParents.contains(id) }
     static func albumDeletionSnapshot(id: String) throws -> (ids: [String], shared: Int)? {
         if FakePhotos.missingParents.contains(id) { return nil }
         let assets = FakePhotos.assets.values.filter { $0.parents.contains(id) }

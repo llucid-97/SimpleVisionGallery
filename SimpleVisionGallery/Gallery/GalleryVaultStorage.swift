@@ -512,8 +512,23 @@ final class GalleryVaultStorage: ObservableObject {
 
     func authoritativeRecord(id: UUID) throws -> GalleryVaultRecord? {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
-        do { return try Self.readRecord(in: itemURL(id), id: id, session: session) }
-        catch { if Self.isMissingFile(error) { return nil }; throw error }
+        do {
+            let record = try Self.readRecord(in: itemURL(id), id: id, session: session)
+            // A repaired record may have been skipped by the unlock scan.
+            if recordsByID[id] == nil {
+                recordsByID[id] = record
+                idsBySource[record.sourceIdentifier] = id
+                recordDates[id] = try? Self.recordDate(itemURL(id))
+                unreadableRecordCount = max(0, unreadableRecordCount - 1)
+                manifestDirty = true
+                publishChangesIfNeeded()
+            }
+            return record
+        }
+        catch {
+            if Self.isMissingFile(error), !FileManager.default.fileExists(atPath: itemURL(id).path) { return nil }
+            throw error
+        }
     }
 
     func readAlbumDeletion() throws -> GalleryVaultAlbumDeletion? {

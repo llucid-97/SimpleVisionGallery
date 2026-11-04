@@ -2238,6 +2238,7 @@ extension View {
 
 struct GalleryAlbumDeletionSheet: View {
     let plan: GalleryAlbumDeletionPlan
+    var isRecoveryReview = false
     var completed: () -> Void = {}
     @ObservedObject private var vault = GalleryVaultService.shared
     @Environment(\.dismiss) private var dismiss
@@ -2246,6 +2247,23 @@ struct GalleryAlbumDeletionSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Delete “\(plan.title)”?").font(.title2)
+            if isRecoveryReview {
+                if plan.hadPhotosAlbum || vault.pendingAlbumDeletion?.plan.hadPhotosAlbum == false {
+                    Text(plan.hadPhotosAlbum
+                         ? "The Photos album still exists. Keep Album clears the interrupted request without changing the album or its vault items."
+                         : "This vault-only album has not been removed. Keep Album clears the interrupted request without changing its items or memberships.")
+                    Button("Keep Album") {
+                        Task { @MainActor in
+                            do { try await vault.keepInterruptedAlbum(); dismiss() }
+                            catch { self.error = error.localizedDescription }
+                        }
+                    }
+                    .buttonStyle(LensLabSecondaryButtonStyle())
+                    .accessibilityIdentifier("gallery-album-delete-keep")
+                } else {
+                    Text("The Photos album is already gone. Its remaining vault files were kept. Choose below to finish the vault cleanup; the Photos change cannot be undone here.")
+                }
+            }
             Text("\(plan.photoIDs.count) Photos items and \(plan.vaultRecords.count) vault items.")
                 .accessibilityIdentifier("gallery-album-delete-counts")
             Text("\(plan.sharedPhotoCount) Photos items also belong to other albums and will stay visible there.")

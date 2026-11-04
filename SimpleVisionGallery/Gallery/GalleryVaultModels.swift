@@ -63,6 +63,8 @@ nonisolated struct GalleryVaultAlbumDeletion: Codable, Equatable, Sendable {
 
 nonisolated enum GalleryAlbumDeletionError: LocalizedError {
     case changed, interrupted, unreadable, restoring, notDeletable
+    case photosAlreadyDeleted
+    case cleanupIncomplete(Int, String)
     var errorDescription: String? {
         switch self {
         case .changed: "The album changed. Review its current items before deleting it."
@@ -70,6 +72,8 @@ nonisolated enum GalleryAlbumDeletionError: LocalizedError {
         case .unreadable: "Some vault records could not be read. The album and saved files were kept."
         case .restoring: "Finish restoring the album's private items before deleting it."
         case .notDeletable: "This album cannot be deleted."
+        case .photosAlreadyDeleted: "The Photos album is already gone. Review and finish its remaining vault cleanup."
+        case let .cleanupIncomplete(count, detail): "\(count) vault item\(count == 1 ? "" : "s") still need\(count == 1 ? "s" : "") cleanup. Their remaining files were kept. \(detail)"
         }
     }
 }

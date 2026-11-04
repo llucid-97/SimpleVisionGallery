@@ -46,6 +46,10 @@ enum GalleryRecycleBin {
         }.value
     }
 
+    nonisolated static func albumExists(id: String) -> Bool {
+        PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject != nil
+    }
+
     nonisolated static func albumDeletionSnapshot(id: String) throws -> (ids: [String], shared: Int)? {
         guard let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject else { return nil }
         guard album.canPerform(.delete), !isRecycleBinTitle(album.localizedTitle) else { throw GalleryAlbumDeletionError.notDeletable }
