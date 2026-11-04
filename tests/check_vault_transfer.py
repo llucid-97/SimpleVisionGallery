@@ -33,8 +33,10 @@ assert photo_source.count(marker_start) == fake_source.count(marker_start) == 1
 assert photo_source.count(marker_end) == fake_source.count(marker_end) == 1
 version_predicate = photo_source[photo_source.index(marker_start):photo_source.index(marker_end)]
 fake_source = fake_source[:fake_source.index(marker_start)] + version_predicate + fake_source[fake_source.index(marker_end):]
+helpers = photo_source[photo_source.index("    static func hasEdits("):photo_source.index("    private static func inspectVideo(")]
+fake_source = fake_source.replace("    static func isSameVersion(", helpers + "    static func isSameVersion(", 1)
 parent_start = "    static func usableParents("
-production_end = "\n}\n\nnonisolated enum GalleryVaultTransferError"
+production_end = "\n}\n\n/// Cancelling resumes"
 fake_end = "\n}\nnonisolated final class GalleryVaultResourceWriter"
 assert photo_source.count(parent_start) == fake_source.count(parent_start) == 1
 assert photo_source.count(production_end) == fake_source.count(fake_end) == 1

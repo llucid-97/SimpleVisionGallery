@@ -1,4 +1,6 @@
 #if os(visionOS)
+import AVFoundation
+import ImageIO
 import CoreLocation
 import Foundation
 @preconcurrency import Photos
@@ -17,18 +19,31 @@ nonisolated enum GalleryVaultPhotoLibrary {
         }
     }
 
-    static func prepare(_ asset: PHAsset, sourceAlbumID: String?, sourcePosition: Int?) throws -> Prepared {
+    static func prepare(_ asset: PHAsset, sourceAlbumID: String?, sourcePosition: Int?) async throws -> Prepared {
         try requireFullAccess()
         guard asset.mediaType == .image || asset.mediaType == .video,
               asset.canPerform(.delete) else { throw GalleryVaultTransferError.unsupportedItem }
         let resources = PHAssetResource.assetResources(for: asset)
         guard !resources.isEmpty else { throw GalleryVaultTransferError.missingResources }
-        // PhotoKit does not promise a complete editing-history round trip for adjustment resources.
-        // Keep the Photos original until that case can be restored without loss.
-        let editingTypes: Set<PHAssetResourceType> = [.fullSizePhoto, .fullSizeVideo, .adjustmentData,
-            .adjustmentBasePhoto, .fullSizePairedVideo, .adjustmentBasePairedVideo, .adjustmentBaseVideo]
-        guard !resources.contains(where: { editingTypes.contains($0.type) }),
-              PHAssetCreationRequest.supportsAssetResourceTypes(resources.map { NSNumber(value: $0.type.rawValue) })
+        let edited = hasEdits(resources)
+        let selected = try originals(resources, asset: asset)
+        var width = asset.pixelWidth, height = asset.pixelHeight
+        var duration = asset.duration
+        if edited {
+            let input = try await editingInput(asset)
+            if asset.mediaType == .image {
+                guard let url = input.fullSizeImageURL, let image = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let props = CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any],
+                      let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int
+                else { throw GalleryVaultTransferError.missingResources }
+                (width, height) = [5, 6, 7, 8].contains(input.fullSizeImageOrientation) ? (h, w) : (w, h)
+            } else {
+                guard let video = input.audiovisualAsset else { throw GalleryVaultTransferError.missingResources }
+                let original = try await inspectVideo(video)
+                (width, height, duration) = (original.width, original.height, original.duration)
+            }
+        }
+        guard PHAssetCreationRequest.supportsAssetResourceTypes(selected.map { NSNumber(value: $0.type.rawValue) })
         else { throw GalleryVaultTransferError.unsupportedResources }
         let parents = PHAssetCollection.fetchAssetCollectionsContaining(asset, with: .album, options: nil)
         var albums: [GalleryVaultAlbum] = []
@@ -39,21 +54,76 @@ nonisolated enum GalleryVaultPhotoLibrary {
                 title: parent.localizedTitle ?? "Album",
                 position: parent.localIdentifier == sourceAlbumID ? sourcePosition : nil))
         }
-        let descriptors = resources.map {
+        let descriptors = selected.map {
             GalleryVaultResource(id: UUID(), type: $0.type.rawValue,
                 filename: $0.originalFilename, uniformTypeIdentifier: $0.uniformTypeIdentifier)
         }
         let primaryName = descriptors.first(where: { $0.type == PHAssetResourceType.photo.rawValue || $0.type == PHAssetResourceType.video.rawValue })?.filename ?? descriptors[0].filename
         return Prepared(record: GalleryVaultRecord(id: UUID(), sourceIdentifier: asset.localIdentifier,
             filename: primaryName, mediaType: asset.mediaType.rawValue, mediaSubtypes: asset.mediaSubtypes.rawValue,
-            pixelWidth: asset.pixelWidth, pixelHeight: asset.pixelHeight, duration: asset.duration,
+            pixelWidth: width, pixelHeight: height, duration: duration,
             creationDate: asset.creationDate, modificationDate: asset.modificationDate,
             latitude: asset.location?.coordinate.latitude, longitude: asset.location?.coordinate.longitude,
             isFavorite: asset.isFavorite, albums: albums, resources: descriptors,
-            state: .copiedAwaitingDeletion, restoredIdentifier: nil), resources: resources)
+            state: .copiedAwaitingDeletion, restoredIdentifier: nil), resources: selected)
+    }
+
+    static func hasEdits(_ resources: [PHAssetResource]) -> Bool {
+        resources.contains { [.fullSizePhoto, .fullSizeVideo, .adjustmentData, .adjustmentBasePhoto,
+            .fullSizePairedVideo, .adjustmentBasePairedVideo, .adjustmentBaseVideo].contains($0.type) }
+    }
+
+    private static func originals(_ resources: [PHAssetResource], asset: PHAsset) throws -> [PHAssetResource] {
+        guard hasEdits(resources) else { return resources }
+        // Only edited JPEGs and ordinary H.264 movies have been proved to restore as originals.
+        let types = resources.map { $0.type.rawValue }.sorted()
+        let jpeg = asset.mediaType == .image && types == [1, 5, 7] &&
+            resources.filter { $0.type != .adjustmentData }.allSatisfy { $0.uniformTypeIdentifier == UTType.jpeg.identifier }
+        let movie = asset.mediaType == .video && types == [2, 6, 7] &&
+            resources.filter { $0.type != .adjustmentData }.allSatisfy { $0.uniformTypeIdentifier == UTType.quickTimeMovie.identifier }
+        guard asset.mediaSubtypes.isEmpty, jpeg || movie else { throw GalleryVaultTransferError.unsupportedResources }
+        return resources.filter { $0.type == .photo || $0.type == .video }
+    }
+
+    private static func inspectVideo(_ video: AVAsset) async throws -> (width: Int, height: Int, duration: Double) {
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            let tracks = try await video.loadTracks(withMediaType: .video)
+            guard tracks.count == 1 else { throw GalleryVaultTransferError.unsupportedResources }
+            let track = tracks[0]
+            let formats = try await track.load(.formatDescriptions)
+            guard !formats.isEmpty, formats.allSatisfy({ CMFormatDescriptionGetMediaSubType($0) == kCMVideoCodecType_H264 }) else {
+                throw GalleryVaultTransferError.unsupportedResources
+            }
+            let duration = try await video.load(.duration).seconds
+            let size = try await track.load(.naturalSize)
+            let transform = try await track.load(.preferredTransform)
+            let displayed = size.applying(transform)
+            try Task.checkCancellation()
+            return (Int(abs(displayed.width).rounded()), Int(abs(displayed.height).rounded()), duration)
+        } onCancel: { video.cancelLoading() }
+    }
+
+    static func editingInput(_ asset: PHAsset) async throws -> PHContentEditingInput {
+        let request = GalleryVaultPhotoRequest<PHContentEditingInput>()
+        return try await request.run { completion in
+            let options = PHContentEditingInputRequestOptions()
+            options.isNetworkAccessAllowed = true
+            options.canHandleAdjustmentData = { _ in true }
+            let id = asset.requestContentEditingInput(with: options) { input, info in
+                if let error = info[PHContentEditingInputErrorKey] as? Error { completion(.failure(error)) }
+                else if let input { completion(.success(input)) }
+                else { completion(.failure(GalleryVaultTransferError.photoRequestFailed)) }
+            }
+            return { asset.cancelContentEditingInputRequest(id) }
+        }
     }
 
     static func isSameVersion(_ asset: PHAsset, as record: GalleryVaultRecord) -> Bool {
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard let selected = try? originals(resources, asset: asset) else { return false }
+        let edited = hasEdits(resources)
+        guard !edited || asset.modificationDate != nil else { return false }
         guard asset.localIdentifier == record.sourceIdentifier, asset.canPerform(.delete),
               asset.mediaType.rawValue == record.mediaType,
               asset.mediaSubtypes.rawValue == record.mediaSubtypes,
@@ -61,9 +131,9 @@ nonisolated enum GalleryVaultPhotoLibrary {
               asset.isFavorite == record.isFavorite,
               asset.location?.coordinate.latitude == record.latitude,
               asset.location?.coordinate.longitude == record.longitude,
-              asset.pixelWidth == record.pixelWidth, asset.pixelHeight == record.pixelHeight,
-              asset.duration == record.duration else { return false }
-        let now = PHAssetResource.assetResources(for: asset).map {
+              // Original geometry can differ from the edited render; modificationDate still guards source edits.
+              (edited || (asset.pixelWidth == record.pixelWidth && asset.pixelHeight == record.pixelHeight && asset.duration == record.duration)) else { return false }
+        let now = selected.map {
             "\($0.type.rawValue)\u{0}\($0.originalFilename)\u{0}\($0.uniformTypeIdentifier)"
         }.sorted()
         let before = record.resources.map {
@@ -120,6 +190,57 @@ nonisolated enum GalleryVaultPhotoLibrary {
     }
 }
 
+/// Cancelling resumes the waiter even when PhotoKit never delivers its completion.
+nonisolated final class GalleryVaultPhotoRequest<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var cancelRequest: (() -> Void)?
+    private var finished = false
+    private var cancelled = false
+
+    func run(_ start: (@escaping (Result<Value, Error>) -> Void) -> (() -> Void)) async throws -> Value {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                if finished { lock.unlock(); continuation.resume(throwing: CancellationError()); return }
+                self.continuation = continuation
+                lock.unlock()
+                let cancel = start { self.complete($0) }
+                lock.lock()
+                let cancelNow = cancelled
+                if !finished { cancelRequest = cancel }
+                lock.unlock()
+                if cancelNow { cancel() }
+            }
+        } onCancel: { self.cancel() }
+    }
+
+    private func complete(_ result: Result<Value, Error>) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let waiter = continuation
+        continuation = nil
+        cancelRequest = nil
+        lock.unlock()
+        waiter?.resume(with: result)
+    }
+
+    private func cancel() {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        cancelled = true
+        let waiter = continuation
+        let cancel = cancelRequest
+        continuation = nil
+        cancelRequest = nil
+        lock.unlock()
+        cancel?()
+        waiter?.resume(throwing: CancellationError())
+    }
+}
+
 nonisolated enum GalleryVaultTransferError: LocalizedError {
     case fullAccessRequired, unsupportedItem, unsupportedResources, missingResources, locked, busy
     case albumUnavailable(String), changedOriginal, missingOriginal, photoRequestFailed, interruptedRestore
@@ -129,7 +250,7 @@ nonisolated enum GalleryVaultTransferError: LocalizedError {
         switch self {
         case .fullAccessRequired: return "Full Photos access is required to safely move or restore private items."
         case .unsupportedItem: return "Photos cannot delete this item, so it was left in your library."
-        case .unsupportedResources: return "This item's original and edits cannot yet be restored safely; it was left in Photos."
+        case .unsupportedResources: return "This item's original cannot yet be restored safely; it was left in Photos."
         case .missingResources: return "Photos did not provide all files for this item. The original was kept."
         case .locked: return "Unlock the private vault to continue."
         case .busy: return "A private vault operation is already in progress."

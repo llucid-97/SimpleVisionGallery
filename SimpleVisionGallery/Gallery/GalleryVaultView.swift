@@ -295,6 +295,7 @@ struct GalleryVaultView: View {
 
     static func message(for outcome: GalleryVaultTransferOutcome) -> String {
         var summary = "Saved this time: \(outcome.copied). Already saved and verified: \(outcome.reused). Removed from Photos: \(outcome.deleted). Left in Photos: \(outcome.notMoved)."
+        if outcome.editsDiscarded > 0 { summary += " Edits discarded: \(outcome.editsDiscarded). Originals saved." }
         let skipped = GalleryVaultSkipReason.allCases.compactMap { reason -> String? in
             guard let count = outcome.skipped[reason], count > 0 else { return nil }
             return "\(reason.rawValue): \(count)"

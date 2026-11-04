@@ -21,11 +21,12 @@ nonisolated struct GalleryVaultTransferOutcome: Equatable, Sendable {
     var reused = 0
     var notMoved = 0
     var skipped: [GalleryVaultSkipReason: Int] = [:]
+    var editsDiscarded = 0
 }
 
 nonisolated enum GalleryVaultSkipReason: String, CaseIterable, Hashable, Sendable {
     case unsupportedItem = "Photos cannot remove this media"
-    case unsupportedResources = "Originals and edits cannot yet be restored safely"
+    case unsupportedResources = "Original cannot yet be restored safely"
     case unavailableResource = "Photos could not provide complete files"
     case damagedCopy = "Saved files could not be verified"
     case alreadySaved = "Already in the vault"
@@ -45,6 +46,7 @@ final class GalleryVaultService: ObservableObject {
 
     private let storage = GalleryVaultStorage.shared
     private var wantsCancel = false
+    private var cancelPreparation: (() -> Void)?
     private var activeStream: GalleryVaultPhotoStream?
     private var protectedDataObserver: NSObjectProtocol?
     private init() {
@@ -92,6 +94,7 @@ final class GalleryVaultService: ObservableObject {
     func lock() {
         wantsCancel = true
         activeStream?.cancel()
+        cancelPreparation?()
         authEpoch = UUID()
         isUnlocked = false
         records = []
@@ -105,6 +108,7 @@ final class GalleryVaultService: ObservableObject {
     func cancel() {
         wantsCancel = true
         activeStream?.cancel()
+        cancelPreparation?()
     }
 
     @discardableResult
@@ -143,9 +147,18 @@ final class GalleryVaultService: ObservableObject {
                     if storage.record(sourceIdentifier: asset.localIdentifier) != nil {
                         throw GalleryVaultTransferError.alreadyInVault
                     }
-                    let prepared = try await Task.detached(priority: .userInitiated) {
-                        try GalleryVaultPhotoLibrary.prepare(asset, sourceAlbumID: sourceAlbumID, sourcePosition: index)
-                    }.value
+                    let preparation = Task.detached(priority: .userInitiated) {
+                        do { return try await GalleryVaultPhotoLibrary.prepare(asset, sourceAlbumID: sourceAlbumID, sourcePosition: index) }
+                        catch {
+                            if error is GalleryVaultTransferError || error is CancellationError || error is GalleryVaultPhotoRequestFailure { throw error }
+                            throw GalleryVaultPhotoRequestFailure(underlying: error)
+                        }
+                    }
+                    cancelPreparation = { preparation.cancel() }
+                    let prepared: GalleryVaultPhotoLibrary.Prepared
+                    do { prepared = try await preparation.value }
+                    catch { cancelPreparation = nil; throw error }
+                    cancelPreparation = nil
                     guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
                     let item = try storage.createItem(id: prepared.record.id)
                     do {
@@ -186,7 +199,7 @@ final class GalleryVaultService: ObservableObject {
         let result = try await deleteConfirmed(candidates, epoch: epoch)
         let detail = [stopMessage, result.message].compactMap { $0 }.joined(separator: " ")
         return .init(copied: copied, deleted: result.deleted, message: detail.isEmpty ? nil : detail,
-            reused: reused, notMoved: count - result.deleted, skipped: skipped)
+            reused: reused, notMoved: count - result.deleted, skipped: skipped, editsDiscarded: result.editsDiscarded)
     }
 
     @discardableResult
@@ -215,11 +228,11 @@ final class GalleryVaultService: ObservableObject {
         let result = try await deleteConfirmed(verified, epoch: epoch)
         let detail = [stopped, result.message].compactMap { $0 }.joined(separator: " ")
         return .init(copied: 0, deleted: result.deleted, message: detail.isEmpty ? nil : detail,
-            reused: verified.count, notMoved: pending.count - result.deleted, skipped: skipped)
+            reused: verified.count, notMoved: pending.count - result.deleted, skipped: skipped, editsDiscarded: result.editsDiscarded)
     }
 
-    private func deleteConfirmed(_ candidates: [GalleryVaultRecord], epoch: UUID) async throws -> (deleted: Int, message: String?) {
-        guard !candidates.isEmpty else { return (0, nil) }
+    private func deleteConfirmed(_ candidates: [GalleryVaultRecord], epoch: UUID) async throws -> (deleted: Int, message: String?, editsDiscarded: Int) {
+        guard !candidates.isEmpty else { return (0, nil, 0) }
         progress = .init(phase: "Checking Photos", processed: 0, total: candidates.count, detail: nil)
         let ids = candidates.map(\.sourceIdentifier)
         let live = try await Task.detached(priority: .userInitiated) { try GalleryVaultPhotoLibrary.fetch(ids: ids) }.value
@@ -239,6 +252,7 @@ final class GalleryVaultService: ObservableObject {
         let current = classified.0
         let alreadyAbsent = classified.1
         let changed = classified.2
+        let editsDiscarded = current.filter { GalleryVaultPhotoLibrary.hasEdits(PHAssetResource.assetResources(for: $0.0)) }.count
         let deletedIDs = current.map { $0.1.sourceIdentifier }
         for var record in alreadyAbsent {
             record.state = .privateItem
@@ -250,7 +264,7 @@ final class GalleryVaultService: ObservableObject {
             // A single Photos transaction means a batch receives a single system delete confirmation.
             do { try await GalleryVaultPhotoLibrary.delete(current) }
             catch {
-                return (alreadyAbsent.count, "Photos did not delete the originals. Verified vault copies were kept; you can retry. \(error.localizedDescription)")
+                return (alreadyAbsent.count, "Photos did not delete the originals. Verified vault copies were kept; you can retry. \(error.localizedDescription)", 0)
             }
             guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
             NotificationCenter.default.post(name: .galleryVaultDidHideItems, object: nil,
@@ -265,7 +279,8 @@ final class GalleryVaultService: ObservableObject {
             NotificationCenter.default.post(name: .galleryVaultDidHideItems, object: nil,
                 userInfo: ["sourceIdentifiers": alreadyAbsent.map(\.sourceIdentifier), "sourceIdentifierSet": Set(alreadyAbsent.map(\.sourceIdentifier))])
         }
-        return (current.count + alreadyAbsent.count, changed > 0 ? "\(changed) changed items were left in Photos with their vault copies for review." : nil)
+        return (current.count + alreadyAbsent.count, changed > 0 ? "\(changed) changed items were left in Photos with their vault copies for review." : nil,
+            editsDiscarded)
     }
 
     private func reconcilePendingAfterUnlock() async throws -> Int {
