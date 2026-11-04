@@ -27,6 +27,8 @@ nonisolated enum GalleryVaultStorageError: LocalizedError {
 nonisolated final class GalleryVaultSession: @unchecked Sendable {
     private let lock = NSLock()
     private var key: SymmetricKey?
+    private var thumbnailTotals: (count: Int, bytes: Int)?
+    private var removedThumbnailRecords = Set<UUID>()
 
     init(key: SymmetricKey) { self.key = key }
 
@@ -37,9 +39,72 @@ nonisolated final class GalleryVaultSession: @unchecked Sendable {
         return try body(key)
     }
 
+    func storeThumbnail(_ data: Data, recordID: UUID, at url: URL) throws {
+        try withKey { key in
+            guard !removedThumbnailRecords.contains(recordID) else { return }
+            let manager = FileManager.default
+            let directory = url.deletingLastPathComponent()
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.complete])
+            let box = try AES.GCM.seal(data, using: key, authenticating: Data(url.lastPathComponent.utf8))
+            guard let bytes = box.combined else { return }
+            let previous = (try? manager.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            let added = previous == 0 ? 1 : 0
+            if thumbnailTotals == nil || thumbnailTotals!.count + added > 2048
+                || thumbnailTotals!.bytes + bytes.count - previous > 64 * 1024 * 1024 {
+                let entries = try manager.contentsOfDirectory(at: directory,
+                    includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])
+                let dated = try entries.map { entry in
+                    let values = try entry.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    return (entry, values.contentModificationDate ?? .distantPast, values.fileSize ?? 0)
+                }.sorted { $0.1 < $1.1 }
+                var totals = (count: dated.count, bytes: dated.reduce(0) { $0 + $1.2 })
+                let needsEviction = totals.count + added > 2048 || totals.bytes + bytes.count - previous > 64 * 1024 * 1024
+                let countTarget = needsEviction ? 1920 : 2048
+                let byteTarget = (needsEviction ? 56 : 64) * 1024 * 1024
+                // Evict in batches, oldest-written first; reads do not change file dates.
+                for entry in dated where entry.0 != url {
+                    guard totals.count + added > countTarget || totals.bytes + bytes.count - previous > byteTarget else { break }
+                    try manager.removeItem(at: entry.0)
+                    totals.count -= 1
+                    totals.bytes -= entry.2
+                }
+                thumbnailTotals = totals
+            }
+            try bytes.write(to: url, options: [.atomic, .completeFileProtection])
+            thumbnailTotals!.count += added
+            thumbnailTotals!.bytes += bytes.count - previous
+        }
+    }
+
+    func removeThumbnails(recordID: UUID, urls: [URL]) throws {
+        try withKey { _ in
+            // Fence thumbnail writes already queued when the record was removed.
+            removedThumbnailRecords.insert(recordID)
+            for url in urls {
+                do {
+                    let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+                    try FileManager.default.removeItem(at: url)
+                    if thumbnailTotals != nil {
+                        thumbnailTotals!.count -= 1
+                        thumbnailTotals!.bytes -= size
+                    }
+                } catch {
+                    let value = error as NSError
+                    let missing = value.domain == NSCocoaErrorDomain
+                        && (value.code == NSFileNoSuchFileError || value.code == NSFileReadNoSuchFileError)
+                        || value.domain == NSPOSIXErrorDomain && value.code == Int(ENOENT)
+                    if !missing { throw error }
+                }
+            }
+        }
+    }
+
     func revoke() {
         lock.lock()
         key = nil
+        thumbnailTotals = nil
+        removedThumbnailRecords.removeAll()
         lock.unlock()
     }
 }
@@ -335,8 +400,13 @@ final class GalleryVaultStorage: ObservableObject {
             session = newSession
             let itemDirectory = items
             let stagingDirectory = staging
-            let cached = await manifestPreload?.value
+            let preloaded = await manifestPreload?.value
             manifestPreload = nil
+            let manifestURL = root.appendingPathComponent("manifest.enc")
+            // Complete protection can reject a preload while the headset is off.
+            let cached = if let preloaded { preloaded } else {
+                await Task.detached(priority: .userInitiated) { try? Data(contentsOf: manifestURL) }.value
+            }
             let scan = try await Task.detached {
                 // A staged item is never eligible for Photos deletion until its directory is committed.
                 // Stale interrupted exports therefore contain no unique user data.
@@ -437,7 +507,8 @@ final class GalleryVaultStorage: ObservableObject {
 
     func remove(id: UUID) throws {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
-        try session.withKey { _ in () }
+        guard let record = recordsByID[id] else { throw GalleryVaultStorageError.corruptRecord }
+        try session.removeThumbnails(recordID: id, urls: record.resources.map { thumbnailURL(id, $0.id) })
         try FileManager.default.removeItem(at: itemURL(id))
         try Self.syncDirectory(items)
         if let old = recordsByID.removeValue(forKey: id) { idsBySource.removeValue(forKey: old.sourceIdentifier) }
@@ -512,22 +583,7 @@ final class GalleryVaultStorage: ObservableObject {
         guard let session, isUnlocked, data.count <= 128 * 1024 else { return }
         let url = thumbnailURL(recordID, resourceID)
         try? await Task.detached(priority: .utility) {
-            try session.withKey { key in
-                let directory = url.deletingLastPathComponent()
-                try Self.prepareDirectory(directory)
-                let box = try AES.GCM.seal(data, using: key, authenticating: Data(url.lastPathComponent.utf8))
-                guard let bytes = box.combined else { return }
-                try bytes.write(to: url, options: [.atomic, .completeFileProtection])
-                // At most 128 small encrypted JPEGs; item journals are never touched by cache eviction.
-                let entries = try FileManager.default.contentsOfDirectory(at: directory,
-                    includingPropertiesForKeys: [.contentModificationDateKey])
-                if entries.count > 128 {
-                    let dated = entries.map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
-                    for entry in dated.sorted(by: { $0.1 < $1.1 }).prefix(entries.count - 128) {
-                        try? FileManager.default.removeItem(at: entry.0)
-                    }
-                }
-            }
+            try session.storeThumbnail(data, recordID: recordID, at: url)
         }.value
     }
 
