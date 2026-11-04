@@ -1587,6 +1587,7 @@ private struct GalleryMoveSheet: View {
     let moveToVault: (GalleryVaultAlbum) -> Void
     @ObservedObject private var vault = GalleryVaultService.shared
     @State private var vaultAlbums = false
+    @State private var vaultDestinations: [GalleryVaultAlbum] = []
     @State private var newAlbumName = ""
     @State private var albumFilter = ""
 
@@ -1713,7 +1714,7 @@ private struct GalleryMoveSheet: View {
                     Button {
                         let name = newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)
                         if vaultAlbums {
-                            chooseVaultAlbum(vault.destinationAlbums.first { $0.title == name }
+                            chooseVaultAlbum(vaultDestinations.first { $0.title == name }
                                 ?? GalleryVaultAlbum(id: "vault-album:" + UUID().uuidString, title: name, position: nil))
                         } else {
                             isPresented = false
@@ -1732,14 +1733,14 @@ private struct GalleryMoveSheet: View {
 
             LensLabSection(title: "Existing Albums", subtitle: "Filter by album name, then choose a destination.") {
                 if vaultAlbums && vault.isUnlocked {
-                    ForEach(vault.destinationAlbums.filter { albumFilter.isEmpty || $0.title.localizedStandardContains(albumFilter) }, id: \.id) { album in
+                    ForEach(vaultDestinations.filter { albumFilter.isEmpty || $0.title.localizedStandardContains(albumFilter) }, id: \.id) { album in
                         Button { chooseVaultAlbum(album) } label: {
                             Label(album.title, systemImage: "lock.fill")
                         }
                         .buttonStyle(LensLabSecondaryButtonStyle())
                         .accessibilityIdentifier("gallery-move-vault-destination-" + album.id)
                     }
-                    if vault.destinationAlbums.isEmpty { Text("Create a Private Vault album above.") }
+                    if vaultDestinations.isEmpty { Text("Create a Private Vault album above.") }
                 } else if destinationAlbums.isEmpty {
                     Text(
                         albumFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1766,8 +1767,14 @@ private struct GalleryMoveSheet: View {
         .padding(18)
         .frame(width: 580, height: 680)
         .background(LensLabTheme.card)
+        .task(id: vault.isUnlocked && !vault.isBusy) {
+            guard vault.isUnlocked, !vault.isBusy else { return }
+            let destinations = await vault.albumDestinations()
+            guard vault.isUnlocked, !Task.isCancelled else { return }
+            vaultDestinations = destinations
+        }
         .onChange(of: vault.isUnlocked) { _, unlocked in
-            if !unlocked { vaultAlbums = false; albumFilter = ""; newAlbumName = "" }
+            if !unlocked { vaultDestinations = []; vaultAlbums = false; albumFilter = ""; newAlbumName = "" }
         }
     }
 

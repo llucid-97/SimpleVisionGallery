@@ -38,18 +38,7 @@ final class GalleryVaultService: ObservableObject {
     static let shared = GalleryVaultService()
     @Published private(set) var isUnlocked = false
     @Published private(set) var authEpoch = UUID()
-    @Published private(set) var records: [GalleryVaultRecord] = [] {
-        didSet {
-            var albums: [String: GalleryVaultAlbum] = [:]
-            for record in records {
-                for album in record.albums where !GalleryRecycleBin.isRecycleBinTitle(album.title) {
-                    albums[album.id] = GalleryVaultAlbum(id: album.id, title: album.title, position: nil)
-                }
-            }
-            destinationAlbums = albums.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        }
-    }
-    @Published private(set) var destinationAlbums: [GalleryVaultAlbum] = []
+    @Published private(set) var records: [GalleryVaultRecord] = []
     @Published private(set) var unreadableRecordCount = 0
     @Published private(set) var isBusy = false
     @Published private(set) var progress: GalleryVaultProgress?
@@ -114,6 +103,19 @@ final class GalleryVaultService: ObservableObject {
         error = nil
         storage.lock()
         error = storage.cleanupWarning
+    }
+
+    func albumDestinations() async -> [GalleryVaultAlbum] {
+        let snapshot = records
+        return await Task.detached(priority: .userInitiated) {
+            var albums: [String: GalleryVaultAlbum] = [:]
+            for record in snapshot {
+                for album in record.albums where !GalleryRecycleBin.isRecycleBinTitle(album.title) {
+                    albums[album.id] = GalleryVaultAlbum(id: album.id, title: album.title, position: nil)
+                }
+            }
+            return albums.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }.value
     }
 
     func cancel() {
@@ -251,25 +253,18 @@ final class GalleryVaultService: ObservableObject {
     private func deleteConfirmed(_ candidates: [GalleryVaultRecord], epoch: UUID) async throws -> (deleted: Int, message: String?, editsDiscarded: Int) {
         guard !candidates.isEmpty else { return (0, nil, 0) }
         progress = .init(phase: "Checking Photos", processed: 0, total: candidates.count, detail: nil)
-        var comparisons: [UUID: GalleryVaultRecord] = [:]
-        for record in candidates {
-            var source = record
-            source.albums = try await storage.sourceAlbums(for: record)
-            comparisons[record.id] = source
-        }
+        let sourceVersions = try await storage.sourceVersions(for: candidates)
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         let ids = candidates.map(\.sourceIdentifier)
         let live = try await Task.detached(priority: .userInitiated) { try GalleryVaultPhotoLibrary.fetch(ids: ids) }.value
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
-        let sourceVersions = comparisons
         let classified = await Task.detached(priority: .userInitiated) {
             var current: [(PHAsset, GalleryVaultRecord)] = []
             var absent: [GalleryVaultRecord] = []
             var changed = 0
             var editsDiscarded = 0
-            for record in candidates {
+            for (record, source) in zip(candidates, sourceVersions) {
                 guard let asset = live[record.sourceIdentifier] else { absent.append(record); continue }
-                let source = sourceVersions[record.id] ?? record
                 if GalleryVaultPhotoLibrary.isSameVersion(asset, as: source) {
                     current.append((asset, source))
                     if GalleryVaultPhotoLibrary.hasEdits(PHAssetResource.assetResources(for: asset)) { editsDiscarded += 1 }

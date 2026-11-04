@@ -243,6 +243,13 @@ nonisolated final class GalleryVaultStagingItem {
         return albums
     }
 
+    func sourceVersions(for records: [GalleryVaultRecord]) async throws -> [GalleryVaultRecord] {
+        records.map { record in
+            var source = record
+            source.albums = sourceParents[record.id] ?? record.albums
+            return source
+        }
+    }
     func sourceAlbums(for record: GalleryVaultRecord) async throws -> [GalleryVaultAlbum] { sourceParents[record.id] ?? record.albums }
     func setDestination(_ destination: GalleryVaultAlbum, sourceAlbumID: String?, for record: GalleryVaultRecord) async throws -> GalleryVaultRecord {
         let original = try await sourceAlbums(for: record)
