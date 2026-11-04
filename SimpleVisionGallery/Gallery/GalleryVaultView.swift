@@ -294,7 +294,12 @@ struct GalleryVaultView: View {
     }
 
     static func message(for outcome: GalleryVaultTransferOutcome) -> String {
-        let summary = "Saved this time: \(outcome.copied). Removed from Photos: \(outcome.deleted)."
+        var summary = "Saved this time: \(outcome.copied). Already saved and verified: \(outcome.reused). Removed from Photos: \(outcome.deleted). Left in Photos: \(outcome.notMoved)."
+        let skipped = GalleryVaultSkipReason.allCases.compactMap { reason -> String? in
+            guard let count = outcome.skipped[reason], count > 0 else { return nil }
+            return "\(reason.rawValue): \(count)"
+        }
+        if !skipped.isEmpty { summary += " Skipped: " + skipped.joined(separator: "; ") + "." }
         return outcome.message.map { summary + " " + $0 } ?? summary
     }
 }
