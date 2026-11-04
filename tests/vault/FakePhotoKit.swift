@@ -16,11 +16,11 @@ extension Notification.Name {
 nonisolated enum PHAuthorizationStatus { case authorized, limited }
 nonisolated enum PHAccessLevel { case readWrite }
 nonisolated enum PHAssetCollectionType { case album }
-nonisolated enum PHAssetResourceType: Int { case photo = 1, video = 2, fullSizePhoto = 5, fullSizeVideo = 6, adjustmentData = 7, adjustmentBasePhoto = 8, fullSizePairedVideo = 10, adjustmentBasePairedVideo = 11, adjustmentBaseVideo = 12 }
+nonisolated enum PHAssetResourceType: Int { case photo = 1, video = 2, alternatePhoto = 4, pairedVideo = 9, fullSizePhoto = 5, fullSizeVideo = 6, adjustmentData = 7, adjustmentBasePhoto = 8, fullSizePairedVideo = 10, adjustmentBasePairedVideo = 11, adjustmentBaseVideo = 12 }
 nonisolated enum PHAssetMediaType: Int { case image = 1, video = 2 }
 nonisolated enum PHAssetEditOperation { case delete }
 nonisolated enum PHCollectionEditOperation { case addContent }
-nonisolated struct PHAssetMediaSubtype: OptionSet, Sendable { let rawValue: UInt }
+nonisolated struct PHAssetMediaSubtype: OptionSet, Sendable { let rawValue: UInt; static let photoLive = Self(rawValue: 1 << 3) }
 typealias PHAssetResourceDataRequestID = Int32
 nonisolated final class PHFetchResult<T>: @unchecked Sendable {
     let values: [T]
