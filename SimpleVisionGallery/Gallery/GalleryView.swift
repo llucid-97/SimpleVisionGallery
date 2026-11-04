@@ -202,23 +202,28 @@ struct GalleryView: View {
     }
 
     private var designActions: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 16) {
-                visibilityMenu
-                albumSelectionButton
-                if isSelectingAlbums { albumVisibilityAction }
-                mediaFilterMenu
-                overflowMenu(compact: false)
-            }.fixedSize(horizontal: true, vertical: false)
-            Menu {
-                visibilityMenu
-                albumSelectionButton
-                if isSelectingAlbums { albumVisibilityAction }
-                Divider()
-                Button("Gallery Settings", systemImage: "gearshape") { showingSettings = true }
-                Button("Refresh", systemImage: "arrow.clockwise") { Task { await manager.loadAlbums() } }
-            } label: { Image(systemName: "ellipsis").frame(width: 40, height: 40) }
-            .buttonStyle(LensLabSecondaryButtonStyle())
+        HStack(spacing: 16) {
+            GalleryVaultSessionButton()
+            albumSortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort albums")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    visibilityMenu
+                    albumSelectionButton
+                    if isSelectingAlbums { albumVisibilityAction }
+                    mediaFilterMenu
+                    overflowMenu(compact: false)
+                }.fixedSize(horizontal: true, vertical: false)
+                Menu {
+                    visibilityMenu
+                    albumSelectionButton
+                    if isSelectingAlbums { albumVisibilityAction }
+                    Divider()
+                    Button("Private Vault", systemImage: "lock") { showingVault = true }
+                    Button("Gallery Settings", systemImage: "gearshape") { showingSettings = true }
+                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await manager.loadAlbums() } }
+                } label: { Image(systemName: "ellipsis").frame(width: 40, height: 40) }
+                .buttonStyle(LensLabSecondaryButtonStyle())
+            }
         }
     }
 
@@ -307,8 +312,9 @@ struct GalleryView: View {
             .padding(.horizontal, 16)
             .frame(minWidth: 160, maxWidth: .infinity, minHeight: 68)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+            GalleryVaultSessionButton()
+            sortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort")
             if !compact {
-                sortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort")
                 thumbnailSizeButton.labelStyle(.iconOnly).galleryHoverLabel("Thumbnail size")
             }
             #if os(visionOS)
@@ -496,6 +502,26 @@ struct GalleryView: View {
         .disabled(selectedAlbumIDs.isEmpty)
     }
 
+    private var albumSortMenu: some View {
+        Menu {
+            ForEach(GalleryAlbumSortMode.allCases, id: \.self) { mode in
+                Button {
+                    manager.setAlbumSortMode(mode)
+                } label: {
+                    if manager.albumSortMode == mode { Label(mode.title, systemImage: "checkmark") }
+                    else { Text(mode.title) }
+                }
+                .accessibilityAddTraits(manager.albumSortMode == mode ? .isSelected : [])
+            }
+        } label: {
+            Label("Sort albums", systemImage: "arrow.up.arrow.down")
+                .frame(minHeight: 26)
+        }
+        .buttonStyle(LensLabSecondaryButtonStyle())
+        .accessibilityIdentifier("gallery-album-sort")
+        .help("Sort albums")
+    }
+
     private var sortMenu: some View {
         Menu {
             sortMenuOptions
@@ -511,20 +537,14 @@ struct GalleryView: View {
 
     @ViewBuilder
     private var sortMenuOptions: some View {
-        Picker(
-            "Sort by",
-            selection: Binding(
-                get: { manager.assetSortMode },
-                set: { mode in
-                    Task { await manager.setAssetSortMode(mode) }
-                }
-            )
-        ) {
-            ForEach(GalleryAssetSortMode.allCases) { mode in
-                Label(mode.title, systemImage: mode.systemImage).tag(mode)
+        ForEach(GalleryAssetSortMode.allCases) { mode in
+            Button {
+                Task { await manager.setAssetSortMode(mode) }
+            } label: {
+                Label(mode.title, systemImage: manager.assetSortMode == mode ? "checkmark" : mode.systemImage)
             }
+            .accessibilityAddTraits(manager.assetSortMode == mode ? .isSelected : [])
         }
-        .pickerStyle(.inline)
 
         if manager.supportsAssetSortDirection {
             Divider()
@@ -646,16 +666,6 @@ struct GalleryView: View {
                         selectAllMenuButton
                     }
                     Divider()
-                }
-                if manager.selectedAlbum == nil {
-                    Menu("Sort albums", systemImage: "arrow.up.arrow.down") {
-                        Picker("Album order", selection: Binding(get: { manager.albumSortMode }, set: { manager.setAlbumSortMode($0) })) {
-                            ForEach(GalleryAlbumSortMode.allCases, id: \.self) { mode in
-                                Text(mode.title).tag(mode)
-                            }
-                        }.pickerStyle(.inline)
-                    }
-                    .accessibilityIdentifier("gallery-album-sort")
                 }
                 Button("Refresh", systemImage: "arrow.clockwise") {
                     Task { await manager.loadAlbums() }

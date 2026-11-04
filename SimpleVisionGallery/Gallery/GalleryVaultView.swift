@@ -294,7 +294,31 @@ struct GalleryVaultView: View {
     }
 
     static func message(for outcome: GalleryVaultTransferOutcome) -> String {
-        let summary = "Saved this time: \(outcome.copied). Removed from Photos: \(outcome.deleted)."
+        var summary = "Saved this time: \(outcome.copied). Already saved and verified: \(outcome.reused). Removed from Photos: \(outcome.deleted). Left in Photos: \(outcome.notMoved)."
+        let skipped = GalleryVaultSkipReason.allCases.compactMap { reason -> String? in
+            guard let count = outcome.skipped[reason], count > 0 else { return nil }
+            return "\(reason.rawValue): \(count)"
+        }
+        if !skipped.isEmpty { summary += " Skipped: " + skipped.joined(separator: "; ") + "." }
         return outcome.message.map { summary + " " + $0 } ?? summary
+    }
+}
+
+/// One shared session indicator for gallery and viewer toolbars.
+struct GalleryVaultSessionButton: View {
+    @ObservedObject private var vault = GalleryVaultService.shared
+
+    var body: some View {
+        if vault.isUnlocked {
+            Button { vault.lock() } label: {
+                Label("Lock Private Vault", systemImage: "lock.open")
+            }
+            .labelStyle(.iconOnly)
+            .frame(width: 44, height: 44)
+            .buttonStyle(.borderless)
+            .help("Private Vault is open. Private items are included in albums and slideshows. Select to lock.")
+            .accessibilityLabel("Private Vault open. Lock Private Vault")
+            .accessibilityIdentifier("gallery-vault-session-lock")
+        }
     }
 }

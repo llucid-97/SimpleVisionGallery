@@ -53,7 +53,7 @@ Native PhotoKit, device authentication and filesystem checks are separate integr
 
 ## Private Vault
 
-Private Vault stores encrypted originals on this device, separate from Apple's Hidden album. Move selected items or an album into the vault; after verifying the copies, Gallery asks Photos to remove the originals in one batch. Unlocking shows private items in Photos and their recorded parent albums inside Gallery. Restore to Photos imports new items and restores album membership.
+Private Vault stores encrypted originals on this device, separate from Apple's Hidden album. Move selected items or an album into the vault; after verifying the copies, Gallery asks Photos to remove the originals in one batch. One unlock lasts the app session. The vault locks when you lock it or the device locks; switching apps does not lock it. An open-lock icon in the top bar shows that private items are included in albums and slideshows, and lets you lock the vault. Restore to Photos imports new items and restores album membership.
 
 The vault has no backup or device sync. App deletion, device loss or removal of the device passcode can make vault items unrecoverable. Restore important items before doing any of these. Photos deletions sync through iCloud Photos, and Recently Deleted may keep using disk space.
 

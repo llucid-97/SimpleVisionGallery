@@ -3,6 +3,7 @@ import SwiftUI
 /// A calm, dark gallery treatment built around large album artwork and a quiet navigation rail.
 struct GalleryCinemaDesign: View {
     let context: GalleryDesignContext
+    @ObservedObject private var vault = GalleryVaultService.shared
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -49,15 +50,17 @@ struct GalleryCinemaDesign: View {
             sectionButton(.photos, symbol: "photo.on.rectangle", title: "Photos")
             sectionButton(.recycleBin, symbol: "trash", title: "Recycle Bin")
 
-            Button(action: context.showVault) {
-                railItem(symbol: "lock", title: "Private Vault", selected: false)
+            if !vault.isUnlocked {
+                Button(action: context.showVault) {
+                    railItem(symbol: "lock", title: "Private Vault", selected: false)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(CinemaPalette.secondaryText)
+                .help("Private Vault")
+                .accessibilityLabel("Private Vault")
+                .accessibilityIdentifier("gallery-private-vault")
+                .hoverEffect(.highlight)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(CinemaPalette.secondaryText)
-            .help("Private Vault")
-            .accessibilityLabel("Private Vault")
-            .accessibilityIdentifier("gallery-private-vault")
-            .hoverEffect(.highlight)
 
             Spacer(minLength: 12)
             Button(action: context.showSettings) {

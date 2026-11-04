@@ -591,8 +591,8 @@ final class GalleryVaultStorage: ObservableObject {
     }
 
     private nonisolated static func readRecord(in directory: URL, id: UUID, session: GalleryVaultSession) throws -> GalleryVaultRecord {
+        let bytes = try Data(contentsOf: directory.appendingPathComponent("record.enc"))
         do {
-            let bytes = try Data(contentsOf: directory.appendingPathComponent("record.enc"))
             let record = try session.withKey { key in
                 let box = try AES.GCM.SealedBox(combined: bytes)
                 let data = try AES.GCM.open(box, using: key, authenticating: Data(id.uuidString.utf8))

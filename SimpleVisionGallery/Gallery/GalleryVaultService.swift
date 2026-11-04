@@ -18,6 +18,17 @@ nonisolated struct GalleryVaultTransferOutcome: Equatable, Sendable {
     let copied: Int
     let deleted: Int
     let message: String?
+    var reused = 0
+    var notMoved = 0
+    var skipped: [GalleryVaultSkipReason: Int] = [:]
+}
+
+nonisolated enum GalleryVaultSkipReason: String, CaseIterable, Hashable, Sendable {
+    case unsupportedItem = "Photos cannot remove this media"
+    case unsupportedResources = "Originals and edits cannot yet be restored safely"
+    case unavailableResource = "Photos could not provide complete files"
+    case damagedCopy = "Saved files could not be verified"
+    case alreadySaved = "Already in the vault"
 }
 
 /// The service owns a single operation and publishes only complete vault snapshots.
@@ -113,6 +124,8 @@ final class GalleryVaultService: ObservableObject {
         defer { storage.endBatch(); publishIfCurrent(epoch); endOperation() }
         var candidates: [GalleryVaultRecord] = []
         var copied = 0
+        var reused = 0
+        var skipped: [GalleryVaultSkipReason: Int] = [:]
         var stopMessage: String?
         progress = .init(phase: "Copying", processed: 0, total: count, detail: nil)
         for index in 0..<count {
@@ -125,6 +138,7 @@ final class GalleryVaultService: ObservableObject {
                     let record = try await storage.verifyCommitted(id: existing.id)
                     guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
                     candidates.append(record)
+                    reused += 1
                 } else {
                     if storage.record(sourceIdentifier: asset.localIdentifier) != nil {
                         throw GalleryVaultTransferError.alreadyInVault
@@ -156,8 +170,13 @@ final class GalleryVaultService: ObservableObject {
                 }
             } catch {
                 guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
-                stopMessage = wantsCancel ? "Stopped after saving \(copied) items." : Self.transferErrorMessage(error)
-                break
+                try GalleryVaultPhotoLibrary.requireFullAccess()
+                if !wantsCancel, let reason = Self.skipReason(for: error) {
+                    skipped[reason, default: 0] += 1
+                } else {
+                    stopMessage = wantsCancel ? "Stopped after saving \(copied) items." : Self.transferErrorMessage(error)
+                    break
+                }
             }
             if index == count - 1 || index.isMultiple(of: 16) {
                 progress = .init(phase: "Copying", processed: index + 1, total: count, detail: nil)
@@ -166,7 +185,8 @@ final class GalleryVaultService: ObservableObject {
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         let result = try await deleteConfirmed(candidates, epoch: epoch)
         let detail = [stopMessage, result.message].compactMap { $0 }.joined(separator: " ")
-        return .init(copied: copied, deleted: result.deleted, message: detail.isEmpty ? nil : detail)
+        return .init(copied: copied, deleted: result.deleted, message: detail.isEmpty ? nil : detail,
+            reused: reused, notMoved: count - result.deleted, skipped: skipped)
     }
 
     @discardableResult
@@ -177,17 +197,25 @@ final class GalleryVaultService: ObservableObject {
         storage.beginBatch()
         defer { storage.endBatch(); publishIfCurrent(epoch); endOperation() }
         var verified: [GalleryVaultRecord] = []
+        var skipped: [GalleryVaultSkipReason: Int] = [:]
         var stopped: String?
         for (index, record) in pending.enumerated() {
             guard isCurrent(epoch), !wantsCancel else { stopped = "Verification was stopped."; break }
             do { verified.append(try await storage.verifyCommitted(id: record.id)) }
-            catch { stopped = Self.transferErrorMessage(error); break }
+            catch {
+                guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+                try GalleryVaultPhotoLibrary.requireFullAccess()
+                if !wantsCancel, let reason = Self.skipReason(for: error) {
+                    skipped[reason, default: 0] += 1
+                } else { stopped = Self.transferErrorMessage(error); break }
+            }
             if index.isMultiple(of: 16) { progress = .init(phase: "Verifying", processed: index + 1, total: pending.count, detail: nil) }
         }
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         let result = try await deleteConfirmed(verified, epoch: epoch)
         let detail = [stopped, result.message].compactMap { $0 }.joined(separator: " ")
-        return .init(copied: 0, deleted: result.deleted, message: detail.isEmpty ? nil : detail)
+        return .init(copied: 0, deleted: result.deleted, message: detail.isEmpty ? nil : detail,
+            reused: verified.count, notMoved: pending.count - result.deleted, skipped: skipped)
     }
 
     private func deleteConfirmed(_ candidates: [GalleryVaultRecord], epoch: UUID) async throws -> (deleted: Int, message: String?) {
@@ -222,7 +250,7 @@ final class GalleryVaultService: ObservableObject {
             // A single Photos transaction means a batch receives a single system delete confirmation.
             do { try await GalleryVaultPhotoLibrary.delete(current) }
             catch {
-                return (0, "Photos did not delete the originals. Verified vault copies were kept; you can retry. \(error.localizedDescription)")
+                return (alreadyAbsent.count, "Photos did not delete the originals. Verified vault copies were kept; you can retry. \(error.localizedDescription)")
             }
             guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
             NotificationCenter.default.post(name: .galleryVaultDidHideItems, object: nil,
@@ -439,15 +467,53 @@ final class GalleryVaultService: ObservableObject {
         }
     }
 
-    private nonisolated static func transferErrorMessage(_ error: Error) -> String {
+    private nonisolated static func errorChain(_ error: Error) -> [NSError] {
+        var chain: [NSError] = []
         var candidate: NSError? = error as NSError
         for _ in 0..<8 {
             guard let current = candidate else { break }
-            if (current.domain == NSPOSIXErrorDomain && current.code == Int(ENOSPC)) ||
-                (current.domain == NSCocoaErrorDomain && current.code == NSFileWriteOutOfSpaceError) {
-                return "Not enough device storage. The original that could not be saved was kept in Photos."
-            }
+            chain.append(current)
             candidate = current.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return chain
+    }
+
+    private nonisolated static func isOutOfSpace(_ error: NSError) -> Bool {
+        (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOSPC)) ||
+        (error.domain == NSCocoaErrorDomain && error.code == NSFileWriteOutOfSpaceError) ||
+        (error.domain == PHPhotosErrorDomain && error.code == PHPhotosError.Code.notEnoughSpace.rawValue)
+    }
+
+    private nonisolated static func skipReason(for error: Error) -> GalleryVaultSkipReason? {
+        let photosStops = Set([PHPhotosError.Code.userCancelled, .libraryVolumeOffline,
+            .relinquishingLibraryBundleToWriter, .switchingSystemPhotoLibrary, .operationInterrupted,
+            .accessRestricted, .accessUserDenied, .limitExceeded].map(\.rawValue))
+        guard !(error is CancellationError), !errorChain(error).contains(where: {
+            isOutOfSpace($0) || ($0.domain == PHPhotosErrorDomain && photosStops.contains($0.code)) ||
+            ($0.domain == NSCocoaErrorDomain && $0.code == NSUserCancelledError) ||
+            ($0.domain == NSURLErrorDomain && $0.code == NSURLErrorCancelled)
+        }) else { return nil }
+        if let failure = error as? GalleryVaultTransferError {
+            switch failure {
+            case .unsupportedItem: return .unsupportedItem
+            case .unsupportedResources: return .unsupportedResources
+            case .missingResources, .missingOriginal, .photoRequestFailed: return .unavailableResource
+            case .alreadyInVault: return .alreadySaved
+            default: return nil
+            }
+        }
+        if let failure = error as? GalleryVaultStorageError {
+            switch failure {
+            case .corruptRecord, .corruptResource, .incompleteItem: return .damagedCopy
+            default: return nil
+            }
+        }
+        return error is GalleryVaultPhotoRequestFailure ? .unavailableResource : nil
+    }
+
+    private nonisolated static func transferErrorMessage(_ error: Error) -> String {
+        if errorChain(error).contains(where: isOutOfSpace) {
+            return "Not enough device storage. The original that could not be saved was kept in Photos."
         }
         return error.localizedDescription
     }
@@ -473,6 +539,16 @@ final class GalleryVaultService: ObservableObject {
     }
 }
 
+/// Only Photos provider errors are item failures; a writer's unknown storage error stops the batch.
+private nonisolated struct GalleryVaultPhotoRequestFailure: CustomNSError {
+    let underlying: Error
+    static var errorDomain: String { "GalleryVaultPhotoRequestFailure" }
+    var errorCode: Int { 1 }
+    var errorUserInfo: [String: Any] {
+        [NSUnderlyingErrorKey: underlying, NSLocalizedDescriptionKey: underlying.localizedDescription]
+    }
+}
+
 /// PhotoKit calls its handlers on a serial queue; no media-sized buffer is retained.
 private nonisolated final class GalleryVaultPhotoStream: @unchecked Sendable {
     private let lock = NSLock()
@@ -494,7 +570,7 @@ private nonisolated final class GalleryVaultPhotoStream: @unchecked Sendable {
                     do { try consume(data) } catch { self.stop(error) }
                 } completionHandler: { [weak self] error in
                     guard let self else { return }
-                    if let error { self.complete(.failure(error)); return }
+                    if let error { self.complete(.failure(GalleryVaultPhotoRequestFailure(underlying: error))); return }
                     guard !self.isStopped else { return }
                     do { try finish(); self.complete(.success(())) } catch { self.complete(.failure(error)) }
                 }

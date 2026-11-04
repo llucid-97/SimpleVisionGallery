@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import CoreLocation
 import CryptoKit
+@preconcurrency import Photos
 
 nonisolated enum UIApplication {
     static let protectedDataWillBecomeUnavailableNotification = Notification.Name("UIApplicationProtectedDataWillBecomeUnavailable")
@@ -146,6 +147,9 @@ nonisolated enum GalleryVaultTransferError: LocalizedError {
     case journalFailed, importFailed, cancelled, alreadyInVault, pendingCopyUnavailable
     var errorDescription: String? { String(describing: self) }
 }
+typealias PHPhotosError = Photos.PHPhotosError
+nonisolated let PHPhotosErrorDomain = Photos.PHPhotosErrorDomain
+nonisolated enum GalleryVaultStorageError: Error { case corruptRecord, corruptResource, incompleteItem }
 nonisolated enum GalleryVaultPhotoLibrary {
     struct Prepared: @unchecked Sendable { let record: GalleryVaultRecord; let resources: [PHAssetResource] }
     static func requireFullAccess() throws {}
