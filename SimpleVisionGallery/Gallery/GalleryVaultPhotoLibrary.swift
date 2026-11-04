@@ -75,26 +75,20 @@ nonisolated enum GalleryVaultPhotoLibrary {
 
     private static func originals(_ resources: [PHAssetResource], asset: PHAsset) throws -> [PHAssetResource] {
         guard hasEdits(resources) else { return resources }
-        // Only edited JPEGs and ordinary H.264 movies have been proved to restore as originals.
-        let types = resources.map { $0.type.rawValue }.sorted()
-        let jpeg = asset.mediaType == .image && types == [1, 5, 7] &&
-            resources.filter { $0.type != .adjustmentData }.allSatisfy { $0.uniformTypeIdentifier == UTType.jpeg.identifier }
-        let movie = asset.mediaType == .video && types == [2, 6, 7] &&
-            resources.filter { $0.type != .adjustmentData }.allSatisfy { $0.uniformTypeIdentifier == UTType.quickTimeMovie.identifier }
-        guard asset.mediaSubtypes.isEmpty, jpeg || movie else { throw GalleryVaultTransferError.unsupportedResources }
-        return resources.filter { $0.type == .photo || $0.type == .video }
+        let paired: Set<PHAssetResourceType> = [.pairedVideo, .fullSizePairedVideo, .adjustmentBasePairedVideo]
+        guard !asset.mediaSubtypes.contains(.photoLive), !resources.contains(where: { paired.contains($0.type) })
+        else { throw GalleryVaultTransferError.unsupportedResources }
+        let originals = resources.filter { [.photo, .video, .alternatePhoto].contains($0.type) }
+        let primary: PHAssetResourceType = asset.mediaType == .image ? .photo : .video
+        guard originals.count == 1, originals[0].type == primary else { throw GalleryVaultTransferError.unsupportedResources }
+        return originals
     }
 
     private static func inspectVideo(_ video: AVAsset) async throws -> (width: Int, height: Int, duration: Double) {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             let tracks = try await video.loadTracks(withMediaType: .video)
-            guard tracks.count == 1 else { throw GalleryVaultTransferError.unsupportedResources }
-            let track = tracks[0]
-            let formats = try await track.load(.formatDescriptions)
-            guard !formats.isEmpty, formats.allSatisfy({ CMFormatDescriptionGetMediaSubType($0) == kCMVideoCodecType_H264 }) else {
-                throw GalleryVaultTransferError.unsupportedResources
-            }
+            guard let track = tracks.first else { throw GalleryVaultTransferError.missingResources }
             let duration = try await video.load(.duration).seconds
             let size = try await track.load(.naturalSize)
             let transform = try await track.load(.preferredTransform)

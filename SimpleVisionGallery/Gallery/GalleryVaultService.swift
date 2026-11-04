@@ -461,12 +461,12 @@ final class GalleryVaultService: ObservableObject {
     private func verifyRestored(_ asset: PHAsset, record: GalleryVaultRecord,
         parents: [(GalleryVaultAlbum, PHAssetCollection)], sourceHashes: [SHA256.Digest], epoch: UUID) async throws {
         guard asset.mediaType.rawValue == record.mediaType,
-              asset.pixelWidth == record.pixelWidth, asset.pixelHeight == record.pixelHeight,
               asset.creationDate == record.creationDate, asset.isFavorite == record.isFavorite else { throw GalleryVaultTransferError.importFailed }
         let containing = PHAssetCollection.fetchAssetCollectionsContaining(asset, with: .album, options: nil)
         var parentIDs = Set<String>()
         for i in 0..<containing.count { parentIDs.insert(containing.object(at: i).localIdentifier) }
         guard Set(parents.map { $0.0.id }).isSubset(of: parentIDs) else { throw GalleryVaultTransferError.importFailed }
+        // Exact resource-byte verification below also covers originals with different edited/spatial geometry.
         let actualResources = PHAssetResource.assetResources(for: asset)
         for (index, expected) in record.resources.enumerated() {
             guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.cancelled }
