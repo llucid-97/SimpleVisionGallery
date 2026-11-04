@@ -21,6 +21,8 @@ struct GalleryViewerWindowRoot: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.pushWindow) private var pushWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @State private var moreSessionID: UUID?
+    @State private var morePopoverCovered = false
     @State private var moveTarget: GalleryViewerMoveTarget?
     @State private var vaultTransfer: GalleryVaultTransferRequest?
     @State private var showingVault = false
@@ -53,11 +55,13 @@ struct GalleryViewerWindowRoot: View {
                             GalleryViewerPane(
                                 session: session,
                                 moveTarget: $moveTarget,
+                                moreSessionID: $moreSessionID,
+                                morePopoverCovered: $morePopoverCovered,
                                 vaultTransfer: $vaultTransfer,
                                 showingVault: $showingVault,
                                 vaultMessage: $vaultMessage,
                                 vaultAlbumRetryIDs: $vaultAlbumRetryIDs,
-                                vaultCovered: vaultTransfer != nil || showingVault || vaultSheetCovered,
+                                vaultCovered: vaultTransfer != nil || showingVault || vaultSheetCovered || moreSessionID != nil || morePopoverCovered,
                                 width: paneWidth,
                                 minimumMediaHeight: minimumMediaHeight,
                                 backingYaw: value.sessionIDs.count == 2
@@ -191,6 +195,8 @@ private struct GalleryViewerLoadKey: Equatable {
 private struct GalleryViewerPane: View {
     @ObservedObject var session: GalleryViewerSession
     @Binding var moveTarget: GalleryViewerMoveTarget?
+    @Binding var moreSessionID: UUID?
+    @Binding var morePopoverCovered: Bool
     @Binding var vaultTransfer: GalleryVaultTransferRequest?
     @Binding var showingVault: Bool
     @Binding var vaultMessage: String?
@@ -272,45 +278,62 @@ private struct GalleryViewerPane: View {
                 }
                 Spacer()
                 GalleryVaultSessionButton()
-                Menu {
-                    if let asset = session.currentAsset {
-                        Button("Move to Private Vault", systemImage: "lock") {
-                            vaultTransfer = .items([asset])
-                        }
-                        .disabled(vault.isBusy)
-                    }
-                    if let record = session.currentItem?.vaultRecord {
-                        Button("Restore to Photos", systemImage: "lock.open") {
-                            let id = record.id
-                            showingVault = true
-                            vaultMessage = nil
-                            vaultAlbumRetryIDs = []
-                            Task { @MainActor in
-                                do {
-                                    try await vault.restore(recordID: id)
-                                    vaultMessage = "Restored to Photos."
-                                } catch {
-                                    if vault.isUnlocked {
-                                        vaultMessage = error.localizedDescription
-                                        if let failure = error as? GalleryVaultTransferError,
-                                           case .albumUnavailable = failure { vaultAlbumRetryIDs = [id] }
-                                    }
-                                }
-                            }
-                        }
-                        .disabled(vault.isBusy)
-                    }
-                    Button("Private Vault", systemImage: "lock") { showingVault = true }
-                    Button("Share", systemImage: "square.and.arrow.up") {
-                        if let asset = session.currentAsset { sharing.start(assets: [asset]) }
-                    }
-                    .disabled(session.currentAsset == nil || sharing.isPreparing)
+                Button {
+                    // Raised native media can cover even an ordinary SwiftUI menu.
+                    media.setPresentationCovered(true)
+                    morePopoverCovered = true
+                    moreSessionID = session.id
                 } label: {
                     Label("More slideshow actions", systemImage: "ellipsis")
                 }
                 .labelStyle(.iconOnly)
                 .galleryHoverLabel("More")
                 .accessibilityIdentifier("gallery-viewer-more")
+                .popover(isPresented: Binding(
+                    get: { moreSessionID == session.id },
+                    set: { if !$0 { moreSessionID = nil } }
+                )) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let asset = session.currentAsset {
+                            Button("Move to Private Vault", systemImage: "lock") {
+                                moreSessionID = nil
+                                vaultTransfer = .items([asset])
+                            }
+                            .disabled(vault.isBusy)
+                        }
+                        if let record = session.currentItem?.vaultRecord {
+                            Button("Restore to Photos", systemImage: "lock.open") {
+                                moreSessionID = nil
+                                let id = record.id
+                                showingVault = true
+                                vaultMessage = nil
+                                vaultAlbumRetryIDs = []
+                                Task { @MainActor in
+                                    do {
+                                        try await vault.restore(recordID: id)
+                                        vaultMessage = "Restored to Photos."
+                                    } catch {
+                                        if vault.isUnlocked {
+                                            vaultMessage = error.localizedDescription
+                                            if let failure = error as? GalleryVaultTransferError,
+                                               case .albumUnavailable = failure { vaultAlbumRetryIDs = [id] }
+                                        }
+                                    }
+                                }
+                            }
+                            .disabled(vault.isBusy)
+                        }
+                        Button("Private Vault", systemImage: "lock") { moreSessionID = nil; showingVault = true }
+                        Button("Share", systemImage: "square.and.arrow.up") {
+                            moreSessionID = nil
+                            if let asset = session.currentAsset { sharing.start(assets: [asset]) }
+                        }
+                        .disabled(session.currentAsset == nil || sharing.isPreparing)
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .padding(20)
+                    .onDisappear { morePopoverCovered = false }
+                }
                 Button(action: duplicate) {
                     Label("Open another slideshow", systemImage: "rectangle.on.rectangle")
                 }
