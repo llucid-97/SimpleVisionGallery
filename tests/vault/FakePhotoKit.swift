@@ -280,9 +280,7 @@ nonisolated final class GalleryVaultStagingItem {
                 case .delete:
                     guard GalleryVaultRecycleBin.contains(record) else { throw GalleryVaultTransferError.notInRecycleBin }
                     durable.removeValue(forKey: record.id)
-                case .move(_, let sourceAlbumID, let destination):
-                    record.albums = Self.destinationAlbums(record.albums, destination: destination, sourceAlbumID: sourceAlbumID)
-                    durable[record.id] = record
+
                 }
                 return .init(id: mutation.id, error: nil)
             } catch {

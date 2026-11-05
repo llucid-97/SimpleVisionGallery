@@ -1037,8 +1037,8 @@ struct GalleryView: View {
                     onVaultPutBack: { id in deleteQueue.enqueueVaultPutBack(recordID: id) },
                     onVaultDelete: { id in deleteQueue.enqueuePermanentVaultDelete(recordID: id) }
                 )
-                .allowsHitTesting(!manager.isSortingAssets && !manager.isPerformingOperation)
-                .opacity(manager.isSortingAssets ? 0.72 : 1)
+                .allowsHitTesting(!(manager.isSortingAssets && manager.sortingMessage != nil) && !manager.isPerformingOperation)
+                .opacity(manager.isSortingAssets && manager.sortingMessage != nil ? 0.72 : 1)
             }
         }
     }

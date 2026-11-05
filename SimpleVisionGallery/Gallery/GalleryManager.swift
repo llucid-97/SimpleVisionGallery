@@ -482,7 +482,7 @@ struct GalleryVaultIndex {
 
     func records(for album: GalleryAlbum, filter: GalleryMediaFilter, search: String,
                  sort: GalleryAssetSortMode = .photosOrder, ascending: Bool = true,
-                 shuffleSeed: UUID = UUID()) -> [GalleryVaultRecord] {
+                 shuffleSeed: UUID = UUID(), preservingOrderOf previous: [GalleryVaultRecord]? = nil) -> [GalleryVaultRecord] {
         let candidates: [GalleryVaultRecord]
         switch album.virtualScope {
         case .photos: candidates = all
@@ -500,14 +500,24 @@ struct GalleryVaultIndex {
             return matchesType && (needle.isEmpty || record.filename.range(
                 of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil)
         }
+        // Recycle/permanent deletion only removes rows; their surviving sort keys do not change.
+        if let previous {
+            var remaining = Dictionary(uniqueKeysWithValues: matches.map { ($0.id, $0) })
+            let retained = previous.compactMap { remaining.removeValue(forKey: $0.id) }
+            if remaining.isEmpty { return retained }
+        }
         // Preserve album-local ordering from before the batch transfer; the vault ID is random.
-        let keyed = matches.map { record -> (GalleryVaultRecord, Int?, Int) in
+        let keyed = matches.map { record -> (GalleryVaultRecord, Int?, Int, String) in
             let position = album.virtualScope == nil && !GalleryRecycleBin.isRecycleBinTitle(album.title)
                 ? record.albums.first(where: { $0.id == album.id })?.position : nil
-            var hasher = Hasher()
-            hasher.combine(shuffleSeed)
-            hasher.combine(record.id)
-            return (record, position, hasher.finalize())
+            var randomOrder = 0
+            if sort == .random {
+                var hasher = Hasher()
+                hasher.combine(shuffleSeed)
+                hasher.combine(record.id)
+                randomOrder = hasher.finalize()
+            }
+            return (record, position, randomOrder, record.id.uuidString)
         }
         return keyed.sorted { lhs, rhs in
             let a = lhs.0, b = rhs.0
@@ -529,7 +539,7 @@ struct GalleryVaultIndex {
                 if lhs.2 != rhs.2 { return lhs.2 < rhs.2 }
             }
             if a.sourceIdentifier != b.sourceIdentifier { return a.sourceIdentifier < b.sourceIdentifier }
-            return a.id.uuidString < b.id.uuidString
+            return lhs.3 < rhs.3
         }.map(\.0)
     }
 
@@ -794,11 +804,16 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         queuedDeleteCommitSubscription = NotificationCenter.default.publisher(for: .galleryQueuedPhotoDeleteCommitted)
             .sink { [weak self] notification in
                 guard let self, let request = notification.userInfo?["request"] as? GalleryDeleteRequest,
-                      case .photos(let id, _) = request.target else { return }
+                      self.requestAffectsCurrentGrid(request),
+                      case .photos(let id, _) = request.target,
+                      let asset = GalleryDeleteQueue.shared.pendingPhotoAssets[id],
+                      let fetch = self.assetFetchResult,
+                      self.assetFetchAlbumID == self.selectedAlbum?.id else { return }
+                let source = fetch.index(of: asset)
+                guard source != NSNotFound,
+                      self.assetDisplayOrder?.contains(source) ?? true else { return }
                 self.committedPhotoDeletes[id] = request
-                if let asset = GalleryDeleteQueue.shared.pendingPhotoAssets[id] {
-                    self.committedPhotoAssets[id] = asset
-                }
+                self.committedPhotoAssets[id] = asset
                 self.pendingDisplayIndexDirty = true
                 self.objectWillChange.send()
             }
@@ -874,6 +889,8 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     private func vaultRecordsDidChange(_ records: [GalleryVaultRecord]) {
+        let keepsCurrentOrder = GalleryVaultService.shared.isPublishingQueuedMutations
+            && selectedAlbum.map { currentVaultQueryKey == vaultKey(for: $0) } == true
         restoredVaultIDs.formIntersection(Set(records.map(\.id)))
         vaultIndexGeneration = UUID()
         vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)
@@ -890,7 +907,8 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
                 return
             }
             let nextVaultRecords = vaultIndex.records(for: album, filter: mediaFilter, search: mediaSearchQuery,
-                sort: assetSortMode, ascending: assetSortAscending, shuffleSeed: vaultShuffleSeed)
+                sort: assetSortMode, ascending: assetSortAscending, shuffleSeed: vaultShuffleSeed,
+                preservingOrderOf: keepsCurrentOrder ? currentVaultRecords : nil)
             if nextVaultRecords.map(\.id) != currentVaultRecords.map(\.id) { clearSelection(silent: true) }
             setCurrentVaultRecords(nextVaultRecords, album: album)
             totalAssetCount = nativeAssetCount + currentVaultDisplayIndex.count
@@ -1642,21 +1660,13 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
     #endif
 
-    private func pruneCommittedPhotoDeletes(using fetch: PHFetchResult<PHAsset>, album: GalleryAlbum) {
+    private func pruneCommittedPhotoDeletes(using fetch: PHFetchResult<PHAsset>) {
         guard !committedPhotoDeletes.isEmpty else { return }
-        var removed = Set<String>()
-        for (id, request) in committedPhotoDeletes {
-            guard case .photos(_, let sourceAlbumID) = request.target else { continue }
-            if request.action == .permanent {
-                if PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject == nil {
-                    removed.insert(id)
-                }
-            } else if album.id == sourceAlbumID || album.virtualScope == .photos || album.virtualScope == .unfiled {
-                let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
-                if asset.map({ fetch.index(of: $0) == NSNotFound }) ?? true {
-                    removed.insert(id)
-                }
-            }
+        let visibleSources = assetDisplayOrder.map { Set($0) }
+        let removed = committedPhotoDeletes.compactMap { id, request -> String? in
+            guard requestAffectsCurrentGrid(request), let asset = committedPhotoAssets[id] else { return id }
+            let source = fetch.index(of: asset)
+            return source == NSNotFound || !(visibleSources?.contains(source) ?? true) ? id : nil
         }
         for id in removed {
             committedPhotoDeletes.removeValue(forKey: id)
@@ -2446,7 +2456,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         assetFetchAlbumID = selectedAlbum.id
         clearInFlightAssetFetch(generation: generation)
         assetDisplayOrder = displayOrder
-        pruneCommittedPhotoDeletes(using: fetchResult, album: selectedAlbum)
+        pruneCommittedPhotoDeletes(using: fetchResult)
         pendingDisplayIndexDirty = true
         // PhotoKit may issue one change per restore. Reuse the private suffix and
         // tombstones when its query hasn't changed instead of re-sorting 100k records.

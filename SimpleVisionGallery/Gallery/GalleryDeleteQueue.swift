@@ -1,6 +1,16 @@
 import Foundation
 
-nonisolated enum GalleryDeleteAction: Sendable { case recycle, permanent, putBack }
+nonisolated enum GalleryDeleteAction: Sendable {
+    case recycle, permanent, putBack
+
+    func keepsVaultItemHidden(inRecycleBin: Bool) -> Bool {
+        switch self {
+        case .recycle: !inRecycleBin
+        case .putBack: inRecycleBin
+        case .permanent: true
+        }
+    }
+}
 
 nonisolated struct GalleryDeleteRequest: Identifiable, Sendable {
     enum Target: Sendable {
@@ -195,11 +205,17 @@ final class GalleryDeleteQueue: ObservableObject {
             }
             let results = await GalleryVaultService.shared.applyQueuedMutations(mutations, epoch: epoch)
             if let warning = results.compactMap(\.warning).first {
-                errorMessage = "The item changed, but saving it could not be confirmed. " + warning.localizedDescription
+                errorMessage = warning.localizedDescription
             }
-            let byID = Dictionary(results.map { ($0.id, $0.error) }, uniquingKeysWith: { _, latest in latest })
+            let byID = Dictionary(results.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
             for request in group {
-                if case .vault(let id, _) = request.target, let error = byID[id] ?? nil { errors[request.id] = error }
+                guard case .vault(let id, _) = request.target else { continue }
+                guard let result = byID[id] else {
+                    errors[request.id] = NSError(domain: "GalleryDeleteQueue", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "The vault did not confirm this change. Try again."])
+                    continue
+                }
+                if let error = result.error { errors[request.id] = error }
             }
         }
         return errors

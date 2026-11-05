@@ -511,12 +511,6 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         await refreshAlbums()
     }
 
-    func recycle(_ id: UUID, expectedAssetID: String? = nil) async throws {
-        guard let session = sessions[id], let item = session.currentItem else { throw ViewerMutationError.noAsset }
-        guard expectedAssetID == nil || item.localIdentifier == expectedAssetID else { throw ViewerMutationError.noAsset }
-        GalleryDeleteQueue.shared.enqueueRecycle(item: item, sourceAlbumID: session.sourceAlbumID, sessionID: id)
-    }
-
     /// Freeze the target before any suspension, and mask it in every open playlist.
     func stageQueuedDelete(_ request: GalleryDeleteRequest, asset: PHAsset?) {
         for playlist in playlists.values { stageQueuedDelete(request, asset: asset, in: playlist) }
@@ -538,7 +532,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         playlist.pendingRemovals[request.itemID] = .init(position: position)
         playlist.index.remove(IndexSet(integer: position))
         for (session, successor) in handoffs { session.setCursor(successor) }
-        notify(playlist)
+        notify(playlist, orderChanged: true)
     }
 
     func finishQueuedDelete(_ request: GalleryDeleteRequest, succeeded: Bool) {
@@ -546,7 +540,10 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             guard let pending = playlist.pendingRemovals.removeValue(forKey: request.itemID) else { continue }
             let keepRemoved: Bool
             switch request.target {
-            case .vault: keepRemoved = succeeded
+            case .vault:
+                let album = playlist.snapshot.album
+                let inBin = album.virtualScope == .recycleBin || GalleryRecycleBin.isRecycleBinTitle(album.title)
+                keepRemoved = succeeded && request.action.keepsVaultItemHidden(inRecycleBin: inBin)
             case .photos(_, let sourceID):
                 let album = playlist.snapshot.album
                 keepRemoved = succeeded && (request.action == .permanent || album.id == sourceID
@@ -558,7 +555,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 for session in sessions.values where session.playlist === playlist && session.cursor == nil {
                     session.setCursor(pending.position)
                 }
-                notify(playlist)
+                notify(playlist, orderChanged: true)
             }
         }
     }
@@ -820,7 +817,8 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             let next = vaultIndex.records(for: playlist.snapshot.album,
                 filter: playlist.snapshot.mediaFilter, search: playlist.snapshot.mediaSearch,
                 sort: playlist.snapshot.vaultSort, ascending: playlist.snapshot.vaultSortAscending,
-                shuffleSeed: playlist.snapshot.vaultShuffleSeed)
+                shuffleSeed: playlist.snapshot.vaultShuffleSeed,
+                preservingOrderOf: GalleryVaultService.shared.isPublishingQueuedMutations ? old : nil)
             if old.map(\.id) == next.map(\.id), !next.isEmpty { continue }
 
             let associated = sessions.values.filter { $0.playlist === playlist }

@@ -6,7 +6,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
     static func execute(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         var failures: [UUID: Error] = [:]
         let photos = requests.filter {
-            if case .photos = $0.target { return true }
+            if case .photos = $0.target, $0.action != .putBack { return true }
             failures[$0.id] = PhotoDeleteError.unsupportedTarget
             return false
         }
@@ -36,18 +36,18 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                 }
                 guard !eligible.isEmpty else { return }
 
-                let needsBin = eligible.contains { isBinMutation($0.action) }
+                let needsBin = eligible.contains { $0.action == .recycle }
                 let binChange: PHAssetCollectionChangeRequest?
                 if needsBin, let bin {
                     binChange = PHAssetCollectionChangeRequest(for: bin)
-                } else if needsBin, eligible.contains(where: { isRecycle($0.action) }) {
+                } else if needsBin, eligible.contains(where: { $0.action == .recycle }) {
                     binChange = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(
                         withTitle: GalleryRecycleBin.title)
                 } else {
                     binChange = nil
                 }
                 if needsBin && binChange == nil {
-                    for request in eligible where isBinMutation(request.action) {
+                    for request in eligible where request.action == .recycle {
                         itemErrors[request.id] = PhotoDeleteError.binUnavailable
                     }
                 }
@@ -69,12 +69,12 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                         guard binChange != nil else { return false }
                         guard case .photos(_, let sourceID) = request.target, let sourceID else { return true }
                         return sourceChanges[sourceID] != nil
-                    case .putBack: return binChange != nil
+                    case .putBack: return false
                     case .permanent: return true
                     }
                 }
 
-                var additions: [PHAsset] = [], returns: [PHAsset] = [], deletions: [PHAsset] = []
+                var additions: [PHAsset] = [], deletions: [PHAsset] = []
                 var removals: [String: [PHAsset]] = [:]
                 for request in stageable {
                     guard let asset = assets[request.id] else {
@@ -87,11 +87,13 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                         if case .photos(_, let sourceID) = request.target, let sourceID {
                             removals[sourceID, default: []].append(asset)
                         }
-                    case .putBack: returns.append(asset)
+                    case .putBack: continue
                     case .permanent:
                         // Exact asset membership is checked again inside this change block.
                         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
-                              let bin, lookup.contains(asset, in: bin) else {
+                              let deletionBin = lookup.bin(for: request, fallback: bin),
+                              GalleryRecycleBin.isRecycleBinTitle(deletionBin.localizedTitle),
+                              lookup.contains(asset, in: deletionBin) else {
                             itemErrors[request.id] = PhotoDeleteError.notInBin
                             continue
                         }
@@ -104,7 +106,6 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                     staged.insert(request.id)
                 }
                 if !additions.isEmpty { binChange?.addAssets(additions as NSArray) }
-                if !returns.isEmpty { binChange?.removeAssets(returns as NSArray) }
                 for (id, assets) in removals { sourceChanges[id]?.removeAssets(assets as NSArray) }
                 if !deletions.isEmpty { PHAssetChangeRequest.deleteAssets(deletions as NSArray) }
             }
@@ -119,7 +120,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
         for request in candidates where !staged.contains(request.id) && failures[request.id] == nil {
             failures[request.id] = PhotoDeleteError.changeUnavailable
         }
-        let permanent = candidates.filter { staged.contains($0.id) && isPermanent($0.action) }
+        let permanent = candidates.filter { staged.contains($0.id) && $0.action == .permanent }
         let ids = permanent.compactMap { request -> String? in
             if case .photos(let id, _) = request.target { return id }
             return nil
@@ -141,10 +142,12 @@ nonisolated enum GalleryQueuedPhotoDeletion {
         guard case .photos(let id, let sourceID) = request.target, let asset = lookup.asset(id) else {
             throw PhotoDeleteError.assetUnavailable
         }
+        let bin = lookup.bin(for: request, fallback: bin)
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         switch request.action {
-        case .recycle, .putBack:
+        case .recycle:
             guard status == .authorized || status == .limited else { throw PhotoDeleteError.accessRequired }
+        case .putBack: throw PhotoDeleteError.unsupportedTarget
         case .permanent:
             guard status == .authorized else { throw PhotoDeleteError.fullAccessRequired }
         }
@@ -160,11 +163,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                 }
                 return (asset, source)
             }
-        case .putBack:
-            guard let bin, GalleryRecycleBin.isRecycleBinTitle(bin.localizedTitle),
-                  bin.canPerform(.removeContent), lookup.contains(asset, in: bin) else {
-                throw PhotoDeleteError.notInBin
-            }
+        case .putBack: throw PhotoDeleteError.unsupportedTarget
         case .permanent:
             guard let bin, GalleryRecycleBin.isRecycleBinTitle(bin.localizedTitle),
                   lookup.contains(asset, in: bin) else { throw PhotoDeleteError.notInBin }
@@ -173,18 +172,9 @@ nonisolated enum GalleryQueuedPhotoDeletion {
         return (asset, nil)
     }
 
-    private static func isBinMutation(_ action: GalleryDeleteAction) -> Bool {
-        switch action { case .recycle, .putBack: true; case .permanent: false }
-    }
-    private static func isRecycle(_ action: GalleryDeleteAction) -> Bool {
-        if case .recycle = action { return true }; return false
-    }
-    private static func isPermanent(_ action: GalleryDeleteAction) -> Bool {
-        if case .permanent = action { return true }; return false
-    }
     private static func hasSource(_ request: GalleryDeleteRequest, id: String) -> Bool {
         guard case .photos(_, let sourceID) = request.target else { return false }
-        return isRecycle(request.action) && sourceID == id
+        return request.action == .recycle && sourceID == id
     }
 }
 
@@ -204,6 +194,12 @@ private nonisolated struct PhotoLookup {
         guard let fresh = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject else { return nil }
         collections[id] = fresh
         return fresh
+    }
+    mutating func bin(for request: GalleryDeleteRequest, fallback: PHAssetCollection?) -> PHAssetCollection? {
+        if request.action != .recycle, case .photos(_, let sourceID) = request.target, let sourceID {
+            return collection(sourceID)
+        }
+        return fallback
     }
     mutating func contains(_ asset: PHAsset, in collection: PHAssetCollection?) -> Bool {
         guard let collection else { return false }

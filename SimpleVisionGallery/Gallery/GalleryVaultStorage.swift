@@ -35,7 +35,10 @@ nonisolated final class GalleryVaultSession: @unchecked Sendable {
     init(key: SymmetricKey) { self.key = key }
 
     func withKey<T>(_ body: (SymmetricKey) throws -> T) throws -> T {
-        try withMutationLease(body)
+        lock.lock()
+        defer { lock.unlock() }
+        guard !revoked, let key else { throw GalleryVaultStorageError.locked }
+        return try body(key)
     }
 
     func attachMutationState(clear: @escaping @Sendable () -> Void) throws {
@@ -758,17 +761,7 @@ final class GalleryVaultStorage: ObservableObject {
                             do { try Self.syncDirectory(itemDirectory) } catch { durabilityWarning = GalleryVaultMutationWarning.directorySyncUnconfirmed }
                             deleted = true
                             itemChanged = true
-                        case .move(_, let sourceAlbumID, let destination):
-                            guard destination.id != GalleryVaultRecycleBin.id,
-                                  !GalleryRecycleBin.isRecycleBinTitle(destination.title),
-                                  !GalleryVaultRecycleBin.contains(record) else {
-                                throw GalleryVaultTransferError.invalidVaultDestination
-                            }
-                            record.albums = Self.destinationAlbums(record.albums,
-                                destination: destination, sourceAlbumID: sourceAlbumID)
-                            try Self.writeRecord(record, in: directory, key: key)
-                            do { try Self.syncDirectory(directory) } catch { durabilityWarning = GalleryVaultMutationWarning.directorySyncUnconfirmed }
-                            itemChanged = true
+
                         }
 
                         if deleted {
