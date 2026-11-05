@@ -124,7 +124,8 @@ struct GalleryViewerWindowRoot: View {
             if let pending = pendingVaultMove, vault.isUnlocked { vaultTransfer = pending }
             pendingVaultMove = nil
         }) { target in
-            GalleryViewerMoveSheet(sessionID: target.sessionID, assetID: target.assetID) { request in
+            GalleryViewerMoveSheet(sessionID: target.sessionID, assetID: target.assetID,
+                vaultRecordID: target.vaultRecordID, sourceAlbumID: target.sourceAlbumID) { request in
                 pendingVaultMove = request
             }
         }
@@ -317,6 +318,13 @@ private struct GalleryViewerPane: View {
                             .disabled(vault.isBusy)
                         }
                         if let record = session.currentItem?.vaultRecord {
+                            if GalleryVaultRecycleBin.contains(record) {
+                                Button("Put Back", systemImage: "arrow.uturn.backward") {
+                                    moreSessionID = nil
+                                    performVaultPutBack(recordID: record.id)
+                                }
+                                .disabled(vault.isBusy)
+                            }
                             Button("Restore to Photos", systemImage: "lock.open") {
                                 moreSessionID = nil
                                 let id = record.id
@@ -430,6 +438,8 @@ private struct GalleryViewerPane: View {
         }
         .onChange(of: vault.isUnlocked) { _, unlocked in
             if !unlocked {
+                if moveTarget?.vaultRecordID != nil { moveTarget = nil }
+                if let target = pendingDelete, case .vault = target.item { pendingDelete = nil }
                 sharing.tearDown()
                 vaultMessage = nil
                 vaultAlbumRetryIDs = []
@@ -444,12 +454,22 @@ private struct GalleryViewerPane: View {
                target.assetID != newID { moveTarget = nil }
         }
         .alert(item: $pendingDelete) { target in
-            Alert(title: Text("Delete permanently from Photos?"),
-                message: Text("This item will be removed from the Photos library and cannot be recovered from the Recycle Bin."),
-                primaryButton: .destructive(Text("Delete Permanently")) {
-                    performPermanentDelete(assetID: target.assetID)
-                },
-                secondaryButton: .cancel())
+            switch target.item {
+            case let .photos(assetID):
+                return Alert(title: Text("Delete permanently from Photos?"),
+                    message: Text("This item will be removed from the Photos library and cannot be recovered from the Recycle Bin."),
+                    primaryButton: .destructive(Text("Delete Permanently")) {
+                        performPermanentDelete(assetID: assetID)
+                    },
+                    secondaryButton: .cancel())
+            case let .vault(recordID):
+                return Alert(title: Text("Delete permanently from Private Vault Recycle Bin?"),
+                    message: Text("This item will be permanently deleted and cannot be undone."),
+                    primaryButton: .destructive(Text("Delete Permanently")) {
+                        performPermanentVaultDelete(recordID: recordID)
+                    },
+                    secondaryButton: .cancel())
+            }
         }
     }
 
@@ -538,24 +558,42 @@ private struct GalleryViewerPane: View {
                 .accessibilityAddTraits(loopVideos ? .isSelected : [])
             }
 
-            Button {
-                if let assetID = session.currentAsset?.localIdentifier {
-                    actionError = nil
-                    // Capture playback intent before dismantling the media surface.
-                    media.setPresentationCovered(true)
-                    moveTarget = GalleryViewerMoveTarget(sessionID: session.id, assetID: assetID)
-                }
-            } label: { Label("Move", systemImage: "arrowshape.turn.up.right") }
-            .disabled(session.currentAsset == nil || store.isPerformingOperation)
-            .accessibilityIdentifier("gallery-viewer-move")
+            if !isVaultItemInRecycleBin {
+                Button {
+                    if let record = session.currentItem?.vaultRecord {
+                        actionError = nil
+                        media.setPresentationCovered(true)
+                        moveTarget = GalleryViewerMoveTarget(sessionID: session.id,
+                            assetID: session.currentItem?.localIdentifier ?? "vault:\(record.id.uuidString)",
+                            vaultRecordID: record.id, sourceAlbumID: session.sourceAlbumID)
+                    } else if let assetID = session.currentAsset?.localIdentifier {
+                        actionError = nil
+                        // Capture playback intent before dismantling the media surface.
+                        media.setPresentationCovered(true)
+                        moveTarget = GalleryViewerMoveTarget(sessionID: session.id, assetID: assetID,
+                            sourceAlbumID: session.sourceAlbumID)
+                    }
+                } label: { Label("Move", systemImage: "arrowshape.turn.up.right") }
+                .disabled(session.currentItem == nil || store.isPerformingOperation || (isVaultItem && vault.isBusy))
+                .accessibilityIdentifier("gallery-viewer-move")
+            }
 
             Button {
                 guard !isRecycling else { return }
-                guard let targetID = displayedAssetID else { return }
                 actionError = nil
+                if let record = session.currentItem?.vaultRecord {
+                    if GalleryVaultRecycleBin.contains(record) {
+                        media.setPresentationCovered(true)
+                        pendingDelete = GalleryViewerDeleteTarget(item: .vault(record.id))
+                    } else {
+                        performVaultRecycle(recordID: record.id)
+                    }
+                    return
+                }
+                guard let targetID = displayedAssetID else { return }
                 if isInRecycleBin {
                     media.setPresentationCovered(true)
-                    pendingDelete = GalleryViewerDeleteTarget(assetID: targetID)
+                    pendingDelete = GalleryViewerDeleteTarget(item: .photos(targetID))
                     return
                 }
                 isRecycling = true
@@ -565,17 +603,17 @@ private struct GalleryViewerPane: View {
                     isRecycling = false
                 }
             } label: {
-                Label(isInRecycleBin ? "Delete Permanently" : "Move to Recycle Bin",
-                    systemImage: isInRecycleBin ? "trash.slash" : "trash")
+                Label(isPermanentDelete ? "Delete Permanently" : "Move to Recycle Bin",
+                    systemImage: isPermanentDelete ? "trash.slash" : "trash")
                     .opacity(isRecycling ? 0 : 1)
                     .overlay {
                         if isRecycling { ProgressView().controlSize(.small).accessibilityHidden(true) }
                     }
             }
-            .disabled(session.currentAsset == nil || store.isPerformingOperation || isRecycling)
-            .accessibilityLabel(isRecycling ? "Moving to Recycle Bin" : (isInRecycleBin ? "Delete Permanently" : "Move to Recycle Bin"))
+            .disabled(session.currentItem == nil || store.isPerformingOperation || isRecycling || (isVaultItem && vault.isBusy))
+            .accessibilityLabel(isRecycling ? "Moving to Recycle Bin" : (isPermanentDelete ? "Delete Permanently" : "Move to Recycle Bin"))
             .accessibilityIdentifier("gallery-viewer-recycle")
-            .accessibilityHint(isInRecycleBin ? "Permanently deletes this item from Photos after confirmation." : "Moves this item to the Recycle Bin album.")
+            .accessibilityHint(isPermanentDelete ? "Permanently deletes this item after confirmation." : "Moves this item to the Recycle Bin.")
 
             Button {
                 actionError = nil
@@ -596,6 +634,12 @@ private struct GalleryViewerPane: View {
         GalleryRecycleBin.isRecycleBinTitle(session.albumTitle)
     }
 
+    private var isVaultItem: Bool { session.currentItem?.vaultRecord != nil }
+    private var isVaultItemInRecycleBin: Bool {
+        session.currentItem?.vaultRecord.map(GalleryVaultRecycleBin.contains) ?? false
+    }
+    private var isPermanentDelete: Bool { isVaultItem ? isVaultItemInRecycleBin : isInRecycleBin }
+
     private func performPermanentDelete(assetID: String) {
         isDeletingFromPhotos = true
         media.setPresentationCovered(true)
@@ -607,22 +651,63 @@ private struct GalleryViewerPane: View {
             media.setPresentationCovered(moveTarget != nil)
         }
     }
+
+    private func performPermanentVaultDelete(recordID: UUID) {
+        isDeletingFromPhotos = true
+        media.setPresentationCovered(true)
+        Task {
+            do { try await vault.delete(recordID: recordID) }
+            catch { actionError = error.localizedDescription }
+            isDeletingFromPhotos = false
+            pendingDelete = nil
+            media.setPresentationCovered(moveTarget != nil)
+        }
+    }
+
+    private func performVaultRecycle(recordID: UUID) {
+        isRecycling = true
+        Task {
+            do { try await vault.recycle(recordID: recordID) }
+            catch { actionError = error.localizedDescription }
+            isRecycling = false
+        }
+    }
+
+    private func performVaultPutBack(recordID: UUID) {
+        Task {
+            do { try await vault.putBack(recordID: recordID) }
+            catch { actionError = error.localizedDescription }
+        }
+    }
 }
 
 private struct GalleryViewerMoveTarget: Identifiable {
     let sessionID: UUID
     let assetID: String
+    var vaultRecordID: UUID? = nil
+    var sourceAlbumID: String? = nil
     var id: String { "\(sessionID.uuidString):\(assetID)" }
 }
 
 private struct GalleryViewerDeleteTarget: Identifiable {
-    let assetID: String
-    var id: String { assetID }
+    enum Item {
+        case photos(String)
+        case vault(UUID)
+    }
+    let item: Item
+    var id: String {
+        switch item {
+        case let .photos(id): id
+        case let .vault(id): "vault:\(id.uuidString)"
+        }
+    }
 }
 
 private struct GalleryViewerMoveSheet: View {
     let sessionID: UUID
     let assetID: String
+    let vaultRecordID: UUID?
+    let sourceAlbumID: String?
     let moveToVault: (GalleryVaultTransferRequest) -> Void
     @ObservedObject private var store = GalleryViewerStore.shared
     @ObservedObject private var albumEmptiness = GalleryVirtualLibraryIndex.shared
@@ -637,6 +722,9 @@ private struct GalleryViewerMoveSheet: View {
     private var availableAlbums: [GalleryAlbum] {
         store.albums.filter { vault.isUnlocked || $0.visibleWithLockedVault(emptyAlbumIDs: albumEmptiness.emptyAlbumIDs) }
     }
+
+    private var isMovingVaultItem: Bool { vaultRecordID != nil }
+    private var showingVaultDestinations: Bool { isMovingVaultItem || vaultAlbums }
 
     private var destinations: [GalleryAlbum] {
         let recentIDs = Set(query.isEmpty ? recentDestinations.map(\.id) : [])
@@ -657,22 +745,24 @@ private struct GalleryViewerMoveSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                GalleryVaultAlbumsToggle(isOn: $vaultAlbums)
-                Section("Create an album") {
+                if !isMovingVaultItem { GalleryVaultAlbumsToggle(isOn: $vaultAlbums) }
+                Section(isMovingVaultItem ? "Create a Private Vault album" : "Create an album") {
                     TextField("Album name", text: $newAlbumName)
                     Button("Create and Move") {
                         let name = newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if vaultAlbums {
+                        if showingVaultDestinations {
                             chooseVaultAlbum(vaultDestinations.first { $0.title == name }
                                 ?? GalleryVaultAlbum(id: "vault-album:" + UUID().uuidString, title: name, position: nil))
                         } else {
                             performMove { try await store.move(sessionID, toNewAlbumNamed: name, expectedAssetID: assetID) }
                         }
                     }
+                    .accessibilityIdentifier("gallery-viewer-create-vault-album")
                     .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPerformingOperation
-                        || (vaultAlbums && GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines))))
+                        || (showingVaultDestinations && vault.isBusy)
+                        || (showingVaultDestinations && GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines))))
                 }
-                if !vaultAlbums, query.isEmpty, !recentDestinations.isEmpty {
+                if !showingVaultDestinations, query.isEmpty, !recentDestinations.isEmpty {
                     Section("Recent destinations") {
                         ForEach(recentDestinations) { album in
                             Button(album.title) {
@@ -683,12 +773,17 @@ private struct GalleryViewerMoveSheet: View {
                     }
                 }
                 Section("Move to album") {
-                    if vaultAlbums && vault.isUnlocked {
-                        ForEach(vaultDestinations.filter { query.isEmpty || $0.title.localizedStandardContains(query) }, id: \.id) { album in
-                            Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
-                                .accessibilityIdentifier("gallery-viewer-move-vault-destination-" + album.id)
+                    if showingVaultDestinations {
+                        if vault.isUnlocked {
+                            ForEach(vaultDestinations.filter { query.isEmpty || $0.title.localizedStandardContains(query) }, id: \.id) { album in
+                                Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
+                                    .accessibilityIdentifier("gallery-viewer-move-vault-destination-" + album.id)
+                                    .disabled(vault.isBusy)
+                            }
+                            if vaultDestinations.isEmpty { Text("Create a Private Vault album above.") }
+                        } else {
+                            Text("Unlock Private Vault to choose a destination.")
                         }
-                        if vaultDestinations.isEmpty { Text("Create a Private Vault album above.") }
                     } else { ForEach(destinations) { album in
                         Button(album.title) {
                             performMove { try await store.move(sessionID, to: album, expectedAssetID: assetID) }
@@ -697,7 +792,7 @@ private struct GalleryViewerMoveSheet: View {
                     }
                 }
                 }
-                if !vaultAlbums { Section("Current album") {
+                if !showingVaultDestinations { Section("Current album") {
                     Button("Remove from Album", systemImage: "minus.circle") {
                         performMove {
                             try await store.removeFromSourceAlbum(sessionID: sessionID, expectedAssetID: assetID)
@@ -730,6 +825,11 @@ private struct GalleryViewerMoveSheet: View {
     }
 
     private func chooseVaultAlbum(_ album: GalleryVaultAlbum) {
+        if let vaultRecordID {
+            guard vault.isUnlocked else { return }
+            performMove { try await vault.move(recordID: vaultRecordID, from: sourceAlbumID, to: album) }
+            return
+        }
         guard vault.isUnlocked, let session = store.session(sessionID),
               let asset = session.currentAsset, asset.localIdentifier == assetID else { return }
         moveToVault(.items([asset], destination: album, sourceAlbumID: session.sourceAlbumID))
