@@ -297,13 +297,12 @@ private struct GalleryViewerPane: View {
     let duplicate: () -> Void
     @ObservedObject private var store = GalleryViewerStore.shared
     @ObservedObject private var vault = GalleryVaultService.shared
+    @ObservedObject private var deleteQueue = GalleryDeleteQueue.shared
     @State private var media = GalleryViewerMedia()
     @State private var spatialEnabled = true
     @State private var actionError: String?
     @StateObject private var sharing = GalleryShareController()
     @State private var pendingDelete: GalleryViewerDeleteTarget?
-    @State private var isDeletingFromPhotos = false
-    @State private var isRecycling = false
     @State private var loadedKey: GalleryViewerLoadKey?
     @AppStorage(GalleryViewerPreferences.prefetchWindowKey)
     private var prefetchWindow = GalleryViewerPreferences.defaultPrefetchWindow
@@ -395,10 +394,18 @@ private struct GalleryViewerPane: View {
             } details: {
                 VStack(alignment: .leading, spacing: 4) {
                     viewerDetails
-                    if store.pendingPhotosSessionID == session.id {
-                        Text("Photos hasn’t responded yet. This operation is still pending.")
+                    if deleteQueue.pendingCount > 0 {
+                        Text("\(deleteQueue.pendingCount) pending")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("gallery-viewer-delete-pending-count")
+                    }
+                    if deleteQueue.photosUnresponsive || store.pendingPhotosSessionID == session.id {
+                        Text("Photos hasn’t responded yet. The operation remains pending.")
                             .font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("gallery-viewer-photos-pending")
+                    }
+                    if let errorMessage = deleteQueue.errorMessage {
+                        Text(errorMessage).font(.caption).foregroundStyle(.red).lineLimit(2)
                     } else if let actionError {
                         Text(actionError).font(.caption).foregroundStyle(.red).lineLimit(2)
                     } else if let message = media.status {
@@ -431,7 +438,7 @@ private struct GalleryViewerPane: View {
         .onChange(of: loopVideos, initial: true) { _, enabled in
             media.setVideoLooping(enabled)
         }
-        .onChange(of: moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos || vaultCovered, initial: true) { _, covered in
+        .onChange(of: moveTarget != nil || pendingDelete != nil || vaultCovered, initial: true) { _, covered in
             media.setPresentationCovered(covered)
         }
         .onChange(of: vault.isUnlocked) { _, unlocked in
@@ -453,18 +460,21 @@ private struct GalleryViewerPane: View {
         }
         .alert(item: $pendingDelete) { target in
             switch target.item {
-            case let .photos(assetID):
+            case let .photos(asset):
                 return Alert(title: Text("Delete permanently from Photos?"),
                     message: Text("This item will be removed from the Photos library and cannot be recovered from the Recycle Bin."),
                     primaryButton: .destructive(Text("Delete Permanently")) {
-                        performPermanentDelete(assetID: assetID)
+                        deleteQueue.enqueuePermanentPhotosDelete(asset: asset,
+                            sourceAlbumID: target.sourceAlbumID, sessionID: target.sessionID)
+                        pendingDelete = nil
                     },
                     secondaryButton: .cancel())
             case let .vault(recordID):
                 return Alert(title: Text("Delete permanently from Private Vault Recycle Bin?"),
                     message: Text("This item will be permanently deleted and cannot be undone."),
                     primaryButton: .destructive(Text("Delete Permanently")) {
-                        performPermanentVaultDelete(recordID: recordID)
+                        deleteQueue.enqueuePermanentVaultDelete(recordID: recordID, sessionID: target.sessionID)
+                        pendingDelete = nil
                     },
                     secondaryButton: .cancel())
             }
@@ -515,7 +525,6 @@ private struct GalleryViewerPane: View {
                                 moreSessionID = nil
                                 performVaultPutBack(recordID: record.id)
                             }
-                            .disabled(vault.isBusy)
                         }
                         Button("Restore to Photos", systemImage: "lock.open") {
                             moreSessionID = nil
@@ -574,11 +583,11 @@ private struct GalleryViewerPane: View {
 
     @ViewBuilder
     private func mediaStage(height: CGFloat) -> some View {
-        if moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos || vaultCovered {
+        if moveTarget != nil || pendingDelete != nil || vaultCovered {
             // Only More may retain flat context; privacy and mutation covers always stay blank.
             if GalleryMorePreviewPolicy.canShow(sessionID: session.id, moreSessionID: moreSessionID,
                 previewItemKey: media.menuPreviewKey, currentItemKey: session.currentItem?.cacheKey,
-                privacyCovered: privacyCovered || moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos),
+                privacyCovered: privacyCovered || moveTarget != nil || pendingDelete != nil),
                let preview = media.menuPreview {
                 GalleryViewerMenuPreview(image: preview)
             } else { Color.clear }
@@ -617,8 +626,6 @@ private struct GalleryViewerPane: View {
     }
 
     private var controls: some View {
-        // Bind a tap to the displayed photo without a fresh Photos lookup on press.
-        let displayedAssetID = session.currentItem?.localIdentifier
         return GalleryViewerControlBar(presentsBackdrop: false) {
             Button {
                 actionError = nil
@@ -683,39 +690,30 @@ private struct GalleryViewerPane: View {
             }
 
             Button {
-                guard !isRecycling else { return }
                 actionError = nil
                 if let record = session.currentItem?.vaultRecord {
                     if GalleryVaultRecycleBin.contains(record) {
                         media.setPresentationCovered(true)
-                        pendingDelete = GalleryViewerDeleteTarget(item: .vault(record.id))
+                        pendingDelete = GalleryViewerDeleteTarget(item: .vault(record.id), sessionID: session.id)
                     } else {
-                        performVaultRecycle(recordID: record.id)
+                        deleteQueue.enqueueVaultRecycle(recordID: record.id, sessionID: session.id)
                     }
                     return
                 }
-                guard let targetID = displayedAssetID else { return }
+                guard let item = session.currentItem, let asset = item.photosAsset else { return }
                 if isInRecycleBin {
                     media.setPresentationCovered(true)
-                    pendingDelete = GalleryViewerDeleteTarget(item: .photos(targetID))
+                    pendingDelete = GalleryViewerDeleteTarget(item: .photos(asset),
+                        sessionID: session.id, sourceAlbumID: session.albumID)
                     return
                 }
-                isRecycling = true
-                Task {
-                    do { try await store.recycle(session.id, expectedAssetID: targetID) }
-                    catch { actionError = error.localizedDescription }
-                    isRecycling = false
-                }
+                deleteQueue.enqueueRecycle(item: item, sourceAlbumID: session.sourceAlbumID, sessionID: session.id)
             } label: {
                 Label(isPermanentDelete ? "Delete Permanently" : "Move to Recycle Bin",
                     systemImage: isPermanentDelete ? "trash.slash" : "trash")
-                    .opacity(isRecycling ? 0 : 1)
-                    .overlay {
-                        if isRecycling { ProgressView().controlSize(.small).accessibilityHidden(true) }
-                    }
             }
-            .disabled(session.currentItem == nil || store.isPerformingOperation || isRecycling || (isVaultItem && vault.isBusy))
-            .accessibilityLabel(isRecycling ? "Moving to Recycle Bin" : (isPermanentDelete ? "Delete Permanently" : "Move to Recycle Bin"))
+            .disabled(session.currentItem == nil)
+            .accessibilityLabel(isPermanentDelete ? "Delete Permanently" : "Move to Recycle Bin")
             .accessibilityIdentifier("gallery-viewer-recycle")
             .accessibilityHint(isPermanentDelete ? "Permanently deletes this item after confirmation." : "Moves this item to the Recycle Bin.")
 
@@ -725,7 +723,7 @@ private struct GalleryViewerPane: View {
             } label: {
                 Label("Next", systemImage: "chevron.right")
             }
-            .disabled(!session.canGoNext)
+            .disabled(session.currentItem == nil)
             .accessibilityIdentifier("gallery-viewer-next")
         }
 
@@ -741,44 +739,8 @@ private struct GalleryViewerPane: View {
     }
     private var isPermanentDelete: Bool { isVaultItem ? isVaultItemInRecycleBin : isInRecycleBin }
 
-    private func performPermanentDelete(assetID: String) {
-        isDeletingFromPhotos = true
-        media.setPresentationCovered(true)
-        Task {
-            do { try await store.recycle(session.id, expectedAssetID: assetID) }
-            catch { actionError = error.localizedDescription }
-            isDeletingFromPhotos = false
-            pendingDelete = nil
-            media.setPresentationCovered(moveTarget != nil)
-        }
-    }
-
-    private func performPermanentVaultDelete(recordID: UUID) {
-        isDeletingFromPhotos = true
-        media.setPresentationCovered(true)
-        Task {
-            do { try await vault.delete(recordID: recordID) }
-            catch { actionError = error.localizedDescription }
-            isDeletingFromPhotos = false
-            pendingDelete = nil
-            media.setPresentationCovered(moveTarget != nil)
-        }
-    }
-
-    private func performVaultRecycle(recordID: UUID) {
-        isRecycling = true
-        Task {
-            do { try await vault.recycle(recordID: recordID) }
-            catch { actionError = error.localizedDescription }
-            isRecycling = false
-        }
-    }
-
     private func performVaultPutBack(recordID: UUID) {
-        Task {
-            do { try await vault.putBack(recordID: recordID) }
-            catch { actionError = error.localizedDescription }
-        }
+        deleteQueue.enqueueVaultPutBack(recordID: recordID, sessionID: session.id)
     }
 }
 
@@ -792,13 +754,15 @@ private struct GalleryViewerMoveTarget: Identifiable {
 
 private struct GalleryViewerDeleteTarget: Identifiable {
     enum Item {
-        case photos(String)
+        case photos(PHAsset)
         case vault(UUID)
     }
     let item: Item
+    let sessionID: UUID
+    var sourceAlbumID: String? = nil
     var id: String {
         switch item {
-        case let .photos(id): id
+        case let .photos(asset): asset.localIdentifier
         case let .vault(id): "vault:\(id.uuidString)"
         }
     }

@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		ECC7820D02774750B2C74504 /* GalleryQueuedPhotoDeletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECC7820D02774750B2C74503 /* GalleryQueuedPhotoDeletion.swift */; };
+		ECC7820D02774750B2C74502 /* GalleryDeleteQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECC7820D02774750B2C74501 /* GalleryDeleteQueue.swift */; };
 		0749F352CC7FC1C28FCA9416 /* GalleryViewerWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0614148535E81D8E23B48FDB /* GalleryViewerWindows.swift */; };
 		1609E548F24D03DE6DE5BC81 /* GalleryCinemaDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = F51001D77F49DBBC9CABD947 /* GalleryCinemaDesign.swift */; };
 		19C3E9CDCF1B1DBB5BECB35A /* GalleryAlbumSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FE38F44101D7C25A7551345 /* GalleryAlbumSearch.swift */; };
@@ -51,6 +53,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		ECC7820D02774750B2C74503 /* GalleryQueuedPhotoDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryQueuedPhotoDeletion.swift; sourceTree = "<group>"; };
+		ECC7820D02774750B2C74501 /* GalleryDeleteQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryDeleteQueue.swift; sourceTree = "<group>"; };
 		031BC38E416CEA68806A9A07 /* GalleryLightShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = GalleryLightShaders.metal; sourceTree = "<group>"; };
 		0614148535E81D8E23B48FDB /* GalleryViewerWindows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerWindows.swift; sourceTree = "<group>"; };
 		0724E220817D816AA86AD6F0 /* SimpleVisionGallery.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SimpleVisionGallery.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -118,6 +122,8 @@
 				6C1D395DA5886CA943473854 /* GalleryViewerMedia.swift */,
 				0EAC331A25232048198DD530 /* GalleryViewerPreferences.swift */,
 				8B060BF74FAB224A9E915D1E /* GalleryViewerStore.swift */,
+				ECC7820D02774750B2C74503 /* GalleryQueuedPhotoDeletion.swift */,
+				ECC7820D02774750B2C74501 /* GalleryDeleteQueue.swift */,
 				4F35B5FCA3A5755AD193429D /* GalleryViewerView.swift */,
 				0614148535E81D8E23B48FDB /* GalleryViewerWindows.swift */,
 				3751DEA2F2365B048ADFA94C /* GalleryVirtualLibraryIndex.swift */,
@@ -281,6 +287,8 @@
 				6F146309645D245DDC8F53A3 /* GalleryViewerMedia.swift in Sources */,
 				2C40B779A4DF327D41222D60 /* GalleryViewerPreferences.swift in Sources */,
 				2440D9467FDC752B5F2DD293 /* GalleryViewerStore.swift in Sources */,
+				ECC7820D02774750B2C74504 /* GalleryQueuedPhotoDeletion.swift in Sources */,
+				ECC7820D02774750B2C74502 /* GalleryDeleteQueue.swift in Sources */,
 				BCC4F822F88FD5B18AAAF432 /* GalleryViewerView.swift in Sources */,
 				0749F352CC7FC1C28FCA9416 /* GalleryViewerWindows.swift in Sources */,
 				AD5FD2BE568C9485A26F15AB /* GalleryVirtualLibraryIndex.swift in Sources */,
