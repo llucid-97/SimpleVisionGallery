@@ -495,10 +495,11 @@ private struct GalleryViewerPane: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if let asset = session.currentAsset {
                         Button("Move to Private Vault", systemImage: "lock") {
+                            guard !store.isPerformingOperation, !vault.isBusy else { return }
                             moreSessionID = nil
                             vaultTransfer = .items([asset])
                         }
-                        .disabled(vault.isBusy)
+                        .disabled(store.isPerformingOperation || vault.isBusy)
                     }
                     if let record = session.currentItem?.vaultRecord {
                         if GalleryVaultRecycleBin.contains(record) {
