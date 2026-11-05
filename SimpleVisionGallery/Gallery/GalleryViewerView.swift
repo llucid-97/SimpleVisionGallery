@@ -397,7 +397,11 @@ private struct GalleryViewerPane: View {
             // The window height budget includes both insets so media keeps its room.
             .padding(.vertical, GalleryViewerLayout.mediaVerticalPadding)
 
-            if let actionError {
+            if store.pendingPhotosSessionID == session.id {
+                Text("Photos hasn’t responded yet. This operation is still pending.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("gallery-viewer-photos-pending")
+            } else if let actionError {
                 Text(actionError).font(.caption).foregroundStyle(.red).lineLimit(2)
             } else if let message = media.status {
                 Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -809,7 +813,17 @@ private struct GalleryViewerMoveSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
-            .overlay { if store.isPerformingOperation { ProgressView("Moving…").padding(24).glassBackgroundEffect() } }
+            .overlay {
+                if store.isPerformingOperation {
+                    VStack(spacing: 12) {
+                        ProgressView("Moving…")
+                        if store.pendingPhotosSessionID == sessionID {
+                            Text("Photos hasn’t responded yet. This operation is still pending.")
+                                .accessibilityIdentifier("gallery-viewer-photos-pending")
+                        }
+                    }.padding(24).glassBackgroundEffect()
+                }
+            }
         }
         .frame(width: 500, height: 550)
         .task { await store.refreshAlbums() }
