@@ -1,50 +1,150 @@
 import SwiftUI
 
-/// A calm, dark gallery treatment built around large album artwork and a quiet navigation rail.
+/// A softly lit viewing room: photographs lead, with a warm key and cool fill on the chrome.
 struct GalleryCinemaDesign: View {
     let context: GalleryDesignContext
+    var photosUseOrnaments = true
+    #if DEBUG
+    var startsAtBottom = false
+    #endif
     @ObservedObject private var vault = GalleryVaultService.shared
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.galleryLightReduceMotion) private var previewReduceMotion
+    private var reduceMotion: Bool { systemReduceMotion || previewReduceMotion }
+    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
+    @Environment(\.galleryLightReduceTransparency) private var previewReduceTransparency
+    private var reduceTransparency: Bool { systemReduceTransparency || previewReduceTransparency }
     @AppStorage("gallery.sidebar.expanded") private var sidebarExpanded = true
     @State private var albumFrames: [String: CGRect] = [:]
     @GestureState private var reorderTranslation = CGSize.zero
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(spacing: 0) {
-                navigationRail
-                Rectangle()
-                    .fill(CinemaPalette.divider)
-                    .frame(width: 1)
-                    .padding(.vertical, 24)
-
-                Group {
-                    if context.hasOpenAlbum {
-                        albumRoom
-                    } else {
-                        albumLobby
+            Group {
+                if photosUseOrnaments && (!context.hasOpenAlbum || context.manager.librarySection == .photos)
+                    && geometry.size.width >= 1040 && !dynamicTypeSize.isAccessibilitySize {
+                    ornamentLibrary(width: geometry.size.width)
+                } else {
+                HStack(spacing: 0) {
+                    navigationRail
+                    Group {
+                        if context.hasOpenAlbum { albumRoom }
+                        else { albumLobby(width: geometry.size.width) }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, geometry.size.width < 900 ? 22 : 36)
+                    .padding(.vertical, 28)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, geometry.size.width < 900 ? 22 : 36)
-                .padding(.vertical, 24)
+                }
             }
             .frame(minWidth: 840, minHeight: 620)
-            .background(CinemaPalette.background)
+            .modifier(CinemaCanvasBackdrop(isAlbumLobby: !context.hasOpenAlbum, reduceTransparency: reduceTransparency))
             .foregroundStyle(CinemaPalette.primaryText)
         }
         .preferredColorScheme(.dark)
     }
 
-    private var navigationRail: some View {
-        VStack(spacing: 12) {
-            GalleryHoverIcon(symbol: "line.3.horizontal", title: sidebarExpanded ? "Collapse sidebar" : "Expand sidebar", identifier: "gallery-sidebar-toggle") {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { sidebarExpanded.toggle() }
+    private func ornamentLibrary(width: CGFloat) -> some View {
+        Group {
+            if context.hasOpenAlbum {
+                ScrollView {
+                    context.mediaContent.frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .scrollIndicators(.visible)
+            } else {
+                albumLobby(width: width, showsHeader: false)
+                    .padding(8)
             }
-            .foregroundStyle(CinemaPalette.secondaryText)
-            .padding(.bottom, 8)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 28))
+        .ornament(visibility: .visible,
+            attachmentAnchor: .scene(UnitPoint3D(x: 0, y: 0.5, z: 0.5)), contentAlignment: .trailing) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Gallery", systemImage: "square.stack.3d.up")
+                    .font(.headline).foregroundStyle(CinemaPalette.accent)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                ornamentNavigation("Albums", symbol: "square.grid.2x2", selected: !context.hasOpenAlbum) { context.selectSection(.albums) }
+                ornamentNavigation("Photos", symbol: "photo.on.rectangle", selected: context.hasOpenAlbum) { context.selectSection(.photos) }
+                ornamentNavigation("Recycle Bin", symbol: "trash", selected: false) { context.selectSection(.recycleBin) }
+                Divider().padding(.horizontal, 12)
+                ornamentNavigation("Private Vault", symbol: "lock", selected: false, action: context.showVault)
+                ornamentNavigation("Settings", symbol: "gearshape", selected: false, action: context.showSettings)
+            }
+            .padding(12).frame(width: 190)
+            .galleryOrnamentBackdrop(cornerRadius: 24)
+            .padding(.trailing, 20)
+        }
+        .ornament(visibility: .visible,
+            attachmentAnchor: .scene(UnitPoint3D(x: 0.5, y: 0, z: 0.5)), contentAlignment: .bottom) {
+            HStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(context.hasOpenAlbum ? "Photos" : "Albums").font(.title2.weight(.semibold))
+                    if context.hasOpenAlbum {
+                        Text("\(context.manager.totalAssetCount) items").font(.callout).foregroundStyle(CinemaPalette.secondaryText)
+                    } else { collectionCount }
+                }
+                context.ornamentToolbar
+            }
+            .padding(12).fixedSize(horizontal: true, vertical: false)
+            .galleryOrnamentBackdrop(cornerRadius: 24)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.bottom, 20)
+        }
+    }
+
+    private func ornamentNavigation(_ title: String, symbol: String, selected: Bool,
+        action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol).frame(width: 24)
+                Text(title).font(.body.weight(selected ? .semibold : .regular))
+                    .lineLimit(1).minimumScaleFactor(0.9)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12).frame(minHeight: 60)
+            .background {
+                if selected { GalleryLightSurface(role: .control, cornerRadius: 16) }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(selected ? CinemaPalette.primaryText : CinemaPalette.secondaryText)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .hoverEffect(.highlight)
+    }
+
+    private var initialScrollAnchor: UnitPoint {
+        #if DEBUG
+        startsAtBottom ? .bottom : .top
+        #else
+        .top
+        #endif
+    }
+
+    private var navigationRail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { sidebarExpanded.toggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 24, weight: .light))
+                        .foregroundStyle(CinemaPalette.accent)
+                    if sidebarExpanded {
+                        Text("Gallery").font(.system(size: 23, weight: .semibold, design: .rounded))
+                        Image(systemName: "sidebar.left").font(.system(size: 15))
+                            .foregroundStyle(CinemaPalette.secondaryText)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 60, alignment: sidebarExpanded ? .leading : .center)
+                .padding(.horizontal, sidebarExpanded ? 12 : 0)
+            }
+            .buttonStyle(.plain)
+            .galleryHoverLabel(sidebarExpanded ? "Collapse sidebar" : "Expand sidebar")
+            .accessibilityIdentifier("gallery-sidebar-toggle")
+            .padding(.bottom, 28)
 
             sectionButton(.albums, symbol: "square.grid.2x2.fill", title: "Albums")
             sectionButton(.photos, symbol: "photo.on.rectangle", title: "Photos")
@@ -75,9 +175,10 @@ struct GalleryCinemaDesign: View {
         }
         .padding(.horizontal, sidebarExpanded ? 16 : 14)
         .padding(.vertical, 18)
-        .frame(width: sidebarExpanded ? 180 : 90)
+        .frame(width: sidebarExpanded ? 212 : 90)
         .frame(maxHeight: .infinity)
-        .background(CinemaPalette.rail)
+        .background { GalleryLightSurface(role: .raised, cornerRadius: 24).opacity(0.50) }
+        .padding(12)
     }
 
     private func sectionButton(_ section: GalleryLibrarySection, symbol: String, title: String) -> some View {
@@ -102,29 +203,34 @@ struct GalleryCinemaDesign: View {
                 .font(.system(size: 18, weight: selected ? .semibold : .regular))
                 .frame(width: 28)
             if sidebarExpanded {
-                Text(title).font(.callout.weight(selected ? .semibold : .regular)).lineLimit(2)
+                Text(title).font(.body.weight(selected ? .semibold : .regular)).lineLimit(2)
             }
         }
         .padding(.horizontal, sidebarExpanded ? 20 : 0)
         .frame(maxWidth: .infinity, minHeight: 60, alignment: sidebarExpanded ? .leading : .center)
-        .background(selected ? CinemaPalette.railSelected : .clear, in: RoundedRectangle(cornerRadius: 15))
-        .overlay(alignment: .leading) {
+        .background {
             if selected {
-                Capsule().fill(CinemaPalette.accent).frame(width: 3, height: 22).padding(.leading, 10)
+                GalleryLightSurface(role: .control, cornerRadius: 15)
             }
         }
         .contentShape([.interaction, .hoverEffect], RoundedRectangle(cornerRadius: 15))
     }
 
-    private var albumLobby: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 8) {
+    private func albumLobby(width: CGFloat, showsHeader: Bool = true) -> some View {
+        VStack(alignment: .leading, spacing: 22) {
+            if showsHeader {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Albums").font(.system(size: 32, weight: .semibold))
+                Spacer()
+                collectionCount
+            }
+            HStack(spacing: 12) {
                 GalleryDesignSearchField(query: context.query)
                     .frame(maxWidth: .infinity)
                 context.actions
                     .fixedSize(horizontal: true, vertical: false)
             }
-            collectionCount
+            }
 
             if context.manager.isLoadingAlbums && context.albums.isEmpty {
                 loadingState
@@ -133,9 +239,10 @@ struct GalleryCinemaDesign: View {
             } else {
                 ScrollView {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 400 : 240, maximum: 400), spacing: 22, alignment: .top)],
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
+                            count: dynamicTypeSize.isAccessibilitySize ? 1 : (width < 1100 ? 2 : 3)),
                         alignment: .leading,
-                        spacing: 24
+                        spacing: 8
                     ) {
                         ForEach(context.albums) { album in
                             albumCard(album)
@@ -152,9 +259,8 @@ struct GalleryCinemaDesign: View {
     }
 
     private var collectionCount: some View {
-        Text("\(context.albums.count) COLLECTION\(context.albums.count == 1 ? "" : "S")")
-            .font(.caption.weight(.medium))
-            .tracking(1.3)
+        Text("\(context.albums.count) collection\(context.albums.count == 1 ? "" : "s")")
+            .font(.callout)
             .foregroundStyle(CinemaPalette.secondaryText)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
@@ -162,6 +268,12 @@ struct GalleryCinemaDesign: View {
 
     private var albumRoom: some View {
         VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(context.manager.selectedAlbum?.title ?? "Photos").font(.system(size: 32, weight: .semibold))
+                Spacer()
+                Text("\(context.manager.totalAssetCount) items")
+                    .font(.callout).foregroundStyle(CinemaPalette.secondaryText)
+            }
             context.albumToolbar
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -171,6 +283,7 @@ struct GalleryCinemaDesign: View {
                     .padding(.bottom, 12)
             }
             .scrollIndicators(.visible)
+            .defaultScrollAnchor(initialScrollAnchor, for: .initialOffset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -212,16 +325,16 @@ struct GalleryCinemaDesign: View {
 }
 
 private enum CinemaPalette {
-    static let background = Color(red: 11 / 255, green: 12 / 255, blue: 18 / 255)
+    static let background = Color(red: 0.055, green: 0.064, blue: 0.07)
     static let rail = Color(red: 18 / 255, green: 19 / 255, blue: 27 / 255)
     static let railSelected = Color(red: 34 / 255, green: 31 / 255, blue: 39 / 255)
     static let card = Color(red: 24 / 255, green: 25 / 255, blue: 34 / 255)
     static let cardLine = Color.white.opacity(0.12)
     static let divider = Color.white.opacity(0.08)
     static let primaryText = Color(red: 248 / 255, green: 246 / 255, blue: 242 / 255)
-    static let secondaryText = Color(red: 195 / 255, green: 192 / 255, blue: 204 / 255)
+    static let secondaryText = Color(red: 0.79, green: 0.81, blue: 0.82)
     static var accent: Color { GalleryAppearance.accent }
-    static let lavender = Color(red: 205 / 255, green: 190 / 255, blue: 255 / 255)
+    static let lavender = Color(red: 0.76, green: 0.84, blue: 0.86)
 }
 
 private extension GalleryCinemaDesign {
@@ -231,44 +344,43 @@ private extension GalleryCinemaDesign {
             Button {
                 context.openAlbum(album)
             } label: {
-                VStack(alignment: .leading, spacing: 11) {
-                    ZStack(alignment: .topTrailing) {
-                        GeometryReader { geometry in
-                            context.cover(album)
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                                .clipped()
-                        }
-                        .aspectRatio(16 / 10, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-
-                        if isSelected {
-                            Label("Selected", systemImage: "checkmark.circle.fill")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 11)
-                                .padding(.vertical, 8)
-                                .foregroundStyle(CinemaPalette.background)
-                                .background(CinemaPalette.accent, in: Capsule())
-                                .padding(12)
-                        }
+                ZStack(alignment: .bottomLeading) {
+                    GeometryReader { geometry in
+                        context.cover(album)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
                     }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 17, style: .continuous)
-                            .stroke(isSelected ? CinemaPalette.accent : CinemaPalette.cardLine, lineWidth: isSelected ? 2 : 1)
-                    }
+                    .aspectRatio(dynamicTypeSize.isAccessibilitySize ? 16.0 / 9.0 : 1, contentMode: .fit)
 
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(album.title)
                             .font(.headline.weight(.semibold))
-                            .foregroundStyle(CinemaPalette.primaryText)
+                            .foregroundStyle(.white)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
+                        Text(album.assetCount == 1 ? "1 item" : "\(album.assetCount) items")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.92))
                     }
-                    Text(album.assetCount == 1 ? "1 item" : "\(album.assetCount) items")
-                        .font(.caption)
-                        .foregroundStyle(CinemaPalette.secondaryText)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.black.opacity(0.68))
                 }
-                .padding(10)
-                .background(CinemaPalette.card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    if isSelected {
+                        Label("Selected", systemImage: "checkmark.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 11).padding(.vertical, 8)
+                            .foregroundStyle(CinemaPalette.background)
+                            .background(CinemaPalette.accent, in: Capsule())
+                            .padding(12)
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(isSelected ? CinemaPalette.accent : Color.white.opacity(0.16), lineWidth: isSelected ? 2 : 0.75)
+                }
                 .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             }
             .buttonStyle(CinemaAlbumButtonStyle(reduceMotion: reduceMotion))
@@ -312,13 +424,27 @@ private extension GalleryCinemaDesign {
     }
 }
 
+private struct CinemaCanvasBackdrop: ViewModifier {
+    let isAlbumLobby: Bool
+    let reduceTransparency: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if isAlbumLobby {
+            content.galleryOrnamentBackdrop(cornerRadius: 28)
+        } else {
+            content.background {
+                GalleryLightSurface(role: .canvas, cornerRadius: 28).opacity(reduceTransparency ? 1 : 0.92)
+            }
+        }
+    }
+}
+
 private struct CinemaAlbumButtonStyle: ButtonStyle {
     let reduceMotion: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
-            .brightness(configuration.isPressed ? 0.06 : 0)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: configuration.isPressed)
     }
 }

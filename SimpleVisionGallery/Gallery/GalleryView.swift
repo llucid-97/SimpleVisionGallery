@@ -63,7 +63,7 @@ struct GalleryView: View {
     @State private var vaultMessage: String?
     @State private var vaultAlbumRetryIDs: [UUID] = []
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("gallery.thumbnailSize.v1") private var thumbnailSize = 112.0
+    @AppStorage("gallery.thumbnailSize.v1") private var thumbnailSize = GalleryMediaGridLayout.defaultThumbnailSize
     #if os(visionOS)
         @Environment(\.openWindow) private var openWindow
         @State private var isSelectingMedia = false
@@ -72,6 +72,7 @@ struct GalleryView: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             content
+                .blur(radius: showingMoveSheet || showingSettings || showingVault || albumToRename != nil || albumDeletion != nil ? 9 : 0)
 
             if let toast = manager.toast {
                 GalleryToastBanner(toast: toast)
@@ -170,9 +171,35 @@ struct GalleryView: View {
     @ViewBuilder
     private var content: some View {
         if manager.hasPhotoAccess || vault.isUnlocked {
-            GalleryCinemaDesign(context: designContext)
+            GalleryCinemaDesign(context: designContext, photosUseOrnaments: usesLibraryOrnaments)
         } else {
             classicContent
+        }
+    }
+
+    private var usesLibraryOrnaments: Bool {
+        #if DEBUG
+        !ProcessInfo.processInfo.arguments.contains("-gallery-classic-sidebar")
+        #else
+        true
+        #endif
+    }
+
+    @ViewBuilder private var ornamentMediaToolbar: some View {
+        if let album = manager.selectedAlbum {
+            mediaHeaderRow(album: album, compact: true, showsBackButton: false, searchMaxWidth: 320)
+                .popover(isPresented: $showingThumbnailSize, arrowEdge: .top) {
+                    thumbnailSizePopover.presentationCompactAdaptation(.popover)
+                }
+        } else {
+            HStack(spacing: 12) {
+                GalleryDesignSearchField(query: $albumSearch).frame(width: 300)
+                albumSortMenu.labelStyle(.titleAndIcon)
+                albumSelectionButton.labelStyle(.titleAndIcon)
+                if isSelectingAlbums { albumVisibilityAction }
+                mediaFilterMenu
+                overflowMenu(compact: true)
+            }
         }
     }
 
@@ -181,7 +208,7 @@ struct GalleryView: View {
             manager: manager, albums: filteredDisplayedAlbums, query: $albumSearch,
             isSelectingAlbums: isSelectingAlbums, selectedAlbumIDs: selectedAlbumIDs,
             actions: AnyView(designActions),
-            albumToolbar: AnyView(pageHeader), mediaContent: AnyView(albumDetailView),
+            albumToolbar: AnyView(pageHeader), ornamentToolbar: AnyView(ornamentMediaToolbar), mediaContent: AnyView(albumDetailView),
             emptyContent: AnyView(designEmptyContent),
             cover: { AnyView(GalleryAlbumCover(album: $0, manager: manager)) },
             openAlbum: { album in
@@ -221,7 +248,7 @@ struct GalleryView: View {
     private var designActions: some View {
         HStack(spacing: 16) {
             GalleryVaultSessionButton()
-            albumSortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort albums")
+            albumSortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort")
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 16) {
                     albumSelectionButton
@@ -294,7 +321,6 @@ struct GalleryView: View {
                 }
             }
         }
-        .padding(12)
         .popover(isPresented: $showingThumbnailSize, arrowEdge: .top) {
             thumbnailSizePopover
                 .presentationCompactAdaptation(.popover)
@@ -309,32 +335,17 @@ struct GalleryView: View {
         }
     }
 
-    private func mediaHeaderRow(album: GalleryAlbum, compact: Bool) -> some View {
-        HStack(spacing: 12) {
-            GalleryHoverIcon(symbol: "chevron.left", title: "Albums", identifier: "svt-gallery-back-to-albums") {
-                manager.closeAlbum()
-            }
-            HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search in \(album.title)", text: $mediaSearch)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .accessibilityIdentifier("gallery-media-search")
-                if manager.isIndexingMediaSearch { ProgressView().controlSize(.small) }
-                if !mediaSearch.isEmpty {
-                    GalleryHoverIcon(symbol: "xmark.circle.fill", title: "Clear search") { mediaSearch = "" }
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(minWidth: 160, maxWidth: .infinity, minHeight: 68)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+    private func mediaHeaderRow(album: GalleryAlbum, compact: Bool, showsBackButton: Bool = true, searchMaxWidth: CGFloat? = nil) -> some View {
+        GalleryMediaToolbar(query: $mediaSearch, placeholder: "Search in \(album.title)",
+            isSearching: manager.isIndexingMediaSearch, showsBackButton: showsBackButton && manager.librarySection != .photos,
+            searchMaxWidth: searchMaxWidth, back: { manager.closeAlbum() }) {
             GalleryVaultSessionButton()
-            sortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort")
+            sortMenu.labelStyle(.titleAndIcon).galleryHoverLabel("Sort")
             if !compact {
                 thumbnailSizeButton.labelStyle(.iconOnly).galleryHoverLabel("Thumbnail size")
             }
             #if os(visionOS)
-            mediaSelectionButton.labelStyle(.iconOnly).galleryHoverLabel(isSelectingMedia ? "Cancel selection" : "Select")
+            mediaSelectionButton.labelStyle(.titleAndIcon).galleryHoverLabel(isSelectingMedia ? "Cancel selection" : "Select")
             #endif
             if manager.selectedCount > 0 {
                 moveSelectionButton.labelStyle(.iconOnly).galleryHoverLabel("Move")
@@ -360,8 +371,9 @@ struct GalleryView: View {
                 }
             }.pickerStyle(.inline)
         } label: {
-            Image(systemName: "line.3.horizontal.decrease")
-                .frame(width: 40, height: 40)
+            Label("Filter", systemImage: manager.mediaFilter == .all ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill")
+                .labelStyle(.titleAndIcon)
+                .frame(minHeight: 40)
         }
         .buttonStyle(LensLabSecondaryButtonStyle())
         .galleryHoverLabel("Filter media")
@@ -494,8 +506,7 @@ struct GalleryView: View {
             }
         } label: {
             Label(isSelectingAlbums ? "Cancel" : "Select", systemImage: isSelectingAlbums ? "xmark" : "checkmark.circle")
-                .labelStyle(.iconOnly)
-                .frame(width: 40, height: 40)
+                .frame(minWidth: 40, minHeight: 40)
         }
         .buttonStyle(LensLabSecondaryButtonStyle())
         .disabled(displayedAlbums.isEmpty && !isSelectingAlbums)
@@ -529,12 +540,12 @@ struct GalleryView: View {
                 .accessibilityAddTraits(manager.albumSortMode == mode ? .isSelected : [])
             }
         } label: {
-            Label("Sort albums", systemImage: "arrow.up.arrow.down")
+            Label("Sort", systemImage: "arrow.up.arrow.down")
                 .frame(minHeight: 26)
         }
         .buttonStyle(LensLabSecondaryButtonStyle())
         .accessibilityIdentifier("gallery-album-sort")
-        .help("Sort albums")
+        .help("Sort")
     }
 
     private var sortMenu: some View {
@@ -600,29 +611,7 @@ struct GalleryView: View {
     }
 
     private var thumbnailSizePopover: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Thumbnail Size")
-                    .font(.headline)
-                Spacer()
-                Text("\(Int(thumbnailSize))")
-                    .font(.callout.monospacedDigit())
-            }
-            HStack(spacing: 10) {
-                Image(systemName: "square.grid.3x3")
-                    .accessibilityHidden(true)
-                Slider(value: $thumbnailSize, in: 88...240, step: 8)
-                    .tint(LensLabTheme.cyan)
-                    .accessibilityLabel("Gallery thumbnail size")
-                    .accessibilityValue("\(Int(thumbnailSize)) points")
-                Image(systemName: "square.grid.2x2")
-                    .accessibilityHidden(true)
-            }
-        }
-        .foregroundStyle(LensLabTheme.ink)
-        .padding(20)
-        .frame(width: 320)
-        .background(LensLabTheme.card)
+        GalleryThumbnailSizePopover(thumbnailSize: $thumbnailSize)
     }
 
     #if os(visionOS)
@@ -1182,13 +1171,7 @@ private struct GalleryAssetGrid: View {
     let onVaultDelete: (UUID) -> Void
 
     private var columns: [GridItem] {
-        [
-            GridItem(
-                .adaptive(minimum: thumbnailSize, maximum: thumbnailSize * 1.08),
-                spacing: 8,
-                alignment: .top
-            )
-        ]
+        GalleryMediaGridLayout.columns(thumbnailSize: thumbnailSize)
     }
 
     var body: some View {
@@ -1211,7 +1194,7 @@ private struct GalleryAssetGrid: View {
                     .accessibilityIdentifier("gallery-range-selection-hint")
             }
 
-            LazyVGrid(columns: columns, spacing: 8) {
+            LazyVGrid(columns: columns, spacing: GalleryMediaGridLayout.gap) {
                 ForEach(0..<manager.visibleAssetCount, id: \.self) { index in
                     if let item = manager.mediaItem(at: index) {
                         GalleryAssetCell(
@@ -1613,7 +1596,7 @@ private struct GalleryAlbumSearchField: View {
     }
 }
 
-private struct GalleryRenameAlbumSheet: View {
+struct GalleryRenameAlbumSheet: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var titleFieldIsFocused: Bool
     let album: GalleryAlbum
@@ -1662,7 +1645,7 @@ private struct GalleryRenameAlbumSheet: View {
         }
         .padding(24)
         .frame(width: 460)
-        .background(LensLabTheme.card)
+        .galleryLightBackdrop(cornerRadius: 24)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("gallery-album-rename-sheet")
         .onAppear {
@@ -1674,7 +1657,7 @@ private struct GalleryRenameAlbumSheet: View {
     }
 }
 
-private struct GalleryMoveSheet: View {
+struct GalleryMoveSheet: View {
     @ObservedObject var manager: GalleryManager
     @Binding var isPresented: Bool
     let canMoveToVault: Bool
@@ -1860,7 +1843,7 @@ private struct GalleryMoveSheet: View {
             }
         .padding(18)
         .frame(width: 580, height: 680)
-        .background(LensLabTheme.card)
+        .galleryLightBackdrop(cornerRadius: 24)
         .task(id: vault.isUnlocked && !vault.isBusy) {
             guard vault.isUnlocked, !vault.isBusy else { return }
             let destinations = await vault.albumDestinations()
@@ -1879,7 +1862,7 @@ private struct GalleryMoveSheet: View {
     }
 }
 
-private struct GalleryToastBanner: View {
+struct GalleryToastBanner: View {
     let toast: GalleryToast
 
     var body: some View {
@@ -2313,6 +2296,7 @@ struct GalleryAlbumDeletionSheet: View {
     @State private var error: String?
 
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 18) {
             Text("Delete “\(plan.title)”?").font(.title2)
             if isRecoveryReview {
@@ -2350,7 +2334,12 @@ struct GalleryAlbumDeletionSheet: View {
             if let error { Text(error).foregroundStyle(.red) }
             Button("Cancel") { dismiss() }.buttonStyle(LensLabSecondaryButtonStyle())
         }
-        .padding(24).frame(width: 600)
+        .padding(24)
+        }
+        .scrollIndicators(.visible)
+        .frame(width: 600, height: 720)
+        .foregroundStyle(LensLabTheme.ink)
+        .galleryLightBackdrop(cornerRadius: 24)
         .disabled(vault.isBusy)
         .onDisappear { vault.isReviewingAlbumDeletion = false }
         .onChange(of: vault.isUnlocked) { _, unlocked in

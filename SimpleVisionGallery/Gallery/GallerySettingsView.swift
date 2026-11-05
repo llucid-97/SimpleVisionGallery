@@ -18,7 +18,7 @@ struct GallerySettingsView: View {
             HStack {
                 Label("Gallery Settings", systemImage: "gearshape")
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.64))
+                    .foregroundStyle(LensLabTheme.ink)
 
                 Spacer()
 
@@ -30,43 +30,38 @@ struct GallerySettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Button {
-                        showingAbout = true
-                    } label: {
-                        Label("About Simple Vision Gallery", systemImage: "info.circle")
-                    }
-                    .buttonStyle(LensLabSecondaryButtonStyle())
-                    .accessibilityIdentifier("gallery-open-about")
+                    GallerySettingsSection(title: "Appearance") {
+                        HStack(spacing: 16) {
+                            ColorPicker(
+                                "Accent Color",
+                                selection: Binding(
+                                    get: { GalleryAppearance.color(for: GalleryAppearance.validatedRGB(accentRGB)) },
+                                    set: { accentRGB = GalleryAppearance.rgbValue(for: $0) }
+                                ),
+                                supportsOpacity: false
+                            )
+                            .frame(minHeight: 60)
+                            .accessibilityIdentifier("gallery-accent-color")
 
-                    GallerySettingsSection(title: "Cinema Accent", subtitle: "Choose the color used by Cinema controls.") {
-                        ColorPicker(
-                            "Accent Color",
-                            selection: Binding(
-                                get: { GalleryAppearance.color(for: GalleryAppearance.validatedRGB(accentRGB)) },
-                                set: { accentRGB = GalleryAppearance.rgbValue(for: $0) }
-                            ),
-                            supportsOpacity: false
-                        )
-                        .frame(minHeight: 60)
-                        .accessibilityIdentifier("gallery-accent-color")
-
-                        Button("Reset to Cinema Amber") {
-                            accentRGB = GalleryAppearance.defaultAccentRGB
+                            Button("Reset") {
+                                accentRGB = GalleryAppearance.defaultAccentRGB
+                            }
+                            .buttonStyle(LensLabSecondaryButtonStyle())
+                            .disabled(accentRGB == GalleryAppearance.defaultAccentRGB)
+                            .accessibilityIdentifier("gallery-accent-reset")
                         }
-                        .buttonStyle(LensLabSecondaryButtonStyle())
-                        .disabled(accentRGB == GalleryAppearance.defaultAccentRGB)
-                        .accessibilityIdentifier("gallery-accent-reset")
                     }
 
+                    Divider()
                     #if os(visionOS)
-                    GallerySettingsSection(title: "Slideshow", subtitle: "Prepare upcoming items while you browse.") {
+                    GallerySettingsSection(title: "Slideshow") {
                         Stepper(value: $prefetchWindow, in: GalleryViewerPreferences.prefetchWindowRange) {
                             HStack {
-                                Text("Spatial prefetch window")
+                                Text("Prepare ahead")
                                 Spacer()
-                                Text("\(prefetchWindow) items ahead")
+                                Text("\(prefetchWindow) items")
                                     .monospacedDigit()
-                                    .foregroundStyle(Color.white.opacity(0.64))
+                                    .foregroundStyle(LensLabTheme.mutedInk)
                             }
                         }
                         .accessibilityIdentifier("svt-gallery-spatial-prefetch")
@@ -74,23 +69,26 @@ struct GallerySettingsView: View {
                         Stepper(value: $backwardPrefetchWindow,
                             in: GalleryViewerPreferences.backwardPrefetchWindowRange) {
                             HStack {
-                                Text("Keep previous items")
+                                Text("Keep behind")
                                 Spacer()
-                                Text("\(backwardPrefetchWindow) items behind")
+                                Text("\(backwardPrefetchWindow) items")
                                     .monospacedDigit()
-                                    .foregroundStyle(Color.white.opacity(0.64))
+                                    .foregroundStyle(LensLabTheme.mutedInk)
                             }
                         }
                         .accessibilityIdentifier("svt-gallery-spatial-backward-prefetch")
 
-                        Text("Photos are prepared as spatial scenes; videos are preloaded. Set either window to 0 to turn it off. All slideshow windows share a bounded preparation budget, so more open windows get smaller lookahead buffers.")
-                            .font(.callout)
-                            .foregroundStyle(Color.white.opacity(0.64))
-                            .fixedSize(horizontal: false, vertical: true)
+                        DisclosureGroup("Preparation details") {
+                            Text("Photos are prepared as spatial scenes; videos are preloaded. Set either window to 0 to turn it off. All slideshow windows share a bounded preparation budget, so more open windows get smaller lookahead buffers.")
+                                .font(.callout)
+                                .foregroundStyle(LensLabTheme.mutedInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     #endif
 
-                    GallerySettingsSection(title: "Album Visibility", subtitle: "Choose which albums appear in Gallery.") {
+                    Divider()
+                    GallerySettingsSection(title: "Album Visibility") {
                         Toggle(
                             "Auto-hide empty albums",
                             isOn: Binding(
@@ -101,24 +99,39 @@ struct GallerySettingsView: View {
                         .tint(LensLabTheme.cyan)
                         .accessibilityIdentifier("svt-gallery-auto-hide-empty")
 
-                        Text("While unlocked, empty albums appear in Hidden. Unhide one to keep it visible. Albums with no Photos items are hidden while the vault is locked.")
-                            .font(.callout)
-                            .foregroundStyle(Color.white.opacity(0.64))
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Text("Albums you hide yourself stay hidden when auto-hide is off.")
-                            .font(.callout)
-                            .foregroundStyle(Color.white.opacity(0.64))
-                            .fixedSize(horizontal: false, vertical: true)
+                        DisclosureGroup("Visibility details") {
+                            Text("While unlocked, empty albums appear in Hidden. Unhide one to keep it visible. Albums with no Photos items are hidden while the vault is locked. Albums you hide yourself stay hidden when auto-hide is off.")
+                                .font(.callout)
+                                .foregroundStyle(LensLabTheme.mutedInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 20)
             }
+            .scrollIndicators(.visible)
+            Divider()
+            Button { showingAbout = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "info.circle")
+                    Text("About Simple Vision Gallery")
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 16).frame(minHeight: 52)
+                .galleryLightSurface(role: .control, cornerRadius: 16)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("gallery-open-about")
+            .hoverEffect(.highlight)
         }
         .padding(24)
         .frame(minWidth: 480, idealWidth: 560)
-        .background(LensLabTheme.card)
+        .galleryLightBackdrop(cornerRadius: 24)
         .accessibilityIdentifier("svt-gallery-settings")
+        .blur(radius: showingAbout ? 9 : 0)
         .sheet(isPresented: $showingAbout) { GalleryAboutView() }
     }
 }
@@ -126,24 +139,21 @@ struct GallerySettingsView: View {
 
 private struct GallerySettingsSection<Content: View>: View {
     let title: String
-    let subtitle: String
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.headline)
-                Text(subtitle)
-                    .font(.caption)
-            }
-            .foregroundStyle(Color.white.opacity(0.64))
-            .fixedSize(horizontal: false, vertical: true)
+            Text(title)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(LensLabTheme.ink)
+                .padding(.leading, 12)
+                .accessibilityAddTraits(.isHeader)
+                .fixedSize(horizontal: false, vertical: true)
             content
                 .foregroundStyle(LensLabTheme.ink)
         }
-        .padding(18)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .lensLabCard()
     }
 }

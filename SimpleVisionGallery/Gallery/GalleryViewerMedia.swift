@@ -12,6 +12,9 @@ import UniformTypeIdentifiers
 final class GalleryViewerMedia {
     private(set) var imageEntity: Entity?
     private(set) var fallbackImage: UIImage?
+    private var menuPreviewState = GalleryMenuPreviewState<UIImage>()
+    var menuPreview: UIImage? { menuPreviewState.image }
+    var menuPreviewKey: String? { menuPreviewState.itemKey }
     private(set) var player: AVPlayer?
     private(set) var isSpatialVideo = false
     private(set) var aspectRatio: Double?
@@ -202,6 +205,7 @@ final class GalleryViewerMedia {
                     guard self.generation == token else { return }
                     self.prepared = image
                     self.preparedKey = key
+                    self.menuPreviewState.set(image.menuPreview, for: requestedKey)
                     self.aspectRatio = image.aspectRatio
                     self.spatialAvailable = image.supportsSpatial
                     self.status = spatialEnabled ? image.status : nil
@@ -445,6 +449,7 @@ final class GalleryViewerMedia {
         isSpatialVideo = false
         imageEntity = nil
         fallbackImage = nil
+        menuPreviewState.clear()
         spatialAvailable = false
         isShowingSpatial = false
         isLoading = false
@@ -462,6 +467,20 @@ private final class GalleryPrefetchPriority {
     var foreground = false
 }
 
+/// Reuse the decode already needed by native preparation; never fetch media for a menu.
+enum GalleryMenuPreview {
+    static func make(from image: UIImage) -> UIImage {
+        let scale = min(1, 512 / max(image.size.width, image.size.height))
+        let size = CGSize(width: max(1, floor(image.size.width * scale)), height: max(1, floor(image.size.height * scale)))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.preferredRange = .standard
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+}
+
 private enum GalleryPrefetchedMedia {
     case image(GalleryPreparedImage)
     case video(GalleryPreparedVideo)
@@ -475,6 +494,7 @@ private enum GalleryPrefetchedMedia {
 private struct GalleryPreparedImage {
     var component: ImagePresentationComponent?
     var fallback: UIImage?
+    var menuPreview: UIImage?
     var spatialMode: ImagePresentationComponent.ViewingMode = .mono
     var supportsSpatial = false
     var attemptedSpatial = false
@@ -873,11 +893,14 @@ private final class GallerySceneCache {
             try GalleryDecodedImage(data: data)
         }.value
         try Task.checkCancellation()
-        if let pixelBudget = pixelBudget(), decoded.pixelCost > pixelBudget { throw GalleryMediaError.prefetchBudgetExceeded }
+        let menuPreview = GalleryMenuPreview.make(from: decoded.preview)
+        let menuPreviewCost = menuPreview.cgImage.map { $0.width * $0.height } ?? 0
+        if let pixelBudget = pixelBudget(), decoded.pixelCost + menuPreviewCost > pixelBudget { throw GalleryMediaError.prefetchBudgetExceeded }
         var result = GalleryPreparedImage(
+            menuPreview: menuPreview,
             attemptedSpatial: spatial,
             aspectRatio: Double(decoded.preview.size.width / decoded.preview.size.height),
-            pixelCost: decoded.pixelCost
+            pixelCost: decoded.pixelCost + menuPreviewCost
         )
         #if targetEnvironment(simulator)
         // Simulator cannot generate spatial scenes, but it can render the real
@@ -911,7 +934,7 @@ private final class GallerySceneCache {
                 if decoded.canRetryGeneration,
                    let retryPlan = decoded.retryPlan,
                    GalleryRetryBudget.permits(
-                       sourcePixels: decoded.pixelCost + decoded.previewPixelCost,
+                       sourcePixels: decoded.pixelCost + decoded.previewPixelCost + menuPreviewCost,
                        retryPixels: retryPlan.pixelCost,
                        availablePixels: pixelBudget()
                    ) {
@@ -920,7 +943,7 @@ private final class GallerySceneCache {
                         let retrySource = try await decoded.makeRetrySource(retryPlan)
                         try Task.checkCancellation()
                         guard GalleryRetryBudget.permits(
-                            sourcePixels: decoded.pixelCost + decoded.previewPixelCost,
+                            sourcePixels: decoded.pixelCost + decoded.previewPixelCost + menuPreviewCost,
                             retryPixels: retrySource.pixelCost,
                             availablePixels: pixelBudget()
                         ) else {
@@ -932,7 +955,7 @@ private final class GallerySceneCache {
                         try Task.checkCancellation()
                         result.component = ImagePresentationComponent(spatial3DImage: retry)
                         result.spatialMode = .spatial3D
-                        result.pixelCost = retrySource.pixelCost
+                        result.pixelCost = retrySource.pixelCost + menuPreviewCost
                         return result
                     } catch is CancellationError {
                         throw CancellationError()
@@ -953,7 +976,7 @@ private final class GallerySceneCache {
             if modes.contains(.spatialStereo) { result.spatialMode = .spatialStereo }
         } catch {
             result.fallback = decoded.preview
-            result.pixelCost = decoded.previewPixelCost
+            result.pixelCost = decoded.previewPixelCost + menuPreviewCost
             result.status = "Showing a 2D preview. \(error.localizedDescription)"
         }
         try Task.checkCancellation()
@@ -1034,8 +1057,7 @@ private nonisolated struct GalleryDecodedImage: @unchecked Sendable {
             throw GalleryMediaError.invalidImage
         }
         self.thumbnail = thumbnail
-        // This thumbnail lives only during preparation unless the 2D fallback
-        // is retained. Native results retain the source/scene, not this UIImage.
+        // The full preview is temporary; prepared entries retain only a bounded512px menu preview.
         previewPixelCost = thumbnail.width * thumbnail.height
         preview = UIImage(cgImage: thumbnail)
         // Keep every channel and all camera metadata of multi-image HEIC sources.

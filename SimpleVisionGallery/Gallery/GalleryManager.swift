@@ -695,7 +695,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     private var visibleIndexes = Set<Int>()
     private var preheatedRange: Range<Int>?
     private var deletionReviewAuthority = GalleryDeletionReviewAuthority()
-    private let imageManager = PHCachingImageManager()
+    private lazy var imageManager = PHCachingImageManager()
     private var photoAccessEpoch = UUID()
     private var albumEmptinessSubscription: AnyCancellable?
     private var virtualLibrarySubscription: AnyCancellable?
@@ -734,7 +734,15 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }()
     #endif
 
-    override init() {
+    private let observesPhotoLibrary: Bool
+
+    override convenience init() {
+        self.init(observesPhotoLibrary: true)
+    }
+
+    /// Capture hosts can render presentation components without touching PhotoKit.
+    init(observesPhotoLibrary: Bool) {
+        self.observesPhotoLibrary = observesPhotoLibrary
         super.init()
         assetSortMode = GalleryAssetSortMode(
             rawValue: UserDefaults.standard.string(forKey: Self.assetSortModeDefaultsKey) ?? ""
@@ -753,6 +761,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         if UserDefaults.standard.object(forKey: Self.dateSortAscendingDefaultsKey) != nil {
             dateSortAscending = UserDefaults.standard.bool(forKey: Self.dateSortAscendingDefaultsKey)
         }
+        guard observesPhotoLibrary else { return }
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         PHPhotoLibrary.shared().register(self)
         vaultTransferSubscription = NotificationCenter.default.publisher(for: .galleryVaultDidHideItems)
@@ -796,8 +805,19 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     deinit {
-        PHPhotoLibrary.shared().unregisterChangeObserver(self)
+        if observesPhotoLibrary { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
     }
+
+    #if DEBUG
+    /// Presentation fixtures never fetch, mutate, or observe the Photos library.
+    func configureCapturePresentation(section: GalleryLibrarySection, album: GalleryAlbum) {
+        precondition(!observesPhotoLibrary)
+        librarySection = section
+        selectedAlbum = album
+        totalAssetCount = album.assetCount
+        visibleAssetCount = album.assetCount
+    }
+    #endif
 
     private func scheduleVaultPhotoRefresh() {
         vaultRefreshTask?.cancel()
