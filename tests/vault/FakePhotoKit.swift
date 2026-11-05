@@ -186,6 +186,7 @@ nonisolated enum GalleryVaultTransferError: LocalizedError {
     case fullAccessRequired, unsupportedItem, unsupportedResources, missingResources, locked, busy
     case albumUnavailable(String), changedOriginal, missingOriginal, photoRequestFailed, interruptedRestore
     case journalFailed, importFailed, cancelled, alreadyInVault, pendingCopyUnavailable
+    case notInRecycleBin, invalidVaultDestination
     var errorDescription: String? { String(describing: self) }
 }
 typealias PHPhotosError = Photos.PHPhotosError

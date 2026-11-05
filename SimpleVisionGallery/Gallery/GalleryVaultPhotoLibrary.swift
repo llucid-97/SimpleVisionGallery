@@ -170,10 +170,11 @@ nonisolated enum GalleryVaultPhotoLibrary {
     }
 
     static func usableParents(_ record: GalleryVaultRecord, omittingUnavailable: Bool = false) throws -> [(GalleryVaultAlbum, PHAssetCollection?)] {
-        let fetched = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: record.albums.map(\.id), options: nil)
+        let albums = record.albums.filter { $0.id != GalleryVaultRecycleBin.id }
+        let fetched = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: albums.map(\.id), options: nil)
         var byID: [String: PHAssetCollection] = [:]
         for i in 0..<fetched.count { let album = fetched.object(at: i); byID[album.localIdentifier] = album }
-        let missingTitles = Set(record.albums.filter { byID[$0.id] == nil && !GalleryRecycleBin.isRecycleBinTitle($0.title) }.map(\.title))
+        let missingTitles = Set(albums.filter { byID[$0.id] == nil && !GalleryRecycleBin.isRecycleBinTitle($0.title) }.map(\.title))
         var replacements: [String: PHAssetCollection] = [:]
         if !missingTitles.isEmpty {
             let regular = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
@@ -184,7 +185,7 @@ nonisolated enum GalleryVaultPhotoLibrary {
                 }
             }
         }
-        return try record.albums.compactMap { album in
+        return try albums.compactMap { album in
             if GalleryRecycleBin.isRecycleBinTitle(album.title) { return nil }
             if let collection = byID[album.id] {
                 guard collection.canPerform(.addContent) else {
@@ -257,9 +258,12 @@ nonisolated enum GalleryVaultTransferError: LocalizedError {
     case fullAccessRequired, unsupportedItem, unsupportedResources, missingResources, locked, busy
     case albumUnavailable(String), changedOriginal, missingOriginal, photoRequestFailed, interruptedRestore
     case journalFailed, importFailed, cancelled, alreadyInVault, pendingCopyUnavailable
+    case notInRecycleBin, invalidVaultDestination
 
     var errorDescription: String? {
         switch self {
+        case .notInRecycleBin: return "Only items in Private Vault's Recycle Bin can be permanently deleted."
+        case .invalidVaultDestination: return "Choose a regular Private Vault album."
         case .fullAccessRequired: return "Full Photos access is required to safely move or restore private items."
         case .unsupportedItem: return "Photos cannot delete this item, so it was left in your library."
         case .unsupportedResources: return "This item's original cannot yet be restored safely; it was left in Photos."

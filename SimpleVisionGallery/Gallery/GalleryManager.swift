@@ -407,9 +407,12 @@ nonisolated struct GalleryAlbumCommitActions: Equatable, Sendable {
 struct GalleryVaultIndex {
     private(set) var all: [GalleryVaultRecord] = []
     private(set) var unfiled: [GalleryVaultRecord] = []
+    private(set) var recycleBin: [GalleryVaultRecord] = []
+    private(set) var binnedAlbumIDs: Set<String> = []
     private(set) var byAlbum: [String: [GalleryVaultRecord]] = [:]
     private(set) var albumTitles: [String: String] = [:]
     private(set) var mediaCounts: [String: (photos: Int, videos: Int)] = [:]
+    private(set) var recycleBinCounts: (photos: Int, videos: Int) = (0, 0)
     private(set) var privateItemCounts: [String: Int] = [:]
     private(set) var excluded: Set<UUID> = []
     private var indexedRecords: [UUID: GalleryVaultRecord] = [:]
@@ -422,8 +425,17 @@ struct GalleryVaultIndex {
             // A retry journal may outlive that transaction, so show only the Photos copy.
             if record.state == .restoring,
                let restoredID = record.restoredIdentifier, restoredPhotoIDs.contains(restoredID) { continue }
-            all.append(record)
             indexedRecords[record.id] = record
+            if GalleryVaultRecycleBin.contains(record) {
+                recycleBin.append(record)
+                binnedAlbumIDs.formUnion(record.albums.lazy.map(\.id).filter { $0 != GalleryVaultRecycleBin.id })
+                var count = recycleBinCounts
+                if record.mediaType == PHAssetMediaType.image.rawValue { count.photos += 1 }
+                if record.mediaType == PHAssetMediaType.video.rawValue { count.videos += 1 }
+                recycleBinCounts = count
+                continue
+            }
+            all.append(record)
             if record.state == .privateItem {
                 privateItemCounts[GalleryVirtualScope.photos.virtualID, default: 0] += 1
             }
@@ -434,6 +446,7 @@ struct GalleryVaultIndex {
                 }
             }
             for album in record.albums {
+                guard album.id != GalleryVaultRecycleBin.id else { continue }
                 if record.state == .privateItem { privateItemCounts[album.id, default: 0] += 1 }
                 byAlbum[album.id, default: []].append(record)
                 albumTitles[album.id] = album.title
@@ -451,6 +464,7 @@ struct GalleryVaultIndex {
             unfiled.count { $0.mediaType == PHAssetMediaType.image.rawValue },
             unfiled.count { $0.mediaType == PHAssetMediaType.video.rawValue }
         )
+        mediaCounts[GalleryVirtualScope.recycleBin.virtualID] = recycleBinCounts
     }
 
     static func fromPhotoLibrary(records: [GalleryVaultRecord], excludedIDs: Set<UUID> = []) -> GalleryVaultIndex {
@@ -473,10 +487,9 @@ struct GalleryVaultIndex {
         switch album.virtualScope {
         case .photos: candidates = all
         case .unfiled: candidates = unfiled
-        case .recycleBin: return []
+        case .recycleBin: candidates = recycleBin
         case nil:
-            guard !GalleryRecycleBin.isRecycleBinTitle(album.title) else { return [] }
-            candidates = byAlbum[album.id] ?? []
+            candidates = GalleryRecycleBin.isRecycleBinTitle(album.title) ? recycleBin : (byAlbum[album.id] ?? [])
         }
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
         let matches = candidates.filter { record in
@@ -489,7 +502,8 @@ struct GalleryVaultIndex {
         }
         // Preserve album-local ordering from before the batch transfer; the vault ID is random.
         let keyed = matches.map { record -> (GalleryVaultRecord, Int?, Int) in
-            let position = album.virtualScope == nil ? record.albums.first(where: { $0.id == album.id })?.position : nil
+            let position = album.virtualScope == nil && !GalleryRecycleBin.isRecycleBinTitle(album.title)
+                ? record.albums.first(where: { $0.id == album.id })?.position : nil
             var hasher = Hasher()
             hasher.combine(shuffleSeed)
             hasher.combine(record.id)
@@ -523,9 +537,16 @@ struct GalleryVaultIndex {
     @discardableResult
     mutating func excludeRestored(_ id: UUID) -> Bool {
         guard excluded.insert(id).inserted, let record = indexedRecords.removeValue(forKey: id) else { return false }
-        var parentIDs = Set(record.albums.map(\.id))
-        parentIDs.insert(GalleryVirtualScope.photos.virtualID)
-        if record.albums.isEmpty { parentIDs.insert(GalleryVirtualScope.unfiled.virtualID) }
+        let isBinned = GalleryVaultRecycleBin.contains(record)
+        var parentIDs = isBinned
+            ? Set([GalleryVirtualScope.recycleBin.virtualID])
+            : Set(record.albums.filter { $0.id != GalleryVaultRecycleBin.id }.map(\.id))
+        if !isBinned {
+            parentIDs.insert(GalleryVirtualScope.photos.virtualID)
+            if record.albums.allSatisfy({ $0.id == GalleryVaultRecycleBin.id }) {
+                parentIDs.insert(GalleryVirtualScope.unfiled.virtualID)
+            }
+        }
         for parentID in parentIDs {
             if record.state == .privateItem {
                 privateItemCounts[parentID] = max(0, (privateItemCounts[parentID] ?? 0) - 1)
@@ -535,11 +556,23 @@ struct GalleryVaultIndex {
             if record.mediaType == PHAssetMediaType.video.rawValue { count.videos = max(0, count.videos - 1) }
             mediaCounts[parentID] = count
         }
+        if isBinned {
+            var count = recycleBinCounts
+            if record.mediaType == PHAssetMediaType.image.rawValue { count.photos = max(0, count.photos - 1) }
+            if record.mediaType == PHAssetMediaType.video.rawValue { count.videos = max(0, count.videos - 1) }
+            recycleBinCounts = count
+        }
         return true
     }
 
     func counts(for albumID: String) -> (photos: Int, videos: Int) {
         mediaCounts[albumID] ?? (0, 0)
+    }
+
+    func containsOnlyBinnedItems(in album: GalleryAlbum) -> Bool {
+        guard album.collection != nil, album.assetCount == 0, binnedAlbumIDs.contains(album.id) else { return false }
+        let counts = counts(for: album.id)
+        return counts.photos + counts.videos == 0
     }
 }
 
@@ -890,7 +923,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     func hasVaultRecords(in album: GalleryAlbum) -> Bool {
-        if album.virtualScope == .recycleBin || GalleryRecycleBin.isRecycleBinTitle(album.title) { return false }
+        if isRecycleBin(album: album) { return false }
         return (vaultIndex.privateItemCounts[album.virtualScope?.virtualID ?? album.id] ?? 0) > 0
     }
 
@@ -942,7 +975,11 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     var browsableAlbums: [GalleryAlbum] {
-        albums.filter { GalleryVaultService.shared.isUnlocked || $0.visibleWithLockedVault(emptyAlbumIDs: GalleryVirtualLibraryIndex.shared.emptyAlbumIDs) }
+        albums.filter { album in
+            let vaultIsOpen = GalleryVaultService.shared.isUnlocked
+            if vaultIsOpen && vaultIndex.containsOnlyBinnedItems(in: album) { return false }
+            return vaultIsOpen || album.visibleWithLockedVault(emptyAlbumIDs: GalleryVirtualLibraryIndex.shared.emptyAlbumIDs)
+        }
     }
 
     var visibleAlbums: [GalleryAlbum] {
@@ -977,7 +1014,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
 
     private func displayCount(for album: GalleryAlbum) -> GalleryAlbum {
-        let vaultCounts = vaultIndex.counts(for: album.id)
+        let vaultCounts = isRecycleBin(album: album) ? vaultIndex.recycleBinCounts : vaultIndex.counts(for: album.id)
         let count: Int
         switch mediaFilter {
         case .all: count = album.assetCount + vaultCounts.photos + vaultCounts.videos

@@ -1018,7 +1018,22 @@ struct GalleryView: View {
                     manager: manager,
                     thumbnailSize: CGFloat(thumbnailSize),
                     showsSourceBadge: vault.isUnlocked,
-                    onOpen: openMedia
+                    onOpen: openMedia,
+                    onVaultRecycle: { id in
+                        performVaultItemAction {
+                            try await vault.recycle(recordID: id)
+                        }
+                    },
+                    onVaultPutBack: { id in
+                        performVaultItemAction {
+                            try await vault.putBack(recordID: id)
+                        }
+                    },
+                    onVaultDelete: { id in
+                        performVaultItemAction {
+                            try await vault.delete(recordID: id)
+                        }
+                    }
                 )
                 .allowsHitTesting(!manager.isSortingAssets && !manager.isPerformingOperation)
                 .opacity(manager.isSortingAssets ? 0.72 : 1)
@@ -1129,6 +1144,14 @@ struct GalleryView: View {
         }
     }
 
+    private func performVaultItemAction(_ action: @escaping @MainActor () async throws -> Void) {
+        manager.errorMessage = nil
+        Task { @MainActor in
+            do { try await action() }
+            catch { manager.errorMessage = error.localizedDescription }
+        }
+    }
+
     private func deletionConfirmationMessage(for review: GalleryDeletionPlan) -> String {
         "Gallery will ask Photos to delete exactly "
             + "\(review.totalCount) selected item\(review.totalCount == 1 ? "" : "s") "
@@ -1143,6 +1166,9 @@ private struct GalleryAssetGrid: View {
     let thumbnailSize: CGFloat
     let showsSourceBadge: Bool
     let onOpen: (Int) -> Void
+    let onVaultRecycle: (UUID) -> Void
+    let onVaultPutBack: (UUID) -> Void
+    let onVaultDelete: (UUID) -> Void
 
     private var columns: [GridItem] {
         GalleryMediaGridLayout.columns(thumbnailSize: thumbnailSize)
@@ -1178,6 +1204,9 @@ private struct GalleryAssetGrid: View {
                             isSelected: manager.selectedIndexes.contains(index),
                             hasRangeAnchor: manager.rangeAnchorIndex == index,
                             manager: manager,
+                            onVaultRecycle: onVaultRecycle,
+                            onVaultPutBack: onVaultPutBack,
+                            onVaultDelete: onVaultDelete,
                             onTap: {
                                 onOpen(index)
                             },
@@ -1226,8 +1255,13 @@ private struct GalleryAssetCell: View {
     let isSelected: Bool
     let hasRangeAnchor: Bool
     let manager: GalleryManager
+    let onVaultRecycle: (UUID) -> Void
+    let onVaultPutBack: (UUID) -> Void
+    let onVaultDelete: (UUID) -> Void
     let onTap: () -> Void
     let onLongPinch: () -> Void
+    @ObservedObject private var vault = GalleryVaultService.shared
+    @State private var pendingVaultDeleteID: UUID?
 
     var body: some View {
         Color.clear
@@ -1291,6 +1325,40 @@ private struct GalleryAssetCell: View {
             }
             .accessibilityAction(named: "Set Range Endpoint") {
                 onLongPinch()
+            }
+            .contextMenu {
+                if let record = item.vaultRecord {
+                    if GalleryVaultRecycleBin.contains(record) {
+                        Button("Put Back", systemImage: "arrow.uturn.backward") {
+                            onVaultPutBack(record.id)
+                        }
+                        .disabled(vault.isBusy)
+                        Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {
+                            pendingVaultDeleteID = record.id
+                        }
+                        .disabled(vault.isBusy)
+                    } else {
+                        Button("Move to Recycle Bin", systemImage: "trash") {
+                            onVaultRecycle(record.id)
+                        }
+                        .disabled(vault.isBusy)
+                    }
+                }
+            }
+            .confirmationDialog("Delete Permanently?", isPresented: Binding(
+                get: { pendingVaultDeleteID != nil },
+                set: { if !$0 { pendingVaultDeleteID = nil } }
+            ), titleVisibility: .visible) {
+                Button("Delete Permanently", role: .destructive) {
+                    if let id = pendingVaultDeleteID { onVaultDelete(id) }
+                    pendingVaultDeleteID = nil
+                }
+                Button("Cancel", role: .cancel) { pendingVaultDeleteID = nil }
+            } message: {
+                Text("This private item will be permanently deleted and cannot be undone.")
+            }
+            .onChange(of: vault.isUnlocked) { _, unlocked in
+                if !unlocked { pendingVaultDeleteID = nil }
             }
     }
 
@@ -2248,9 +2316,9 @@ struct GalleryAlbumDeletionSheet: View {
                     Text("The Photos album is already gone. Its remaining vault files were kept. Choose below to finish the vault cleanup; the Photos change cannot be undone here.")
                 }
             }
-            Text("\(plan.photoIDs.count) Photos items and \(plan.vaultRecords.count) vault items.")
+            Text("\(plan.photoIDs.count) Photos items and \(plan.visibleVaultCount) vault items.")
                 .accessibilityIdentifier("gallery-album-delete-counts")
-            Text("\(plan.sharedPhotoCount) Photos items also belong to other albums and will stay visible there.")
+            Text("\(plan.sharedPhotoCount) Photos items and \(plan.visibleVaultCount - plan.recycledVaultIDs.count) vault items also belong to other albums and will stay there.")
             Button("Delete Album Only") { perform(includingItems: false) }
                 .buttonStyle(LensLabSecondaryButtonStyle())
                 .accessibilityIdentifier("gallery-album-delete-only")
@@ -2259,7 +2327,7 @@ struct GalleryAlbumDeletionSheet: View {
             Button("Delete Album and Items", role: .destructive) { perform(includingItems: true) }
                 .buttonStyle(LensLabPrimaryButtonStyle())
                 .accessibilityIdentifier("gallery-album-delete-items")
-            Text("\(plan.photoIDs.count) Photos items move to this app's Recycle Bin. \(plan.permanentVaultIDs.count) vault items will be permanently deleted and cannot be undone. \(plan.vaultRecords.count - plan.permanentVaultIDs.count) vault items in other albums will stay there.")
+            Text("\(plan.photoIDs.count) Photos items move to this app's Recycle Bin. \(plan.recycledVaultIDs.count) vault items with no other album move to Private Vault Recycle Bin. The other \(plan.visibleVaultCount - plan.recycledVaultIDs.count) shared vault items stay in their albums.")
                 .font(.callout)
                 .accessibilityIdentifier("gallery-album-delete-warning")
             if vault.isBusy { ProgressView("Deleting album…") }

@@ -79,6 +79,14 @@ struct GalleryVaultView: View {
     @State private var confirmDiscardAlbumDeletion = false
     @State private var confirmFinishAlbumDeletion = false
 
+    private var restorableRecords: [GalleryVaultRecord] {
+        vault.records.filter { $0.state == .privateItem && !GalleryVaultRecycleBin.contains($0) }
+    }
+
+    private var interruptedRestores: [GalleryVaultRecord] {
+        vault.records.filter { $0.state == .restoring && !GalleryVaultRecycleBin.contains($0) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -249,19 +257,18 @@ struct GalleryVaultView: View {
             }
 
             if vault.isUnlocked && !vault.isBusy {
-                if vault.records.contains(where: { $0.state == .restoring }) {
+                if !interruptedRestores.isEmpty {
                     Button("Resume Interrupted Restores", systemImage: "arrow.clockwise") {
-                        let ids = vault.records.filter { $0.state == .restoring }.map(\.id)
+                        let ids = interruptedRestores.map(\.id)
                         restore(ids)
                     }
                     .buttonStyle(LensLabSecondaryButtonStyle())
                 }
                 Button("Restore All Private Items", systemImage: "lock.open") {
-                    let ids = vault.records.filter { $0.state == .privateItem }.map(\.id)
-                    restore(ids)
+                    restore(restorableRecords.map(\.id))
                 }
                 .buttonStyle(LensLabSecondaryButtonStyle())
-                .disabled(!vault.records.contains { $0.state == .privateItem })
+                .disabled(restorableRecords.isEmpty)
 
                 Button("Retry Removing Saved Originals", systemImage: "arrow.clockwise") {
                     resultMessage = nil
