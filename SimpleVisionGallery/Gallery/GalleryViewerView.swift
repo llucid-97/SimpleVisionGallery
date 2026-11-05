@@ -1,5 +1,8 @@
+import CryptoKit
+
 #if os(visionOS)
 import AVKit
+import OSLog
 @preconcurrency import Photos
 import RealityKit
 import SwiftUI
@@ -196,7 +199,9 @@ private struct GalleryViewerSceneAnchor: UIViewRepresentable {
                 // Allow a later attachment update to retry instead of marking
                 // that scene as permanently configured.
                 self?.configuredScene = nil
-                print("Gallery window resize unavailable: \(error.localizedDescription)")
+                let error = error as NSError
+                Logger(subsystem: "com.llucid.simplevisiongallery", category: "Gallery")
+                    .error("Gallery window resize unavailable: domain=\(GalleryLogRedaction.token(error.domain), privacy: .private) code=\(error.code, privacy: .public)")
             }
         }
     }
@@ -919,3 +924,13 @@ private struct GalleryRealityImage: View {
     }
 }
 #endif
+
+enum GalleryLogRedaction {
+    private static let salt = SymmetricKey(size: .bits256)
+
+    static func token(_ value: String) -> String {
+        let saltBytes = salt.withUnsafeBytes { Array($0) }
+        let digest = SHA256.hash(data: Data(saltBytes) + Data(value.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+}
