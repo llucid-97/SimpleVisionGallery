@@ -318,6 +318,13 @@ private struct GalleryViewerPane: View {
                             .disabled(vault.isBusy)
                         }
                         if let record = session.currentItem?.vaultRecord {
+                            if GalleryVaultRecycleBin.contains(record) {
+                                Button("Put Back", systemImage: "arrow.uturn.backward") {
+                                    moreSessionID = nil
+                                    performVaultPutBack(recordID: record.id)
+                                }
+                                .disabled(vault.isBusy)
+                            }
                             Button("Restore to Photos", systemImage: "lock.open") {
                                 moreSessionID = nil
                                 let id = record.id
@@ -456,8 +463,8 @@ private struct GalleryViewerPane: View {
                     },
                     secondaryButton: .cancel())
             case let .vault(recordID):
-                return Alert(title: Text("Delete permanently from Private Vault?"),
-                    message: Text("Private Vault has no Recycle Bin. This item will be permanently deleted and cannot be undone."),
+                return Alert(title: Text("Delete permanently from Private Vault Recycle Bin?"),
+                    message: Text("This item will be permanently deleted and cannot be undone."),
                     primaryButton: .destructive(Text("Delete Permanently")) {
                         performPermanentVaultDelete(recordID: recordID)
                     },
@@ -551,30 +558,36 @@ private struct GalleryViewerPane: View {
                 .accessibilityAddTraits(loopVideos ? .isSelected : [])
             }
 
-            Button {
-                if let record = session.currentItem?.vaultRecord {
-                    actionError = nil
-                    media.setPresentationCovered(true)
-                    moveTarget = GalleryViewerMoveTarget(sessionID: session.id,
-                        assetID: session.currentItem?.localIdentifier ?? "vault:\(record.id.uuidString)",
-                        vaultRecordID: record.id, sourceAlbumID: session.sourceAlbumID)
-                } else if let assetID = session.currentAsset?.localIdentifier {
-                    actionError = nil
-                    // Capture playback intent before dismantling the media surface.
-                    media.setPresentationCovered(true)
-                    moveTarget = GalleryViewerMoveTarget(sessionID: session.id, assetID: assetID,
-                        sourceAlbumID: session.sourceAlbumID)
-                }
-            } label: { Label("Move", systemImage: "arrowshape.turn.up.right") }
-            .disabled(session.currentItem == nil || store.isPerformingOperation || (isVaultItem && vault.isBusy))
-            .accessibilityIdentifier("gallery-viewer-move")
+            if !isVaultItemInRecycleBin {
+                Button {
+                    if let record = session.currentItem?.vaultRecord {
+                        actionError = nil
+                        media.setPresentationCovered(true)
+                        moveTarget = GalleryViewerMoveTarget(sessionID: session.id,
+                            assetID: session.currentItem?.localIdentifier ?? "vault:\(record.id.uuidString)",
+                            vaultRecordID: record.id, sourceAlbumID: session.sourceAlbumID)
+                    } else if let assetID = session.currentAsset?.localIdentifier {
+                        actionError = nil
+                        // Capture playback intent before dismantling the media surface.
+                        media.setPresentationCovered(true)
+                        moveTarget = GalleryViewerMoveTarget(sessionID: session.id, assetID: assetID,
+                            sourceAlbumID: session.sourceAlbumID)
+                    }
+                } label: { Label("Move", systemImage: "arrowshape.turn.up.right") }
+                .disabled(session.currentItem == nil || store.isPerformingOperation || (isVaultItem && vault.isBusy))
+                .accessibilityIdentifier("gallery-viewer-move")
+            }
 
             Button {
                 guard !isRecycling else { return }
                 actionError = nil
                 if let record = session.currentItem?.vaultRecord {
-                    media.setPresentationCovered(true)
-                    pendingDelete = GalleryViewerDeleteTarget(item: .vault(record.id))
+                    if GalleryVaultRecycleBin.contains(record) {
+                        media.setPresentationCovered(true)
+                        pendingDelete = GalleryViewerDeleteTarget(item: .vault(record.id))
+                    } else {
+                        performVaultRecycle(recordID: record.id)
+                    }
                     return
                 }
                 guard let targetID = displayedAssetID else { return }
@@ -590,17 +603,17 @@ private struct GalleryViewerPane: View {
                     isRecycling = false
                 }
             } label: {
-                Label(isVaultItem || isInRecycleBin ? "Delete Permanently" : "Move to Recycle Bin",
-                    systemImage: isVaultItem || isInRecycleBin ? "trash.slash" : "trash")
+                Label(isPermanentDelete ? "Delete Permanently" : "Move to Recycle Bin",
+                    systemImage: isPermanentDelete ? "trash.slash" : "trash")
                     .opacity(isRecycling ? 0 : 1)
                     .overlay {
                         if isRecycling { ProgressView().controlSize(.small).accessibilityHidden(true) }
                     }
             }
             .disabled(session.currentItem == nil || store.isPerformingOperation || isRecycling || (isVaultItem && vault.isBusy))
-            .accessibilityLabel(isRecycling ? "Moving to Recycle Bin" : ((isVaultItem || isInRecycleBin) ? "Delete Permanently" : "Move to Recycle Bin"))
+            .accessibilityLabel(isRecycling ? "Moving to Recycle Bin" : (isPermanentDelete ? "Delete Permanently" : "Move to Recycle Bin"))
             .accessibilityIdentifier("gallery-viewer-recycle")
-            .accessibilityHint(isVaultItem ? "Permanently deletes this item from Private Vault after confirmation." : (isInRecycleBin ? "Permanently deletes this item from Photos after confirmation." : "Moves this item to the Recycle Bin album."))
+            .accessibilityHint(isPermanentDelete ? "Permanently deletes this item after confirmation." : "Moves this item to the Recycle Bin.")
 
             Button {
                 actionError = nil
@@ -622,6 +635,10 @@ private struct GalleryViewerPane: View {
     }
 
     private var isVaultItem: Bool { session.currentItem?.vaultRecord != nil }
+    private var isVaultItemInRecycleBin: Bool {
+        session.currentItem?.vaultRecord.map(GalleryVaultRecycleBin.contains) ?? false
+    }
+    private var isPermanentDelete: Bool { isVaultItem ? isVaultItemInRecycleBin : isInRecycleBin }
 
     private func performPermanentDelete(assetID: String) {
         isDeletingFromPhotos = true
@@ -644,6 +661,22 @@ private struct GalleryViewerPane: View {
             isDeletingFromPhotos = false
             pendingDelete = nil
             media.setPresentationCovered(moveTarget != nil)
+        }
+    }
+
+    private func performVaultRecycle(recordID: UUID) {
+        isRecycling = true
+        Task {
+            do { try await vault.recycle(recordID: recordID) }
+            catch { actionError = error.localizedDescription }
+            isRecycling = false
+        }
+    }
+
+    private func performVaultPutBack(recordID: UUID) {
+        Task {
+            do { try await vault.putBack(recordID: recordID) }
+            catch { actionError = error.localizedDescription }
         }
     }
 }

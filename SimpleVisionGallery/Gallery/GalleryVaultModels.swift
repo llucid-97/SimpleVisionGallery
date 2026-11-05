@@ -7,6 +7,15 @@ nonisolated struct GalleryVaultAlbum: Codable, Equatable, Sendable {
     var position: Int?
 }
 
+nonisolated enum GalleryVaultRecycleBin {
+    static let id = "vault-recycle-bin"
+    static let album = GalleryVaultAlbum(id: id, title: "Recycle Bin", position: nil)
+
+    static func contains(_ record: GalleryVaultRecord) -> Bool {
+        record.albums.contains { $0.id == id }
+    }
+}
+
 nonisolated struct GalleryVaultResource: Codable, Equatable, Sendable, Identifiable {
     var id: UUID
     var type: Int
@@ -50,7 +59,9 @@ nonisolated struct GalleryAlbumDeletionPlan: Codable, Equatable, Sendable, Ident
     let sharedPhotoCount: Int
     let vaultRecords: [GalleryVaultRecord]
 
-    var permanentVaultIDs: Set<UUID> {
+    var visibleVaultCount: Int { vaultRecords.count { !GalleryVaultRecycleBin.contains($0) } }
+
+    var recycledVaultIDs: Set<UUID> {
         Set(vaultRecords.filter { $0.albums.allSatisfy { $0.id == albumID } }.map(\.id))
     }
 }

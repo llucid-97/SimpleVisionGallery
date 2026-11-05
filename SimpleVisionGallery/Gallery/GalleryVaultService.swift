@@ -122,7 +122,7 @@ final class GalleryVaultService: ObservableObject {
         let snapshot = records
         return await Task.detached(priority: .userInitiated) {
             var albums: [String: GalleryVaultAlbum] = [:]
-            for record in snapshot {
+            for record in snapshot where !GalleryVaultRecycleBin.contains(record) {
                 for album in record.albums where !GalleryRecycleBin.isRecycleBinTitle(album.title) {
                     albums[album.id] = GalleryVaultAlbum(id: album.id, title: album.title, position: nil)
                 }
@@ -148,6 +148,7 @@ final class GalleryVaultService: ObservableObject {
     }
 
     private func move(count: Int, sourceAlbumID: String?, destination: GalleryVaultAlbum? = nil, assetAt: (Int) -> PHAsset) async throws -> GalleryVaultTransferOutcome {
+        if let destination { try validateDestination(destination) }
         try beginOperation()
         let epoch = authEpoch
         storage.beginBatch()
@@ -391,19 +392,49 @@ final class GalleryVaultService: ObservableObject {
         defer { publishIfCurrent(epoch); endOperation() }
         guard let record = try storage.authoritativeRecord(id: recordID) else { throw GalleryVaultStorageError.corruptRecord }
         guard record.state == .privateItem else { throw GalleryVaultTransferError.interruptedRestore }
+        guard GalleryVaultRecycleBin.contains(record) else { throw GalleryVaultTransferError.notInRecycleBin }
         try storage.remove(id: recordID)
     }
 
+    func recycle(recordID: UUID) async throws {
+        try beginOperation(requiresPhotoAccess: false)
+        let epoch = authEpoch
+        defer { publishIfCurrent(epoch); endOperation() }
+        guard var record = try storage.authoritativeRecord(id: recordID) else { throw GalleryVaultStorageError.corruptRecord }
+        guard record.state == .privateItem else { throw GalleryVaultTransferError.interruptedRestore }
+        guard !GalleryVaultRecycleBin.contains(record) else { return }
+        record.albums.append(GalleryVaultRecycleBin.album)
+        try storage.update(record)
+    }
+
+    func putBack(recordID: UUID) async throws {
+        try beginOperation(requiresPhotoAccess: false)
+        let epoch = authEpoch
+        defer { publishIfCurrent(epoch); endOperation() }
+        guard var record = try storage.authoritativeRecord(id: recordID) else { throw GalleryVaultStorageError.corruptRecord }
+        guard record.state == .privateItem else { throw GalleryVaultTransferError.interruptedRestore }
+        guard GalleryVaultRecycleBin.contains(record) else { return }
+        record.albums.removeAll { $0.id == GalleryVaultRecycleBin.id }
+        try storage.update(record)
+    }
+
     func move(recordID: UUID, from sourceAlbumID: String?, to destination: GalleryVaultAlbum) async throws {
+        try validateDestination(destination)
         try beginOperation(requiresPhotoAccess: false)
         let epoch = authEpoch
         defer { publishIfCurrent(epoch); endOperation() }
         guard let record = try storage.authoritativeRecord(id: recordID) else { throw GalleryVaultStorageError.corruptRecord }
         guard record.state == .privateItem else { throw GalleryVaultTransferError.interruptedRestore }
+        guard !GalleryVaultRecycleBin.contains(record) else { throw GalleryVaultTransferError.invalidVaultDestination }
         var updated = record
         updated.albums = GalleryVaultStorage.destinationAlbums(record.albums,
             destination: destination, sourceAlbumID: sourceAlbumID)
         try storage.update(updated)
+    }
+
+    private func validateDestination(_ destination: GalleryVaultAlbum) throws {
+        guard destination.id != GalleryVaultRecycleBin.id,
+              !GalleryRecycleBin.isRecycleBinTitle(destination.title) else { throw GalleryVaultTransferError.invalidVaultDestination }
     }
 
     func restore(recordIDs: [UUID], omittingUnavailableAlbums: Bool = false) async throws {
@@ -500,6 +531,7 @@ final class GalleryVaultService: ObservableObject {
                         staged.state = .restoring
                         staged.restoredIdentifier = identifier
                         staged.albums = requests.map { $0.0 }
+                        if GalleryVaultRecycleBin.contains(record) { staged.albums.append(GalleryVaultRecycleBin.album) }
                         try self.storage.update(staged)
                     }
                 } catch { transactionError = error; return }
@@ -745,16 +777,17 @@ final class GalleryVaultService: ObservableObject {
         guard let intent = pendingAlbumDeletion, intent.photosCommitted else { throw GalleryAlbumDeletionError.interrupted }
         storage.beginBatch()
         defer { storage.endBatch() }
-        let permanentIDs = intent.plan.permanentVaultIDs
+        let recycledIDs = intent.plan.recycledVaultIDs
         var remaining = 0
         var firstError: String?
         for original in intent.plan.vaultRecords {
             do {
                 guard var record = try storage.authoritativeRecord(id: original.id),
                       record.albums.contains(where: { $0.id == intent.plan.albumID }) else { continue }
-                if intent.deleteItems, permanentIDs.contains(record.id),
+                if intent.deleteItems, recycledIDs.contains(record.id),
                    record.albums.allSatisfy({ $0.id == intent.plan.albumID }) {
-                    try storage.remove(id: record.id)
+                    record.albums = [GalleryVaultRecycleBin.album]
+                    try storage.update(record)
                 } else {
                     record.albums.removeAll { $0.id == intent.plan.albumID }
                     try storage.update(record)
