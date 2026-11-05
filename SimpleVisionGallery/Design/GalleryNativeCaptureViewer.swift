@@ -31,6 +31,7 @@ struct GalleryNativeCaptureViewer: View {
             Button {} label: { Image(systemName: "ellipsis") }
                 .popover(isPresented: .constant(showsMoreMenu)) {
                     VStack(alignment: .leading, spacing: 12) {
+                        Button("Shuffle", systemImage: "shuffle") {}
                         Button("Move to Private Vault", systemImage: "lock") {}
                         Button("Private Vault", systemImage: "lock") {}
                         Button("Share", systemImage: "square.and.arrow.up") {}
@@ -73,7 +74,8 @@ struct GalleryNativeCaptureViewer: View {
                         }
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                     }
-                    .padding(.vertical, verticalClearance)
+                    .padding(.top, verticalClearance)
+                    .padding(.bottom, verticalClearance + GalleryViewerLayout.bottomClearance)
                 }
                 .frame(width: paneWidth)
                 .frame(maxHeight: .infinity, alignment: .top)

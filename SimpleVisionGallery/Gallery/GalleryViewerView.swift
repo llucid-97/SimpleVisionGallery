@@ -11,7 +11,9 @@ import UIKit
 enum GalleryViewerLayout {
     static let outerInsets: CGFloat = 32
     static let maximumMediaHeight: CGFloat = 1500
-    static let maximumWindowHeight: CGFloat = maximumMediaHeight + 2 * 160 + outerInsets
+    // Keep the lower window edge and dock clear of forward-projected spatial media.
+    static let bottomClearance: CGFloat = 64
+    static let maximumWindowHeight: CGFloat = maximumMediaHeight + 2 * 160 + outerInsets + bottomClearance
 
     static func clearance(aspectRatio: Double?, isVideo: Bool = false) -> CGFloat {
         // Portraits and uncertain/video surfaces keep room for forward projection and transport.
@@ -20,7 +22,7 @@ enum GalleryViewerLayout {
     }
 
     static func chromeHeight(aspectRatio: Double?, isVideo: Bool = false) -> CGFloat {
-        2 * clearance(aspectRatio: aspectRatio, isVideo: isVideo) + outerInsets
+        2 * clearance(aspectRatio: aspectRatio, isVideo: isVideo) + outerInsets + bottomClearance
     }
 }
 
@@ -381,7 +383,8 @@ private struct GalleryViewerPane: View {
             }
             .frame(minHeight: minimumMediaHeight, idealHeight: preferredMediaHeight, maxHeight: .infinity)
             // The matching window budget preserves media size while keeping projection clearance.
-            .padding(.vertical, verticalClearance)
+            .padding(.top, verticalClearance)
+            .padding(.bottom, verticalClearance + GalleryViewerLayout.bottomClearance)
         }
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
@@ -493,6 +496,11 @@ private struct GalleryViewerPane: View {
                 set: { if !$0 { moreSessionID = nil } }
             )) {
                 VStack(alignment: .leading, spacing: 12) {
+                    Button("Shuffle", systemImage: "shuffle") {
+                        store.shuffle(session.id)
+                        moreSessionID = nil
+                    }
+                    .disabled(session.count < 2)
                     if let asset = session.currentAsset {
                         Button("Move to Private Vault", systemImage: "lock") {
                             guard !store.isPerformingOperation, !vault.isBusy else { return }

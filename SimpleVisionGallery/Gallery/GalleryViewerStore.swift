@@ -43,6 +43,50 @@ nonisolated struct GalleryPlaylistIndex {
     }
 }
 
+/// A bounded-memory permutation of live playlist positions. No photo records are copied.
+nonisolated struct GalleryShuffleOrder {
+    let count: Int
+    let first: Int
+    let seed: UInt64
+
+    init(count: Int, first: Int, seed: UInt64 = .random(in: .min ... .max)) {
+        self.count = count
+        self.first = first
+        self.seed = seed
+    }
+
+    func index(at position: Int) -> Int? {
+        guard count > 0, position >= 0, position < count else { return nil }
+        if count == 1 { return 0 }
+        let shuffled = permute(position)
+        if position == 0 { return first }
+        return shuffled == first ? permute(0) : shuffled
+    }
+
+    private func permute(_ value: Int) -> Int {
+        // A balanced Feistel network permutes a power-of-four domain; cycle walking
+        // restricts it to the live count without allocating an array for a large album.
+        let bits = (UInt64.bitWidth - UInt64(count - 1).leadingZeroBitCount + 1) / 2
+        let mask = (UInt64(1) << bits) - 1
+        func round(_ value: UInt64, _ round: UInt64) -> UInt64 {
+            var x = value &+ seed &+ (round &* 0x9e3779b97f4a7c15)
+            x = (x ^ (x >> 30)) &* 0xbf58476d1ce4e5b9
+            x = (x ^ (x >> 27)) &* 0x94d049bb133111eb
+            return (x ^ (x >> 31)) & mask
+        }
+        var result = UInt64(value)
+        repeat {
+            var left = result >> bits
+            var right = result & mask
+            for r in 0..<6 {
+                (left, right) = (right, left ^ round(right, UInt64(r)))
+            }
+            result = (left << bits) | right
+        } while result >= UInt64(count)
+        return Int(result)
+    }
+}
+
 #if os(visionOS)
 import Combine
 import OSLog
@@ -150,11 +194,33 @@ final class GalleryViewerSession: ObservableObject, Identifiable {
     @Published fileprivate(set) var cursor: Int?
     @Published fileprivate(set) var revision = 0
     fileprivate var cursorGeneration = UUID()
+    fileprivate var shuffleOrder: GalleryShuffleOrder?
+    fileprivate var shufflePosition = 0
 
-    fileprivate func setCursor(_ value: Int?) {
+    fileprivate func setCursor(_ value: Int?, shufflePosition: Int? = nil) {
         guard cursor != value else { return }
         cursorGeneration = UUID()
         cursor = value
+        if let shufflePosition {
+            self.shufflePosition = shufflePosition
+        } else {
+            rebaseShuffle()
+        }
+    }
+
+    fileprivate func rebaseShuffle() {
+        guard shuffleOrder != nil else { return }
+        // Membership changes rebuild the remaining order; never restore an old
+        // optimistic cursor into a different permutation.
+        cursorGeneration = UUID()
+        guard let cursor, playlist.index.count > 0 else { shuffleOrder = nil; shufflePosition = 0; return }
+        shuffleOrder = GalleryShuffleOrder(count: playlist.index.count, first: playlist.index.position(of: cursor))
+        shufflePosition = 0
+    }
+
+    fileprivate func orderedIndex(at position: Int) -> Int? {
+        let rank = shuffleOrder?.index(at: position) ?? (shuffleOrder == nil ? position : -1)
+        return playlist.index.index(at: rank)
     }
 
     fileprivate init(playlist: GalleryViewerPlaylist, cursor: Int) {
@@ -172,30 +238,30 @@ final class GalleryViewerSession: ObservableObject, Identifiable {
     var currentItem: GalleryMediaItem? { cursor.flatMap { playlist.item(at: $0) } }
     var currentAsset: PHAsset? { currentItem?.photosAsset }
     var nextItem: GalleryMediaItem? {
-        guard let cursor,
-              let next = playlist.index.index(at: playlist.index.position(of: cursor) + 1)
+        guard cursor != nil,
+              let next = orderedIndex(at: position)
         else { return nil }
         return playlist.item(at: next)
     }
     var nextAsset: PHAsset? { nextItem?.photosAsset }
 
     func upcomingItems(limit: Int) -> [GalleryMediaItem] {
-        guard let cursor, limit > 0 else { return [] }
-        let currentPosition = playlist.index.position(of: cursor)
+        guard cursor != nil, limit > 0 else { return [] }
+        let currentPosition = position - 1
         let available = min(limit, playlist.index.count - currentPosition - 1)
         guard available > 0 else { return [] }
         return (1...available).compactMap { offset in
-            playlist.index.index(at: currentPosition + offset).flatMap { playlist.item(at: $0) }
+            orderedIndex(at: currentPosition + offset).flatMap { playlist.item(at: $0) }
         }
     }
 
     func precedingItems(limit: Int) -> [GalleryMediaItem] {
-        guard let cursor, limit > 0 else { return [] }
-        let currentPosition = playlist.index.position(of: cursor)
+        guard cursor != nil, limit > 0 else { return [] }
+        let currentPosition = position - 1
         let available = min(limit, currentPosition)
         guard available > 0 else { return [] }
         return (1...available).compactMap { offset in
-            playlist.index.index(at: currentPosition - offset).flatMap { playlist.item(at: $0) }
+            orderedIndex(at: currentPosition - offset).flatMap { playlist.item(at: $0) }
         }
     }
 
@@ -203,7 +269,7 @@ final class GalleryViewerSession: ObservableObject, Identifiable {
     func precedingAssets(limit: Int) -> [PHAsset] { precedingItems(limit: limit).compactMap(\.photosAsset) }
 
     var count: Int { playlist.index.count }
-    var position: Int { cursor.map { playlist.index.position(of: $0) + 1 } ?? 0 }
+    var position: Int { cursor.map { shuffleOrder == nil ? playlist.index.position(of: $0) + 1 : shufflePosition + 1 } ?? 0 }
     var canGoPrevious: Bool { position > 1 }
     var canGoNext: Bool { position > 0 && position < count }
 }
@@ -306,6 +372,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 let oldVaultOffset = cursor.flatMap { $0 >= oldNativeCount ? $0 - oldNativeCount : nil }
                 let desired = oldVaultOffset ?? index.index(at: 0)
                 session.setCursor(index.survivingCursor(desired))
+                session.rebaseShuffle()
                 session.revision += 1
             }
         }
@@ -315,6 +382,8 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     func duplicateSession(_ id: UUID) -> UUID? {
         guard let original = sessions[id], let cursor = original.cursor else { return nil }
         let duplicate = GalleryViewerSession(playlist: original.playlist, cursor: cursor)
+        duplicate.shuffleOrder = original.shuffleOrder
+        duplicate.shufflePosition = original.shufflePosition
         sessions[duplicate.id] = duplicate
         return duplicate.id
     }
@@ -322,12 +391,22 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     func next(_ id: UUID) { navigate(id, offset: 1) }
     func previous(_ id: UUID) { navigate(id, offset: -1) }
 
-    private func navigate(_ id: UUID, offset: Int) {
-        guard let session = sessions[id], let cursor = session.cursor,
-              let next = session.playlist.index.index(at: session.playlist.index.position(of: cursor) + offset)
-        else { return }
+    func shuffle(_ id: UUID) {
+        guard let session = sessions[id], let cursor = session.cursor, session.count > 1 else { return }
         objectWillChange.send()
-        session.setCursor(next)
+        session.shuffleOrder = GalleryShuffleOrder(count: session.count,
+            first: session.playlist.index.position(of: cursor))
+        session.shufflePosition = 0
+        session.cursorGeneration = UUID()
+        session.revision += 1
+    }
+
+    private func navigate(_ id: UUID, offset: Int) {
+        guard let session = sessions[id], session.cursor != nil else { return }
+        let position = session.position - 1 + offset
+        guard let next = session.orderedIndex(at: position) else { return }
+        objectWillChange.send()
+        session.setCursor(next, shufflePosition: position)
     }
 
     func disposeSession(_ id: UUID) {
@@ -472,7 +551,10 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 guard sourceAlbum.virtualScope != nil || sourceAlbum.collection != nil else { throw ViewerMutationError.sourceNotEditable }
                 let source = sourceAlbum.virtualScope == nil ? sourceAlbum.collection : nil
                 let originalCursor = liveSession.cursor
-                liveSession.setCursor(liveSession.playlist.index.cursorAfterRemoving(originalCursor))
+                let originalShufflePosition = liveSession.shufflePosition
+                let successorPosition = liveSession.canGoNext ? liveSession.position : liveSession.position - 2
+                let successor = liveSession.orderedIndex(at: successorPosition)
+                liveSession.setCursor(successor, shufflePosition: successorPosition)
                 let handoffGeneration = liveSession.cursorGeneration
                 let binID: String
                 Self.gateLog.info("bin_move_begin")
@@ -486,7 +568,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                     if sessions[id] === liveSession,
                        liveSession.cursorGeneration == handoffGeneration,
                        let originalCursor, !liveSession.playlist.index.removed.contains(originalCursor) {
-                        liveSession.setCursor(originalCursor)
+                        liveSession.setCursor(originalCursor, shufflePosition: originalShufflePosition)
                     }
                     throw error
                 }
@@ -676,12 +758,12 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             guard nativeCount > 0 else { continue }
             var immediate = IndexSet()
             for session in sessions.values where session.playlist === playlist {
-                guard let cursor = session.cursor else { continue }
-                let position = playlist.index.position(of: cursor)
+                guard session.cursor != nil else { continue }
+                let position = session.position - 1
                 let lower = max(0, position - 24)
                 let upper = min(playlist.index.count, position + 25)
                 for offset in lower..<upper {
-                    guard let displayIndex = playlist.index.index(at: offset), displayIndex < nativeCount,
+                    guard let displayIndex = session.orderedIndex(at: offset), displayIndex < nativeCount,
                           let item = playlist.item(at: displayIndex), identifiers.contains(item.localIdentifier) else { continue }
                     immediate.insert(displayIndex)
                 }
@@ -763,6 +845,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                     desired = nil
                 }
                 session.setCursor(newIndex.survivingCursor(desired))
+                session.rebaseShuffle()
                 session.revision += 1
             }
         }
@@ -778,13 +861,14 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     private func applyRemovals(_ removed: IndexSet, to playlist: GalleryViewerPlaylist) {
         guard !removed.subtracting(playlist.index.removed).isEmpty else { return }
         playlist.index.remove(removed)
-        notify(playlist)
+        notify(playlist, orderChanged: true)
     }
 
-    private func notify(_ playlist: GalleryViewerPlaylist) {
+    private func notify(_ playlist: GalleryViewerPlaylist, orderChanged: Bool = false) {
         objectWillChange.send()
         for session in sessions.values where session.playlist === playlist {
             session.setCursor(playlist.index.survivingCursor(session.cursor))
+            if orderChanged { session.rebaseShuffle() }
             session.revision += 1
         }
     }
