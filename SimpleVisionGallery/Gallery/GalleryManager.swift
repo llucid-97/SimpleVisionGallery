@@ -409,6 +409,7 @@ struct GalleryVaultIndex {
     private(set) var unfiled: [GalleryVaultRecord] = []
     private(set) var recycleBin: [GalleryVaultRecord] = []
     private(set) var binnedAlbumIDs: Set<String> = []
+    private var binnedAlbumCounts: [String: Int] = [:]
     private(set) var byAlbum: [String: [GalleryVaultRecord]] = [:]
     private(set) var albumTitles: [String: String] = [:]
     private(set) var mediaCounts: [String: (photos: Int, videos: Int)] = [:]
@@ -428,7 +429,10 @@ struct GalleryVaultIndex {
             indexedRecords[record.id] = record
             if GalleryVaultRecycleBin.contains(record) {
                 recycleBin.append(record)
-                binnedAlbumIDs.formUnion(record.albums.lazy.map(\.id).filter { $0 != GalleryVaultRecycleBin.id })
+                for album in record.albums where album.id != GalleryVaultRecycleBin.id {
+                    binnedAlbumIDs.insert(album.id)
+                    binnedAlbumCounts[album.id, default: 0] += 1
+                }
                 var count = recycleBinCounts
                 if record.mediaType == PHAssetMediaType.image.rawValue { count.photos += 1 }
                 if record.mediaType == PHAssetMediaType.video.rawValue { count.videos += 1 }
@@ -480,34 +484,41 @@ struct GalleryVaultIndex {
         return GalleryVaultIndex(records: records, restoredPhotoIDs: restored, excludedIDs: excludedIDs)
     }
 
+    mutating func applyMutationChanges(_ ids: Set<UUID>, records: [GalleryVaultRecord]) {
+        let before = GalleryVaultIndex(records: ids.compactMap { indexedRecords[$0] })
+        // Successful queue changes contain only private items; no Photos lookup is needed.
+        let after = GalleryVaultIndex(records: records, excludedIDs: excluded)
+        all.removeAll { ids.contains($0.id) }; all.append(contentsOf: after.all)
+        unfiled.removeAll { ids.contains($0.id) }; unfiled.append(contentsOf: after.unfiled)
+        recycleBin.removeAll { ids.contains($0.id) }; recycleBin.append(contentsOf: after.recycleBin)
+        for id in ids { indexedRecords.removeValue(forKey: id) }
+        indexedRecords.merge(after.indexedRecords) { _, new in new }
+        for id in Set(before.byAlbum.keys).union(after.byAlbum.keys) {
+            var rows = byAlbum[id] ?? []
+            rows.removeAll { ids.contains($0.id) }
+            rows.append(contentsOf: after.byAlbum[id] ?? [])
+            if rows.isEmpty { byAlbum.removeValue(forKey: id); albumTitles.removeValue(forKey: id) }
+            else { byAlbum[id] = rows; albumTitles[id] = after.albumTitles[id] ?? albumTitles[id] }
+        }
+        for id in Set(before.mediaCounts.keys).union(after.mediaCounts.keys) {
+            let old = before.counts(for: id), new = after.counts(for: id), current = counts(for: id)
+            mediaCounts[id] = (current.photos - old.photos + new.photos, current.videos - old.videos + new.videos)
+            privateItemCounts[id, default: 0] += (after.privateItemCounts[id] ?? 0) - (before.privateItemCounts[id] ?? 0)
+        }
+        recycleBinCounts = counts(for: GalleryVirtualScope.recycleBin.virtualID)
+        for id in Set(before.binnedAlbumCounts.keys).union(after.binnedAlbumCounts.keys) {
+            let count = (binnedAlbumCounts[id] ?? 0) - (before.binnedAlbumCounts[id] ?? 0) + (after.binnedAlbumCounts[id] ?? 0)
+            if count == 0 { binnedAlbumCounts.removeValue(forKey: id); binnedAlbumIDs.remove(id) }
+            else { binnedAlbumCounts[id] = count; binnedAlbumIDs.insert(id) }
+        }
+    }
+
     func records(for album: GalleryAlbum, filter: GalleryMediaFilter, search: String,
                  sort: GalleryAssetSortMode = .photosOrder, ascending: Bool = true,
-                 shuffleSeed: UUID = UUID(), preservingOrderOf previous: [GalleryVaultRecord]? = nil) -> [GalleryVaultRecord] {
-        let candidates: [GalleryVaultRecord]
-        switch album.virtualScope {
-        case .photos: candidates = all
-        case .unfiled: candidates = unfiled
-        case .recycleBin: candidates = recycleBin
-        case nil:
-            candidates = GalleryRecycleBin.isRecycleBinTitle(album.title) ? recycleBin : (byAlbum[album.id] ?? [])
-        }
-        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matches = candidates.filter { record in
-            guard !excluded.contains(record.id) else { return false }
-            let matchesType = filter == .all
-                || (filter == .photos && record.mediaType == PHAssetMediaType.image.rawValue)
-                || (filter == .videos && record.mediaType == PHAssetMediaType.video.rawValue)
-            return matchesType && (needle.isEmpty || record.filename.range(
-                of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil)
-        }
-        // Recycle/permanent deletion only removes rows; their surviving sort keys do not change.
-        if let previous {
-            var remaining = Dictionary(uniqueKeysWithValues: matches.map { ($0.id, $0) })
-            let retained = previous.compactMap { remaining.removeValue(forKey: $0.id) }
-            if remaining.isEmpty { return retained }
-        }
-        // Preserve album-local ordering from before the batch transfer; the vault ID is random.
-        let keyed = matches.map { record -> (GalleryVaultRecord, Int?, Int, String) in
+                 shuffleSeed: UUID = UUID(), preservingOrderOf previous: [GalleryVaultRecord]? = nil,
+                 changedIDs: Set<UUID>? = nil) -> [GalleryVaultRecord] {
+        typealias Key = (GalleryVaultRecord, Int?, Int, String)
+        func key(_ record: GalleryVaultRecord) -> Key {
             let position = album.virtualScope == nil && !GalleryRecycleBin.isRecycleBinTitle(album.title)
                 ? record.albums.first(where: { $0.id == album.id })?.position : nil
             var randomOrder = 0
@@ -519,7 +530,7 @@ struct GalleryVaultIndex {
             }
             return (record, position, randomOrder, record.id.uuidString)
         }
-        return keyed.sorted { lhs, rhs in
+        func precedes(_ lhs: Key, _ rhs: Key) -> Bool {
             let a = lhs.0, b = rhs.0
             switch sort {
             case .photosOrder:
@@ -540,7 +551,49 @@ struct GalleryVaultIndex {
             }
             if a.sourceIdentifier != b.sourceIdentifier { return a.sourceIdentifier < b.sourceIdentifier }
             return lhs.3 < rhs.3
-        }.map(\.0)
+        }
+        // A queued bin mutation keeps every other row's sort keys unchanged.
+        if let previous, let changedIDs {
+            let changed = GalleryVaultIndex(records: changedIDs.compactMap { indexedRecords[$0] })
+                .records(for: album, filter: filter, search: search, sort: sort,
+                    ascending: ascending, shuffleSeed: shuffleSeed)
+            var replacements = Dictionary(uniqueKeysWithValues: changed.map { ($0.id, $0) })
+            let retained = previous.compactMap { row in
+                changedIDs.contains(row.id) ? replacements.removeValue(forKey: row.id) : row
+            }
+            let additions = changed.filter { replacements[$0.id] != nil }.map(key)
+            guard !additions.isEmpty else { return retained }
+            var merged: [GalleryVaultRecord] = []
+            merged.reserveCapacity(retained.count + additions.count)
+            var offset = 0
+            for row in retained {
+                let existing = key(row)
+                while offset < additions.count && precedes(additions[offset], existing) {
+                    merged.append(additions[offset].0); offset += 1
+                }
+                merged.append(row)
+            }
+            merged.append(contentsOf: additions.dropFirst(offset).map(\.0))
+            return merged
+        }
+        let candidates: [GalleryVaultRecord]
+        switch album.virtualScope {
+        case .photos: candidates = all
+        case .unfiled: candidates = unfiled
+        case .recycleBin: candidates = recycleBin
+        case nil:
+            candidates = GalleryRecycleBin.isRecycleBinTitle(album.title) ? recycleBin : (byAlbum[album.id] ?? [])
+        }
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = candidates.filter { record in
+            guard !excluded.contains(record.id) else { return false }
+            let matchesType = filter == .all
+                || (filter == .photos && record.mediaType == PHAssetMediaType.image.rawValue)
+                || (filter == .videos && record.mediaType == PHAssetMediaType.video.rawValue)
+            return matchesType && (needle.isEmpty || record.filename.range(
+                of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil)
+        }
+        return matches.map(key).sorted(by: precedes).map(\.0)
     }
 
     /// O(parent album count), independent of the size of the vault.
@@ -891,9 +944,14 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     private func vaultRecordsDidChange(_ records: [GalleryVaultRecord]) {
         let keepsCurrentOrder = GalleryVaultService.shared.isPublishingQueuedMutations
             && selectedAlbum.map { currentVaultQueryKey == vaultKey(for: $0) } == true
-        restoredVaultIDs.formIntersection(Set(records.map(\.id)))
+        if !restoredVaultIDs.isEmpty { restoredVaultIDs.formIntersection(Set(records.map(\.id))) }
         vaultIndexGeneration = UUID()
-        vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)
+        let service = GalleryVaultService.shared
+        if service.isUnlocked && service.isPublishingQueuedMutations {
+            vaultIndex.applyMutationChanges(service.publishingMutationIDs, records: service.publishingMutationRecords)
+        } else {
+            vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)
+        }
         let photosAlbumIDs = Set(albums.filter { $0.collection != nil }.map(\.id))
         var current = albums.filter { $0.collection != nil }
         for (id, title) in vaultIndex.albumTitles where !photosAlbumIDs.contains(id) {
@@ -908,8 +966,12 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             }
             let nextVaultRecords = vaultIndex.records(for: album, filter: mediaFilter, search: mediaSearchQuery,
                 sort: assetSortMode, ascending: assetSortAscending, shuffleSeed: vaultShuffleSeed,
-                preservingOrderOf: keepsCurrentOrder ? currentVaultRecords : nil)
-            if nextVaultRecords.map(\.id) != currentVaultRecords.map(\.id) { clearSelection(silent: true) }
+                preservingOrderOf: keepsCurrentOrder ? currentVaultRecords : nil,
+                changedIDs: service.publishingMutationIDs)
+            if !selectedIndexes.isEmpty,
+               !nextVaultRecords.elementsEqual(currentVaultRecords, by: { $0.id == $1.id }) {
+                clearSelection(silent: true)
+            }
             setCurrentVaultRecords(nextVaultRecords, album: album)
             totalAssetCount = nativeAssetCount + currentVaultDisplayIndex.count
             visibleAssetCount = GalleryPagingPolicy.visibleCount(current: visibleAssetCount, total: totalAssetCount,

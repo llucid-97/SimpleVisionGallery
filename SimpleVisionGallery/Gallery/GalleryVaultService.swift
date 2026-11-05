@@ -45,9 +45,14 @@ nonisolated enum GalleryVaultMutation: Sendable {
 }
 
 nonisolated enum GalleryVaultMutationWarning: LocalizedError {
-    case directorySyncUnconfirmed
+    case directorySyncUnconfirmed, cleanupPending
 
-    var errorDescription: String? { "The vault change was saved, but its final directory sync was not confirmed." }
+    var errorDescription: String? {
+        switch self {
+        case .directorySyncUnconfirmed: "The vault change was saved, but its final directory sync was not confirmed."
+        case .cleanupPending: "The item was deleted from the vault, but encrypted cleanup is still pending. Unlock again to retry cleanup."
+        }
+    }
 }
 
 nonisolated struct GalleryVaultMutationResult: Sendable {
@@ -70,6 +75,11 @@ final class GalleryVaultService: ObservableObject {
     @Published private(set) var authEpoch = UUID()
     @Published private(set) var records: [GalleryVaultRecord] = []
     private(set) var isPublishingQueuedMutations = false
+    private(set) var publishingMutationIDs = Set<UUID>()
+    var publishingMutationRecords: [GalleryVaultRecord] {
+        guard isUnlocked else { return [] }
+        return publishingMutationIDs.compactMap { storage.record(id: $0) }
+    }
     @Published private(set) var pendingAlbumDeletion: GalleryVaultAlbumDeletion?
     @Published private(set) var albumDeletionRecoveryError: String?
     @Published private(set) var albumDeletionRemainingCount = 0
@@ -454,8 +464,13 @@ final class GalleryVaultService: ObservableObject {
         }
         isBusy = true
         error = nil
-        defer { publishIfCurrent(epoch, queuedMutations: true); endOperation() }
-        return await storage.applyMutations(mutations)
+        defer { endOperation() }
+        let revision = storage.mutationRevision
+        let results = await storage.applyMutations(mutations)
+        if storage.mutationRevision != revision {
+            publishIfCurrent(epoch, queuedMutationIDs: Set(results.filter { $0.error == nil }.map(\.id)))
+        }
+        return results
     }
 
     private func applyOne(_ mutation: GalleryVaultMutation, epoch: UUID) async throws {
@@ -864,10 +879,11 @@ final class GalleryVaultService: ObservableObject {
         wakeOperationWaiters()
     }
     private func isCurrent(_ epoch: UUID) -> Bool { isUnlocked && authEpoch == epoch }
-    private func publishIfCurrent(_ epoch: UUID, queuedMutations: Bool = false) {
-        guard isCurrent(epoch), records != storage.records else { return }
-        isPublishingQueuedMutations = queuedMutations
-        defer { isPublishingQueuedMutations = false }
+    private func publishIfCurrent(_ epoch: UUID, queuedMutationIDs: Set<UUID>? = nil) {
+        guard isCurrent(epoch), queuedMutationIDs != nil || records != storage.records else { return }
+        isPublishingQueuedMutations = queuedMutationIDs != nil
+        publishingMutationIDs = queuedMutationIDs ?? []
+        defer { isPublishingQueuedMutations = false; publishingMutationIDs.removeAll() }
         records = storage.records
     }
 

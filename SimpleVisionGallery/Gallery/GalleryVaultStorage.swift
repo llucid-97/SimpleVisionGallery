@@ -23,7 +23,7 @@ nonisolated enum GalleryVaultStorageError: LocalizedError {
     }
 }
 
-/// A per-item lease makes lock wait only for the current atomic record commit.
+/// The lease makes lock a commit and decrypted-state revocation barrier.
 nonisolated final class GalleryVaultSession: @unchecked Sendable {
     private let lock = NSLock()
     private var key: SymmetricKey?
@@ -354,6 +354,7 @@ final class GalleryVaultStorage: ObservableObject {
     static let shared = GalleryVaultStorage()
     @Published private(set) var isUnlocked = false
     @Published private(set) var records: [GalleryVaultRecord] = []
+    private(set) var mutationRevision: UInt = 0
     @Published private(set) var unreadableRecordCount = 0
     @Published private(set) var cleanupWarning: String?
     private var recordsByID: [UUID: GalleryVaultRecord] = [:]
@@ -523,6 +524,7 @@ final class GalleryVaultStorage: ObservableObject {
         idsBySource.removeAll(keepingCapacity: false)
         batchDepth = 0
         recordsChanged = false
+        mutationRevision = 0
         NotificationCenter.default.post(name: .galleryVaultWillLock, object: nil)
         try? cleanupPlaintext()
         NotificationCenter.default.post(name: .galleryVaultDidLock, object: nil)
@@ -712,6 +714,7 @@ final class GalleryVaultStorage: ObservableObject {
         }
         let expectedGeneration = generation
         let itemDirectory = items
+        let stagingDirectory = staging
         let thumbnailDirectory = root.appendingPathComponent("thumbnails", isDirectory: true)
         let state = MutationBatchState(mutations: mutations, recordsByID: recordsByID,
             idsBySource: idsBySource, recordDates: recordDates)
@@ -757,8 +760,19 @@ final class GalleryVaultStorage: ObservableObject {
                                 urls: record.resources.map { thumbnailDirectory
                                     .appendingPathComponent("\(id.uuidString)-\($0.id.uuidString).enc") },
                                 inMutationLease: key)
-                            try FileManager.default.removeItem(at: directory)
-                            do { try Self.syncDirectory(itemDirectory) } catch { durabilityWarning = GalleryVaultMutationWarning.directorySyncUnconfirmed }
+                            // Rename is the commit: a crash leaves a whole item or encrypted staging cleanup.
+                            let discarded = stagingDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
+                            guard rename(directory.path, discarded.path) == 0 else {
+                                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                            }
+                            do {
+                                try Self.syncDirectory(itemDirectory)
+                                try Self.syncDirectory(stagingDirectory)
+                            } catch { durabilityWarning = GalleryVaultMutationWarning.directorySyncUnconfirmed }
+                            do {
+                                try FileManager.default.removeItem(at: discarded)
+                                try Self.syncDirectory(stagingDirectory)
+                            } catch { durabilityWarning = GalleryVaultMutationWarning.cleanupPending }
                             deleted = true
                             itemChanged = true
 
@@ -817,6 +831,7 @@ final class GalleryVaultStorage: ObservableObject {
             repairedCount: state.repairedCount, changed: state.changed)
         session.detachMutationState()
         guard output.changed else { return output.outcomes.map { .init(id: $0.id, error: $0.error) } }
+        mutationRevision &+= 1
         recordsByID = output.recordsByID
         idsBySource = output.idsBySource
         recordDates = output.recordDates

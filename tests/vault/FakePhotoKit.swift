@@ -266,8 +266,12 @@ nonisolated final class GalleryVaultStagingItem {
     func endBatch() { if lockAtEndBatch { lockAtEndBatch = false; GalleryVaultService.shared.lock() } }
     func record(id: UUID) -> GalleryVaultRecord? { durable[id] }
     func record(sourceIdentifier: String) -> GalleryVaultRecord? { durable.values.first { $0.sourceIdentifier == sourceIdentifier } }
+    var mutationRevision: UInt = 0
     func applyMutations(_ mutations: [GalleryVaultMutation]) async -> [GalleryVaultMutationResult] {
-        mutations.map { mutation in
+        let before = durable
+        defer { if durable != before { mutationRevision &+= 1 } }
+
+        return mutations.map { mutation in
             do {
                 guard isUnlocked, var record = durable[mutation.id] else { throw GalleryVaultStorageError.corruptRecord }
                 switch mutation {

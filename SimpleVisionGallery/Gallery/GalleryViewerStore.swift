@@ -295,6 +295,9 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     private var albumDeletionSubscription: AnyCancellable?
     private var vaultRestoreSubscription: AnyCancellable?
     private var restoredVaultIDs: Set<UUID> = []
+    private var vaultIndex = GalleryVaultIndex()
+    private var queuedVaultUpdates = Set<UUID>()
+    private var vaultUpdateTask: Task<Void, Never>?
 
     private override init() {
         super.init()
@@ -316,8 +319,15 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         vaultSubscription = GalleryVaultService.shared.$records.combineLatest(GalleryVaultService.shared.$isUnlocked)
             .sink { [weak self] records, unlocked in
                 guard let self else { return }
+                let service = GalleryVaultService.shared
+                if unlocked && service.isPublishingQueuedMutations {
+                    self.scheduleVaultPlaylistUpdate(service.publishingMutationIDs, epoch: service.authEpoch)
+                    return
+                }
+                self.vaultUpdateTask?.cancel()
+                self.queuedVaultUpdates.removeAll()
                 let visibleRecords = unlocked ? records : []
-                self.restoredVaultIDs.formIntersection(Set(visibleRecords.map(\.id)))
+                if !self.restoredVaultIDs.isEmpty { self.restoredVaultIDs.formIntersection(Set(visibleRecords.map(\.id))) }
                 self.updateVaultPlaylists(visibleRecords)
             }
         albumDeletionSubscription = NotificationCenter.default.publisher(for: .galleryAlbumWasDeleted).sink { [weak self] notification in
@@ -799,8 +809,28 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
 
     /// Rebuild only the vault suffix. Never materialize the native Photos fetch.
     /// Removing the old suffix before releasing metadata prevents locked scenes remaining visible.
-    private func updateVaultPlaylists(_ records: [GalleryVaultRecord]) {
-        let vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)
+    private func scheduleVaultPlaylistUpdate(_ ids: Set<UUID>, epoch: UUID) {
+        queuedVaultUpdates.formUnion(ids)
+        vaultUpdateTask?.cancel()
+        vaultUpdateTask = Task { @MainActor [weak self] in
+            // Pending masks already advanced every viewer; give that frame time before metadata work.
+            do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+            let service = GalleryVaultService.shared
+            guard let self, service.isUnlocked, service.authEpoch == epoch else { return }
+            let changes = self.queuedVaultUpdates
+            self.queuedVaultUpdates.removeAll()
+            self.updateVaultPlaylists(service.records, mutatedIDs: changes)
+            self.vaultUpdateTask = nil
+        }
+    }
+
+    private func updateVaultPlaylists(_ records: [GalleryVaultRecord], mutatedIDs: Set<UUID>? = nil) {
+        let service = GalleryVaultService.shared
+        if service.isUnlocked, let mutatedIDs {
+            vaultIndex.applyMutationChanges(mutatedIDs, records: mutatedIDs.compactMap { GalleryVaultStorage.shared.record(id: $0) })
+        } else {
+            vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)
+        }
         for playlist in Array(playlists.values) {
             let old = playlist.snapshot.vaultRecords
             let album = playlist.snapshot.album
@@ -818,8 +848,8 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 filter: playlist.snapshot.mediaFilter, search: playlist.snapshot.mediaSearch,
                 sort: playlist.snapshot.vaultSort, ascending: playlist.snapshot.vaultSortAscending,
                 shuffleSeed: playlist.snapshot.vaultShuffleSeed,
-                preservingOrderOf: GalleryVaultService.shared.isPublishingQueuedMutations ? old : nil)
-            if old.map(\.id) == next.map(\.id), !next.isEmpty { continue }
+                preservingOrderOf: mutatedIDs != nil ? old : nil, changedIDs: mutatedIDs)
+            if !next.isEmpty, old.elementsEqual(next, by: { $0.id == $1.id }) { continue }
 
             let associated = sessions.values.filter { $0.playlist === playlist }
             let previousCursors: [(GalleryViewerSession, Int?, UUID?, Int)] = associated.map { session in
@@ -831,8 +861,9 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             var newIndex = GalleryPlaylistIndex(originalCount: nativeCount + next.count)
             var preservedRemoved = oldRemoved.intersection(IndexSet(integersIn: 0..<nativeCount))
             let pendingPositions = Set(playlist.pendingRemovals.values.map(\.position))
-            let previouslyRemovedIDs = Set(old.enumerated().compactMap { offset, record in
-                oldRemoved.contains(nativeCount + offset) && !pendingPositions.contains(nativeCount + offset) ? record.id : nil
+            let removedVaultPositions = oldRemoved.intersection(IndexSet(integersIn: nativeCount..<(nativeCount + old.count)))
+            let previouslyRemovedIDs = Set(removedVaultPositions.compactMap { position in
+                pendingPositions.contains(position) ? nil : old[position - nativeCount].id
             })
             for (offset, record) in next.enumerated() where previouslyRemovedIDs.contains(record.id) {
                 preservedRemoved.insert(nativeCount + offset)
@@ -847,7 +878,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             }
             playlist.index = newIndex
             playlist.changeGeneration = UUID()
-            let nextPositions = Dictionary(uniqueKeysWithValues: next.enumerated().map { ($1.id, nativeCount + $0) })
+            let nextPositions = playlist.vaultPositionByID
             objectWillChange.send()
             for (session, oldCursor, vaultID, oldPosition) in previousCursors {
                 let desired: Int?
