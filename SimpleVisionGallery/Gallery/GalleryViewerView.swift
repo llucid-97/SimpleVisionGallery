@@ -1,5 +1,8 @@
+import CryptoKit
+
 #if os(visionOS)
 import AVKit
+import OSLog
 @preconcurrency import Photos
 import RealityKit
 import SwiftUI
@@ -258,7 +261,9 @@ private struct GalleryViewerSceneAnchor: UIViewRepresentable {
                 // Allow a later attachment update to retry instead of marking
                 // that scene as permanently configured.
                 self?.configuredScene = nil
-                print("Gallery window resize unavailable: \(error.localizedDescription)")
+                let error = error as NSError
+                Logger(subsystem: "com.llucid.simplevisiongallery", category: "Gallery")
+                    .error("Gallery window resize unavailable: domain=\(GalleryLogRedaction.token(error.domain), privacy: .private) code=\(error.code, privacy: .public)")
             }
         }
     }
@@ -387,7 +392,11 @@ private struct GalleryViewerPane: View {
             } details: {
                 VStack(alignment: .leading, spacing: 4) {
                     viewerDetails
-                    if let actionError {
+                    if store.pendingPhotosSessionID == session.id {
+                        Text("Photos hasn’t responded yet. This operation is still pending.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("gallery-viewer-photos-pending")
+                    } else if let actionError {
                         Text(actionError).font(.caption).foregroundStyle(.red).lineLimit(2)
                     } else if let message = media.status {
                         Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -892,7 +901,17 @@ private struct GalleryViewerMoveSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
-            .overlay { if store.isPerformingOperation { ProgressView("Moving…").padding(24).glassBackgroundEffect() } }
+            .overlay {
+                if store.isPerformingOperation {
+                    VStack(spacing: 12) {
+                        ProgressView("Moving…")
+                        if store.pendingPhotosSessionID == sessionID {
+                            Text("Photos hasn’t responded yet. This operation is still pending.")
+                                .accessibilityIdentifier("gallery-viewer-photos-pending")
+                        }
+                    }.padding(24).glassBackgroundEffect()
+                }
+            }
         }
         .frame(width: 500, height: 550)
         .task { await store.refreshAlbums() }
@@ -988,3 +1007,13 @@ struct GalleryRealityImage: View {
     }
 }
 #endif
+
+enum GalleryLogRedaction {
+    private static let salt = SymmetricKey(size: .bits256)
+
+    static func token(_ value: String) -> String {
+        let saltBytes = salt.withUnsafeBytes { Array($0) }
+        let digest = SHA256.hash(data: Data(saltBytes) + Data(value.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+}

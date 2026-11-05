@@ -45,6 +45,7 @@ nonisolated struct GalleryPlaylistIndex {
 
 #if os(visionOS)
 import Combine
+import OSLog
 @preconcurrency import Photos
 
 @MainActor
@@ -212,6 +213,8 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     static let shared = GalleryViewerStore()
     @Published private(set) var sessions: [UUID: GalleryViewerSession] = [:]
     @Published private(set) var albums: [GalleryAlbum] = []
+    private static let gateLog = Logger(subsystem: "com.llucid.simplevisiongallery", category: "viewer-gate")
+    @Published private(set) var pendingPhotosSessionID: UUID?
     @Published private(set) var isPerformingOperation = false
     private var playlists: [UUID: GalleryViewerPlaylist] = [:]
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -337,6 +340,9 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     }
 
     func refreshAlbums() async {
+        let started = ProcessInfo.processInfo.systemUptime
+        Self.gateLog.info("refresh_begin")
+        defer { Self.gateLog.info("refresh_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1000), privacy: .public)") }
         Task { await GalleryVirtualLibraryIndex.shared.refreshAlbumEmptiness() }
         let generation = UUID()
         albumRefreshGeneration = generation
@@ -408,16 +414,19 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             throw ViewerMutationError.destinationNotEditable
         }
         try await mutate(id, destination: collection, newAlbumName: nil, recycling: false, expectedAssetID: expectedAssetID)
+        await refreshAlbums()
     }
 
     func move(_ id: UUID, toNewAlbumNamed name: String, expectedAssetID: String? = nil) async throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw ViewerMutationError.emptyName }
         try await mutate(id, destination: nil, newAlbumName: name, recycling: false, expectedAssetID: expectedAssetID)
+        await refreshAlbums()
     }
 
     func recycle(_ id: UUID, expectedAssetID: String? = nil) async throws {
         try await mutate(id, destination: nil, newAlbumName: nil, recycling: true, expectedAssetID: expectedAssetID)
+        await refreshAlbums()
     }
 
     /// Removes the current item from its real source album without deleting it
@@ -426,23 +435,26 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         guard let session = sessions[sessionID], let asset = session.currentAsset else { throw ViewerMutationError.noAsset }
         guard asset.localIdentifier == expectedAssetID else { return }
         guard session.playlist.snapshot.album.virtualScope == nil else { throw ViewerMutationError.sourceNotEditable }
-        await acquireMutation()
-        defer { releaseMutation() }
-        guard let live = sessions[sessionID], live.currentAsset?.localIdentifier == expectedAssetID else { return }
-        guard let source = PHAssetCollection.fetchAssetCollections(
-            withLocalIdentifiers: [session.albumID], options: nil).firstObject,
-              source.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
-        var staged = false
-        try await PHPhotoLibrary.shared().performChanges {
-            guard let request = PHAssetCollectionChangeRequest(for: source) else { return }
-            request.removeAssets([asset] as NSArray)
-            staged = true
+        try await withMutation(sessionID: sessionID) {
+            guard let live = sessions[sessionID], live.currentAsset?.localIdentifier == expectedAssetID else { return }
+            guard let source = PHAssetCollection.fetchAssetCollections(
+                withLocalIdentifiers: [session.albumID], options: nil).firstObject,
+                  source.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
+            var staged = false
+            Self.gateLog.info("remove_change_begin")
+            let changeStart = ProcessInfo.processInfo.systemUptime
+            try await PHPhotoLibrary.shared().performChanges {
+                guard let request = PHAssetCollectionChangeRequest(for: source) else { return }
+                request.removeAssets([asset] as NSArray)
+                staged = true
+            }
+            Self.gateLog.info("remove_change_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - changeStart) * 1000), privacy: .public)")
+            guard staged else { throw ViewerMutationError.changeUnavailable }
+            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], removedAlbumID: source.localIdentifier)
+            synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
+                recycling: false, removedFromSource: true)
+            removeFromAlbum(source.localIdentifier, assets: [asset])
         }
-        guard staged else { throw ViewerMutationError.changeUnavailable }
-        GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], removedAlbumID: source.localIdentifier)
-        synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
-            recycling: false, removedFromSource: true)
-        removeFromAlbum(source.localIdentifier, assets: [asset])
         await refreshAlbums()
     }
 
@@ -452,87 +464,94 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         guard expectedAssetID == nil || expectedAssetID == asset.localIdentifier else { return }
         let sourceAlbum = session.playlist.snapshot.album
         let sourceID = session.albumID
-        await acquireMutation()
-        defer { releaseMutation() }
-        guard let liveSession = sessions[id], liveSession.currentAsset?.localIdentifier == asset.localIdentifier else { return }
-        if recycling && sourceAlbum.virtualScope != .recycleBin && !GalleryRecycleBin.isRecycleBinTitle(sourceAlbum.title) {
-            // Show the already-prepared successor as soon as the bin action starts.
-            // Membership still changes only after Photos commits the transaction.
-            guard sourceAlbum.virtualScope != nil || sourceAlbum.collection != nil else { throw ViewerMutationError.sourceNotEditable }
-            let source = sourceAlbum.virtualScope == nil ? sourceAlbum.collection : nil
-            let originalCursor = liveSession.cursor
-            liveSession.setCursor(liveSession.playlist.index.cursorAfterRemoving(originalCursor))
-            let handoffGeneration = liveSession.cursorGeneration
-            let binID: String
-            do {
-                binID = try await GalleryRecycleBin.move([asset], from: source)
-            } catch {
-                // A failed write must not undo navigation or a removal received meanwhile.
-                if sessions[id] === liveSession,
-                   liveSession.cursorGeneration == handoffGeneration,
-                   let originalCursor, !liveSession.playlist.index.removed.contains(originalCursor) {
-                    liveSession.setCursor(originalCursor)
+        try await withMutation(sessionID: id) {
+            guard let liveSession = sessions[id], liveSession.currentAsset?.localIdentifier == asset.localIdentifier else { return }
+            if recycling && sourceAlbum.virtualScope != .recycleBin && !GalleryRecycleBin.isRecycleBinTitle(sourceAlbum.title) {
+                // Show the already-prepared successor as soon as the bin action starts.
+                // Membership still changes only after Photos commits the transaction.
+                guard sourceAlbum.virtualScope != nil || sourceAlbum.collection != nil else { throw ViewerMutationError.sourceNotEditable }
+                let source = sourceAlbum.virtualScope == nil ? sourceAlbum.collection : nil
+                let originalCursor = liveSession.cursor
+                liveSession.setCursor(liveSession.playlist.index.cursorAfterRemoving(originalCursor))
+                let handoffGeneration = liveSession.cursorGeneration
+                let binID: String
+                Self.gateLog.info("bin_move_begin")
+                let binStart = ProcessInfo.processInfo.systemUptime
+                do {
+                    binID = try await GalleryRecycleBin.move([asset], from: source)
+                    Self.gateLog.info("bin_move_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - binStart) * 1000), privacy: .public)")
+                } catch {
+                    Self.gateLog.error("bin_move_failed duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - binStart) * 1000), privacy: .public)")
+                    // A failed write must not undo navigation or a removal received meanwhile.
+                    if sessions[id] === liveSession,
+                       liveSession.cursorGeneration == handoffGeneration,
+                       let originalCursor, !liveSession.playlist.index.removed.contains(originalCursor) {
+                        liveSession.setCursor(originalCursor)
+                    }
+                    throw error
                 }
-                throw error
+                GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: binID, removedAlbumID: source?.localIdentifier)
+                synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
+                    recycling: true, removedFromSource: source != nil)
+                if let source { removeFromAlbum(source.localIdentifier, assets: [asset]) }
+                return
             }
-            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: binID, removedAlbumID: source?.localIdentifier)
-            synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
-                recycling: true, removedFromSource: source != nil)
+
+            let source: PHAssetCollection?
+            if sourceAlbum.virtualScope == nil {
+                guard let realSource = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [sourceID], options: nil).firstObject,
+                      realSource.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
+                source = realSource
+            } else {
+                source = nil
+            }
+
+            if recycling && (sourceAlbum.virtualScope == .recycleBin || (source.map { GalleryRecycleBin.isRecycleBinTitle($0.localizedTitle) } ?? false)) {
+                guard let source else { throw ViewerMutationError.assetNoLongerInBin }
+                Self.gateLog.info("bin_delete_begin")
+                let deleteStart = ProcessInfo.processInfo.systemUptime
+                try await deleteFromRecycleBin(asset, source: source)
+                Self.gateLog.info("bin_delete_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - deleteStart) * 1000), privacy: .public)")
+                removeFromAllAlbums(assets: [asset])
+                GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], deletedAssetIDs: [asset.localIdentifier])
+                return
+            }
+
+            let target = destination
+            let createName = newAlbumName
+            if let target, target.localIdentifier == source?.localIdentifier { return }
+            if let target, !target.canPerform(.addContent) { throw ViewerMutationError.destinationNotEditable }
+            var staged = false
+            var createdIdentifier: String?
+            Self.gateLog.info("move_change_begin")
+            let changeStart = ProcessInfo.processInfo.systemUptime
+            try await PHPhotoLibrary.shared().performChanges {
+                let sourceRequest = source.flatMap { PHAssetCollectionChangeRequest(for: $0) }
+                guard source == nil || sourceRequest != nil else { return }
+                let destinationRequest: PHAssetCollectionChangeRequest
+                if let target {
+                    guard let request = PHAssetCollectionChangeRequest(for: target) else { return }
+                    destinationRequest = request
+                } else if let createName {
+                    destinationRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: createName)
+                    createdIdentifier = destinationRequest.placeholderForCreatedAssetCollection.localIdentifier
+                } else { return }
+                destinationRequest.addAssets([asset] as NSArray)
+                sourceRequest?.removeAssets([asset] as NSArray)
+                staged = true
+            }
+            Self.gateLog.info("move_change_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - changeStart) * 1000), privacy: .public)")
+            guard staged else { throw ViewerMutationError.changeUnavailable }
+            let destinationID = target?.localIdentifier ?? createdIdentifier
+            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: destinationID, removedAlbumID: source?.localIdentifier)
+            let destinationIsBin = destinationID == GalleryRecycleBin.existingCollection()?.localIdentifier
+            synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: true,
+                recycling: destinationIsBin, removedFromSource: source != nil)
             if let source { removeFromAlbum(source.localIdentifier, assets: [asset]) }
-            await refreshAlbums()
-            return
+            if let destinationID = target?.localIdentifier ?? createdIdentifier {
+                GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationID)
+            }
         }
-
-        let source: PHAssetCollection?
-        if sourceAlbum.virtualScope == nil {
-            guard let realSource = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [sourceID], options: nil).firstObject,
-                  realSource.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
-            source = realSource
-        } else {
-            source = nil
-        }
-
-        if recycling && (sourceAlbum.virtualScope == .recycleBin || (source.map { GalleryRecycleBin.isRecycleBinTitle($0.localizedTitle) } ?? false)) {
-            guard let source else { throw ViewerMutationError.assetNoLongerInBin }
-            try await deleteFromRecycleBin(asset, source: source)
-            removeFromAllAlbums(assets: [asset])
-            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], deletedAssetIDs: [asset.localIdentifier])
-            await refreshAlbums()
-            return
-        }
-
-        let target = destination
-        let createName = newAlbumName
-        if let target, target.localIdentifier == source?.localIdentifier { return }
-        if let target, !target.canPerform(.addContent) { throw ViewerMutationError.destinationNotEditable }
-        var staged = false
-        var createdIdentifier: String?
-        try await PHPhotoLibrary.shared().performChanges {
-            let sourceRequest = source.flatMap { PHAssetCollectionChangeRequest(for: $0) }
-            guard source == nil || sourceRequest != nil else { return }
-            let destinationRequest: PHAssetCollectionChangeRequest
-            if let target {
-                guard let request = PHAssetCollectionChangeRequest(for: target) else { return }
-                destinationRequest = request
-            } else if let createName {
-                destinationRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: createName)
-                createdIdentifier = destinationRequest.placeholderForCreatedAssetCollection.localIdentifier
-            } else { return }
-            destinationRequest.addAssets([asset] as NSArray)
-            sourceRequest?.removeAssets([asset] as NSArray)
-            staged = true
-        }
-        guard staged else { throw ViewerMutationError.changeUnavailable }
-        let destinationID = target?.localIdentifier ?? createdIdentifier
-        GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: destinationID, removedAlbumID: source?.localIdentifier)
-        let destinationIsBin = destinationID == GalleryRecycleBin.existingCollection()?.localIdentifier
-        synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: true,
-            recycling: destinationIsBin, removedFromSource: source != nil)
-        if let source { removeFromAlbum(source.localIdentifier, assets: [asset]) }
-        if let destinationID = target?.localIdentifier ?? createdIdentifier {
-            GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationID)
-        }
-        await refreshAlbums()
     }
 
     private func deleteFromRecycleBin(_ asset: PHAsset, source: PHAssetCollection) async throws {
@@ -548,6 +567,31 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         }
         let survivors = PHAsset.fetchAssets(withLocalIdentifiers: [asset.localIdentifier], options: nil)
         guard survivors.count == 0 else { throw ViewerMutationError.deletionPostconditionFailed }
+    }
+
+    private func withMutation(sessionID: UUID, _ operation: () async throws -> Void) async throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        Self.gateLog.info("acquire_begin")
+        await acquireMutation()
+        Self.gateLog.info("acquire_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1000), privacy: .public)")
+        let acquired = ProcessInfo.processInfo.systemUptime
+        let watchdog = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(20)) } catch { return }
+            guard !Task.isCancelled else { return }
+            self?.pendingPhotosSessionID = sessionID
+            Self.gateLog.notice("photos_pending duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - acquired) * 1000), privacy: .public)")
+        }
+        defer {
+            watchdog.cancel()
+            pendingPhotosSessionID = nil
+            releaseMutation()
+            Self.gateLog.info("release duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - acquired) * 1000), privacy: .public)")
+        }
+        do { try await operation() }
+        catch {
+            Self.gateLog.error("mutation_failed")
+            throw error
+        }
     }
 
     private func acquireMutation() async {
