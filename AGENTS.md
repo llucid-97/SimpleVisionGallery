@@ -9,6 +9,8 @@ Standalone visionOS photo gallery. Ordinary supported photos become spatial scen
 ## Coordination
 Use one owned checkout per top-level agent; additional worktrees belong under that agent's workspace. Never overwrite another agent's uncommitted work. Main is the integration branch; the user has authorized pushes and made this repository public on 11 October 2026. Build/validate before pushing. Heavy builds and simulator runs must use agent_queue_mcp. Mutable plans live outside the repository.
 
+Shut down every simulator you boot as soon as you are done or it sits idle (`xcrun simctl shutdown <udid>`), and have subagents do the same. Keep at most one booted unless a task truly needs more, check `xcrun simctl list devices booted` before ending a turn, and leave simulators other agents booted alone.
+
 ## Feature updates
 For feature updates, use the `full-send` skill (`~/.codex/skills/full-send/SKILL.md`) to carry the work through implementation, checks, feedback, and integration. Follow this repository's main-branch workflow and keep device privacy and user-data rules in force.
 
