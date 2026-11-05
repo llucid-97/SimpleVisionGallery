@@ -30,7 +30,7 @@ struct GallerySettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    GallerySettingsSection(title: "Cinema Accent", subtitle: "Choose the color used by Cinema controls.") {
+                    GallerySettingsSection(title: "Appearance") {
                         HStack(spacing: 16) {
                             ColorPicker(
                                 "Accent Color",
@@ -54,12 +54,12 @@ struct GallerySettingsView: View {
 
                     Divider()
                     #if os(visionOS)
-                    GallerySettingsSection(title: "Slideshow", subtitle: "Prepare upcoming items while you browse.") {
+                    GallerySettingsSection(title: "Slideshow") {
                         Stepper(value: $prefetchWindow, in: GalleryViewerPreferences.prefetchWindowRange) {
                             HStack {
                                 Text("Prepare ahead")
                                 Spacer()
-                                Text("\(prefetchWindow) items ahead")
+                                Text("\(prefetchWindow) items")
                                     .monospacedDigit()
                                     .foregroundStyle(LensLabTheme.mutedInk)
                             }
@@ -71,7 +71,7 @@ struct GallerySettingsView: View {
                             HStack {
                                 Text("Keep behind")
                                 Spacer()
-                                Text("\(backwardPrefetchWindow) items behind")
+                                Text("\(backwardPrefetchWindow) items")
                                     .monospacedDigit()
                                     .foregroundStyle(LensLabTheme.mutedInk)
                             }
@@ -88,7 +88,7 @@ struct GallerySettingsView: View {
                     #endif
 
                     Divider()
-                    GallerySettingsSection(title: "Album Visibility", subtitle: "Choose which albums appear in Gallery.") {
+                    GallerySettingsSection(title: "Album Visibility") {
                         Toggle(
                             "Auto-hide empty albums",
                             isOn: Binding(
@@ -99,9 +99,6 @@ struct GallerySettingsView: View {
                         .tint(LensLabTheme.cyan)
                         .accessibilityIdentifier("svt-gallery-auto-hide-empty")
 
-                        Text("Find auto-hidden albums in Hidden while the vault is unlocked.")
-                            .font(.callout)
-                            .foregroundStyle(LensLabTheme.mutedInk)
                         DisclosureGroup("Visibility details") {
                             Text("While unlocked, empty albums appear in Hidden. Unhide one to keep it visible. Albums with no Photos items are hidden while the vault is locked. Albums you hide yourself stay hidden when auto-hide is off.")
                                 .font(.callout)
@@ -142,20 +139,16 @@ struct GallerySettingsView: View {
 
 private struct GallerySettingsSection<Content: View>: View {
     let title: String
-    let subtitle: String
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.headline)
-                    .foregroundStyle(LensLabTheme.ink)
-                Text(subtitle)
-                    .font(.callout)
-            }
-            .foregroundStyle(LensLabTheme.mutedInk)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(title)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(LensLabTheme.ink)
+                .padding(.leading, 12)
+                .accessibilityAddTraits(.isHeader)
+                .fixedSize(horizontal: false, vertical: true)
             content
                 .foregroundStyle(LensLabTheme.ink)
         }

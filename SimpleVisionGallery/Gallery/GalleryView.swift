@@ -248,7 +248,7 @@ struct GalleryView: View {
     private var designActions: some View {
         HStack(spacing: 16) {
             GalleryVaultSessionButton()
-            albumSortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort albums")
+            albumSortMenu.labelStyle(.iconOnly).galleryHoverLabel("Sort")
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 16) {
                     albumSelectionButton
@@ -540,12 +540,12 @@ struct GalleryView: View {
                 .accessibilityAddTraits(manager.albumSortMode == mode ? .isSelected : [])
             }
         } label: {
-            Label("Sort albums", systemImage: "arrow.up.arrow.down")
+            Label("Sort", systemImage: "arrow.up.arrow.down")
                 .frame(minHeight: 26)
         }
         .buttonStyle(LensLabSecondaryButtonStyle())
         .accessibilityIdentifier("gallery-album-sort")
-        .help("Sort albums")
+        .help("Sort")
     }
 
     private var sortMenu: some View {

@@ -171,7 +171,7 @@ struct CaptureSurface: View {
         HStack(spacing: 12) {
             GalleryDesignSearchField(query: $query).frame(width: 300)
             Menu { ForEach(GalleryAlbumSortMode.allCases, id: \.self) { mode in Button(mode.title) {} } }
-                label: { Label("Sort albums", systemImage: "arrow.up.arrow.down") }
+                label: { Label("Sort", systemImage: "arrow.up.arrow.down") }
             Button("Select", systemImage: "checkmark.circle") {}
             Menu { ForEach(GalleryMediaFilter.allCases, id: \.self) { filter in Button(filter.title) {} } }
                 label: { Label("Filter", systemImage: "line.3.horizontal.decrease") }
@@ -307,7 +307,7 @@ struct CaptureSurface: View {
 
     private var menuTitle: String {
         switch id {
-        case "sort-menu": "Sort albums"
+        case "sort-menu": "Sort"
         case "filter-menu": "Filter media"
         case "visibility-menu": "Album visibility"
         case "selection-menu": "Selected media"

@@ -40,7 +40,7 @@ struct GalleryCinemaDesign: View {
                 }
             }
             .frame(minWidth: 840, minHeight: 620)
-            .background { GalleryLightSurface(role: .canvas, cornerRadius: 28).opacity(reduceTransparency ? 1 : 0.92) }
+            .modifier(CinemaCanvasBackdrop(isAlbumLobby: !context.hasOpenAlbum, reduceTransparency: reduceTransparency))
             .foregroundStyle(CinemaPalette.primaryText)
         }
         .preferredColorScheme(.dark)
@@ -55,7 +55,7 @@ struct GalleryCinemaDesign: View {
                 .scrollIndicators(.visible)
             } else {
                 albumLobby(width: width, showsHeader: false)
-                    .padding(.horizontal, 36).padding(.vertical, 28)
+                    .padding(8)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 28))
@@ -239,10 +239,10 @@ struct GalleryCinemaDesign: View {
             } else {
                 ScrollView {
                     LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 22, alignment: .top),
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
                             count: dynamicTypeSize.isAccessibilitySize ? 1 : (width < 1100 ? 2 : 3)),
                         alignment: .leading,
-                        spacing: 26
+                        spacing: 8
                     ) {
                         ForEach(context.albums) { album in
                             albumCard(album)
@@ -344,46 +344,42 @@ private extension GalleryCinemaDesign {
             Button {
                 context.openAlbum(album)
             } label: {
-                VStack(alignment: .leading, spacing: 11) {
-                    ZStack(alignment: .topTrailing) {
-                        GeometryReader { geometry in
-                            context.cover(album)
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                                .clipped()
-                        }
-                        .aspectRatio(16 / 10, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-                        if isSelected {
-                            Label("Selected", systemImage: "checkmark.circle.fill")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 11)
-                                .padding(.vertical, 8)
-                                .foregroundStyle(CinemaPalette.background)
-                                .background(CinemaPalette.accent, in: Capsule())
-                                .padding(12)
-                        }
+                ZStack(alignment: .bottomLeading) {
+                    GeometryReader { geometry in
+                        context.cover(album)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
                     }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(isSelected ? CinemaPalette.accent : Color.white.opacity(0.16), lineWidth: isSelected ? 2 : 0.75)
-                    }
+                    .aspectRatio(dynamicTypeSize.isAccessibilitySize ? 16.0 / 9.0 : 1, contentMode: .fit)
 
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(album.title)
                             .font(.headline.weight(.semibold))
-                            .foregroundStyle(CinemaPalette.primaryText)
+                            .foregroundStyle(.white)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
+                        Text(album.assetCount == 1 ? "1 item" : "\(album.assetCount) items")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.92))
                     }
-                    Text(album.assetCount == 1 ? "1 item" : "\(album.assetCount) items")
-                        .font(.subheadline)
-                        .foregroundStyle(CinemaPalette.secondaryText)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.black.opacity(0.68))
                 }
-                .padding(8)
-                .padding(.bottom, 5)
-                .background {
-                    GalleryLightSurface(role: .raised, cornerRadius: 21).opacity(0.55)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    if isSelected {
+                        Label("Selected", systemImage: "checkmark.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 11).padding(.vertical, 8)
+                            .foregroundStyle(CinemaPalette.background)
+                            .background(CinemaPalette.accent, in: Capsule())
+                            .padding(12)
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(isSelected ? CinemaPalette.accent : Color.white.opacity(0.16), lineWidth: isSelected ? 2 : 0.75)
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             }
@@ -425,6 +421,21 @@ private extension GalleryCinemaDesign {
             albumFrames[album.id] = frame
         }
         .frame(minHeight: 44)
+    }
+}
+
+private struct CinemaCanvasBackdrop: ViewModifier {
+    let isAlbumLobby: Bool
+    let reduceTransparency: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if isAlbumLobby {
+            content.galleryOrnamentBackdrop(cornerRadius: 28)
+        } else {
+            content.background {
+                GalleryLightSurface(role: .canvas, cornerRadius: 28).opacity(reduceTransparency ? 1 : 0.92)
+            }
+        }
     }
 }
 

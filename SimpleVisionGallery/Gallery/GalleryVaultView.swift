@@ -59,12 +59,17 @@ struct GalleryVaultConfirmation: ViewModifier {
     }
 }
 
+enum GalleryVaultNoticePreferences {
+    static let hideDeviceWarningKey = "gallery.vault.hideDeviceWarning.v1"
+}
+
 struct GalleryVaultView: View {
     @ObservedObject private var vault = GalleryVaultService.shared
     @Binding var resultMessage: String?
     @Binding var albumRetryIDs: [UUID]
     @Environment(\.dismiss) private var dismiss
     @State private var unlockError: String?
+    @AppStorage(GalleryVaultNoticePreferences.hideDeviceWarningKey) private var hideDeviceWarning = false
     @State private var albumDeletion: GalleryAlbumDeletionPlan?
     @State private var pendingCopies: [GalleryVaultRecord] = []
     @State private var pendingVisibleCount = 50
@@ -168,12 +173,6 @@ struct GalleryVaultView: View {
 
     private var vaultContents: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(vault.isUnlocked
-                 ? "Private items are visible in Gallery’s Photos view and their original albums."
-                 : "Unlock to see private items in Gallery’s Photos view and their original albums.")
-                .foregroundStyle(LensLabTheme.mutedInk)
-                .fixedSize(horizontal: false, vertical: true)
-
             if vault.isUnlocked {
                 if vault.needsAlbumDeletionReview {
                     Text("Album cleanup needs review. Your readable private items remain available. Moving and restoring are paused until this is resolved.")
@@ -207,10 +206,6 @@ struct GalleryVaultView: View {
                 Button("Lock Vault", systemImage: "lock") { vault.lock() }
                     .buttonStyle(LensLabSecondaryButtonStyle())
                     .accessibilityIdentifier("gallery-vault-lock")
-                Text("Select private items in an album and choose Restore to Photos to return them to your library.")
-                    .font(.callout)
-                    .foregroundStyle(LensLabTheme.mutedInk)
-                    .fixedSize(horizontal: false, vertical: true)
                 if vault.unreadableRecordCount > 0 {
                     Text("\(vault.unreadableRecordCount) saved item\(vault.unreadableRecordCount == 1 ? "" : "s") could not be read. Their files have been kept; any readable private items remain available.")
                         .font(.callout)
@@ -334,16 +329,25 @@ struct GalleryVaultView: View {
                     .accessibilityIdentifier("gallery-vault-message")
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Stored only on this device", systemImage: "exclamationmark.shield")
-                    .font(.headline)
-                Text("Deleting the app or losing this device can remove the only copies. Removing your device passcode may make the saved items impossible to open.")
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
+            if !hideDeviceWarning && !vault.isBusy {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Stored only on this device", systemImage: "exclamationmark.shield")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.red)
+                    Text("Deleting the app or losing this device can remove the only copies. Removing your device passcode may make saved items impossible to open.")
+                        .font(.callout)
+                        .foregroundStyle(.yellow)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Don't show again") { hideDeviceWarning = true }
+                        .buttonStyle(.borderless)
+                        .font(.callout.weight(.semibold))
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("gallery-vault-hide-device-warning")
+                }
+                .padding(16)
+                .galleryLightSurface(role: .raised, cornerRadius: 16)
+                .accessibilityIdentifier("gallery-vault-device-warning")
             }
-            .foregroundStyle(LensLabTheme.ink)
-            .padding(16)
-            .galleryLightSurface(role: .raised, cornerRadius: 16)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
