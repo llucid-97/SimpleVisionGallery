@@ -385,6 +385,27 @@ final class GalleryVaultService: ObservableObject {
         try await restore(recordIDs: [recordID], omittingUnavailableAlbums: omittingUnavailableAlbums)
     }
 
+    func delete(recordID: UUID) async throws {
+        try beginOperation(requiresPhotoAccess: false)
+        let epoch = authEpoch
+        defer { publishIfCurrent(epoch); endOperation() }
+        guard let record = try storage.authoritativeRecord(id: recordID) else { throw GalleryVaultStorageError.corruptRecord }
+        guard record.state == .privateItem else { throw GalleryVaultTransferError.interruptedRestore }
+        try storage.remove(id: recordID)
+    }
+
+    func move(recordID: UUID, from sourceAlbumID: String?, to destination: GalleryVaultAlbum) async throws {
+        try beginOperation(requiresPhotoAccess: false)
+        let epoch = authEpoch
+        defer { publishIfCurrent(epoch); endOperation() }
+        guard let record = try storage.authoritativeRecord(id: recordID) else { throw GalleryVaultStorageError.corruptRecord }
+        guard record.state == .privateItem else { throw GalleryVaultTransferError.interruptedRestore }
+        var updated = record
+        updated.albums = GalleryVaultStorage.destinationAlbums(record.albums,
+            destination: destination, sourceAlbumID: sourceAlbumID)
+        try storage.update(updated)
+    }
+
     func restore(recordIDs: [UUID], omittingUnavailableAlbums: Bool = false) async throws {
         try beginOperation()
         let epoch = authEpoch
@@ -750,11 +771,11 @@ final class GalleryVaultService: ObservableObject {
         NotificationCenter.default.post(name: .galleryAlbumWasDeleted, object: nil, userInfo: ["albumID": intent.plan.albumID])
     }
 
-    private func beginOperation() throws {
+    private func beginOperation(requiresPhotoAccess: Bool = true) throws {
         guard isUnlocked else { throw GalleryVaultTransferError.locked }
         guard !isBusy else { throw GalleryVaultTransferError.busy }
         guard !needsAlbumDeletionReview else { throw GalleryAlbumDeletionError.interrupted }
-        try GalleryVaultPhotoLibrary.requireFullAccess()
+        if requiresPhotoAccess { try GalleryVaultPhotoLibrary.requireFullAccess() }
         isBusy = true
         wantsCancel = false
         error = nil

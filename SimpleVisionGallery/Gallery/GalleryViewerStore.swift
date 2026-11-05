@@ -687,10 +687,10 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             if old.map(\.id) == next.map(\.id), !next.isEmpty { continue }
 
             let associated = sessions.values.filter { $0.playlist === playlist }
-            let previousCursors: [(GalleryViewerSession, Int?, UUID?)] = associated.map { session in
+            let previousCursors: [(GalleryViewerSession, Int?, UUID?, Int)] = associated.map { session in
                 let oldOffset = session.cursor.map { $0 - nativeCount }
                 let vaultID = oldOffset.flatMap { old.indices.contains($0) ? old[$0].id : nil }
-                return (session, session.cursor, vaultID)
+                return (session, session.cursor, vaultID, session.cursor.map { playlist.index.position(of: $0) } ?? 0)
             }
             let oldRemoved = playlist.index.removed
             var newIndex = GalleryPlaylistIndex(originalCount: nativeCount + next.count)
@@ -707,14 +707,14 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             playlist.changeGeneration = UUID()
             let nextPositions = Dictionary(uniqueKeysWithValues: next.enumerated().map { ($1.id, nativeCount + $0) })
             objectWillChange.send()
-            for (session, oldCursor, vaultID) in previousCursors {
+            for (session, oldCursor, vaultID, oldPosition) in previousCursors {
                 let desired: Int?
                 if let vaultID, let newPosition = nextPositions[vaultID] {
                     desired = newPosition
                 } else if let oldCursor, oldCursor < nativeCount {
                     desired = oldCursor
                 } else if newIndex.count > 0 {
-                    desired = newIndex.index(at: min(max(0, nativeCount - 1), newIndex.count - 1))
+                    desired = newIndex.index(at: min(oldPosition, newIndex.count - 1))
                 } else {
                     desired = nil
                 }
