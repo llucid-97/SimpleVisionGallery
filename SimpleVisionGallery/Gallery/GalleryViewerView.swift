@@ -5,12 +5,55 @@ import RealityKit
 import SwiftUI
 import UIKit
 
-private enum GalleryViewerLayout {
-    static let mediaVerticalPadding: CGFloat = 160
-    // Header, status line, stack spacing and outer window insets.
-    static let windowChromeHeight: CGFloat = 2 * mediaVerticalPadding + 108
+enum GalleryViewerLayout {
+    static let outerInsets: CGFloat = 32
     static let maximumMediaHeight: CGFloat = 1500
-    static let maximumWindowHeight = maximumMediaHeight + windowChromeHeight
+    static let maximumWindowHeight: CGFloat = maximumMediaHeight + 2 * 160 + outerInsets
+
+    static func clearance(aspectRatio: Double?, isVideo: Bool = false) -> CGFloat {
+        // Portraits and uncertain/video surfaces keep room for forward projection and transport.
+        guard !isVideo, let aspectRatio, aspectRatio.isFinite, aspectRatio >= 1 else { return 160 }
+        return 64
+    }
+
+    static func chromeHeight(aspectRatio: Double?, isVideo: Bool = false) -> CGFloat {
+        2 * clearance(aspectRatio: aspectRatio, isVideo: isVideo) + outerInsets
+    }
+}
+
+/// The current pane owns one preview; changing media or cancelling drops the old image and identity.
+struct GalleryMenuPreviewState<Image> {
+    private(set) var image: Image?
+    private(set) var itemKey: String?
+
+    mutating func set(_ image: Image?, for key: String) {
+        self.image = image
+        itemKey = image == nil ? nil : key
+    }
+
+    mutating func clear() {
+        image = nil
+        itemKey = nil
+    }
+}
+
+enum GalleryMorePreviewPolicy {
+    static func canShow(sessionID: UUID, moreSessionID: UUID?, previewItemKey: String?,
+        currentItemKey: String?, privacyCovered: Bool) -> Bool {
+        guard !privacyCovered, moreSessionID == sessionID,
+              let currentItemKey, let previewItemKey else { return false }
+        return previewItemKey == currentItemKey
+    }
+}
+
+struct GalleryViewerMenuPreview: View {
+    let image: UIImage
+    var body: some View {
+        Image(uiImage: image).resizable().scaledToFit()
+            .blur(radius: 10).brightness(-0.16)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
 }
 
 struct GalleryViewerWindowRoot: View {
@@ -31,20 +74,38 @@ struct GalleryViewerWindowRoot: View {
     @State private var vaultMessage: String?
     @State private var vaultAlbumRetryIDs: [UUID] = []
 
+    private var privacyCovered: Bool {
+        vault.isReviewingAlbumDeletion || vaultTransfer != nil || showingVault || vaultSheetCovered || pendingVaultMove != nil
+    }
     private var paired: Bool { value?.sessionIDs.count == 2 }
     private var paneWidth: CGFloat { paired ? 500 : 700 }
     private var minimumMediaHeight: CGFloat { paired ? 450 : 540 }
     private var windowWidth: CGFloat { paired ? 1048 : 732 }
 
+    private var currentItems: [GalleryMediaItem] {
+        value?.sessionIDs.compactMap { store.session($0)?.currentItem } ?? []
+    }
+
+    private func itemAspect(_ item: GalleryMediaItem) -> Double? {
+        guard item.pixelWidth > 0, item.pixelHeight > 0 else { return nil }
+        return Double(item.pixelWidth) / Double(item.pixelHeight)
+    }
+
+    private var minimumWindowHeight: CGFloat {
+        let chrome = currentItems.map {
+            GalleryViewerLayout.chromeHeight(aspectRatio: itemAspect($0), isVideo: $0.mediaType == .video)
+        }.max() ?? GalleryViewerLayout.chromeHeight(aspectRatio: nil)
+        return minimumMediaHeight + chrome
+    }
+
     private var preferredWindowHeight: CGFloat {
-        let mediaHeight = value?.sessionIDs.compactMap { store.session($0)?.currentItem }
-            .map { asset -> CGFloat in
-                guard asset.pixelWidth > 0, asset.pixelHeight > 0 else { return minimumMediaHeight }
-                // Spatial videos also need room for their transport controls.
-                let transport: CGFloat = asset.mediaType == .video ? 160 : 0
-                return max(minimumMediaHeight, paneWidth * CGFloat(asset.pixelHeight) / CGFloat(asset.pixelWidth) + transport)
-            }.max() ?? minimumMediaHeight
-        return min(mediaHeight + GalleryViewerLayout.windowChromeHeight, GalleryViewerLayout.maximumWindowHeight)
+        let height = currentItems.map { item -> CGFloat in
+            let ratio = itemAspect(item)
+            let transport: CGFloat = item.mediaType == .video ? 160 : 0
+            let mediaHeight = max(minimumMediaHeight, ratio.map { paneWidth / $0 + transport } ?? minimumMediaHeight)
+            return mediaHeight + GalleryViewerLayout.chromeHeight(aspectRatio: ratio, isVideo: item.mediaType == .video)
+        }.max() ?? minimumWindowHeight
+        return min(height, GalleryViewerLayout.maximumWindowHeight)
     }
 
     var body: some View {
@@ -62,7 +123,8 @@ struct GalleryViewerWindowRoot: View {
                                 showingVault: $showingVault,
                                 vaultMessage: $vaultMessage,
                                 vaultAlbumRetryIDs: $vaultAlbumRetryIDs,
-                                vaultCovered: vault.isReviewingAlbumDeletion || vaultTransfer != nil || showingVault || vaultSheetCovered || moreSessionID != nil || morePopoverCovered,
+                                vaultCovered: privacyCovered || moreSessionID != nil || morePopoverCovered,
+                                privacyCovered: privacyCovered,
                                 width: paneWidth,
                                 minimumMediaHeight: minimumMediaHeight,
                                 backingYaw: value.sessionIDs.count == 2
@@ -96,12 +158,12 @@ struct GalleryViewerWindowRoot: View {
                 // A fixed horizontal range keeps arranged slideshows aligned;
                 // height remains resizable for portrait photos and videos.
                 .frame(minWidth: windowWidth, idealWidth: windowWidth, maxWidth: windowWidth,
-                    minHeight: minimumMediaHeight + GalleryViewerLayout.windowChromeHeight,
+                    minHeight: minimumWindowHeight,
                     idealHeight: preferredWindowHeight, maxHeight: GalleryViewerLayout.maximumWindowHeight,
                     alignment: .top)
                 .background(GalleryViewerSceneAnchor(
                     initialSize: CGSize(width: windowWidth, height: preferredWindowHeight),
-                    minimumSize: CGSize(width: windowWidth, height: minimumMediaHeight + GalleryViewerLayout.windowChromeHeight),
+                    minimumSize: CGSize(width: windowWidth, height: minimumWindowHeight),
                     maximumSize: CGSize(width: windowWidth, height: GalleryViewerLayout.maximumWindowHeight)
                 ) { scene in windows.attach(value, to: scene) })
                 .onAppear {
@@ -217,6 +279,7 @@ private struct GalleryViewerPane: View {
     @Binding var vaultMessage: String?
     @Binding var vaultAlbumRetryIDs: [UUID]
     let vaultCovered: Bool
+    let privacyCovered: Bool
     let width: CGFloat
     let minimumMediaHeight: CGFloat
     let backingYaw: Double
@@ -272,105 +335,32 @@ private struct GalleryViewerPane: View {
         media.prefetch(items: prefetchAssets)
     }
 
-    private var preferredMediaHeight: CGFloat {
-        let asset = session.currentItem
-        let assetRatio = asset.flatMap { item -> Double? in
+    private var mediaAspectRatio: Double? {
+        let assetRatio = session.currentItem.flatMap { item -> Double? in
             guard item.pixelWidth > 0, item.pixelHeight > 0 else { return nil }
             return Double(item.pixelWidth) / Double(item.pixelHeight)
         }
-        guard let ratio = media.aspectRatio ?? assetRatio, ratio.isFinite, ratio > 0 else { return minimumMediaHeight }
+        return media.aspectRatio ?? assetRatio
+    }
+
+    private var verticalClearance: CGFloat {
+        GalleryViewerLayout.clearance(aspectRatio: mediaAspectRatio, isVideo: session.currentItem?.mediaType == .video)
+    }
+
+    private var preferredMediaHeight: CGFloat {
+        guard let ratio = mediaAspectRatio, ratio.isFinite, ratio > 0 else { return minimumMediaHeight }
         return min(GalleryViewerLayout.maximumMediaHeight,
             max(minimumMediaHeight, width / ratio + (media.isSpatialVideo ? 160 : 0)))
     }
 
     var body: some View {
         VStack(spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(session.albumTitle).font(.headline).lineLimit(1)
-                    Text(session.count == 0 ? "Album is empty" : "\(session.position) of \(session.count)")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                Spacer()
-                GalleryVaultSessionButton()
-                Button {
-                    // Raised native media can cover even an ordinary SwiftUI menu.
-                    media.setPresentationCovered(true)
-                    morePopoverCovered = true
-                    moreSessionID = session.id
-                } label: {
-                    Label("More slideshow actions", systemImage: "ellipsis")
-                }
-                .labelStyle(.iconOnly)
-                .galleryHoverLabel("More")
-                .accessibilityIdentifier("gallery-viewer-more")
-                .popover(isPresented: Binding(
-                    get: { moreSessionID == session.id },
-                    set: { if !$0 { moreSessionID = nil } }
-                )) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if let asset = session.currentAsset {
-                            Button("Move to Private Vault", systemImage: "lock") {
-                                moreSessionID = nil
-                                vaultTransfer = .items([asset])
-                            }
-                            .disabled(vault.isBusy)
-                        }
-                        if let record = session.currentItem?.vaultRecord {
-                            Button("Restore to Photos", systemImage: "lock.open") {
-                                moreSessionID = nil
-                                let id = record.id
-                                showingVault = true
-                                vaultMessage = nil
-                                vaultAlbumRetryIDs = []
-                                Task { @MainActor in
-                                    do {
-                                        try await vault.restore(recordID: id)
-                                        vaultMessage = "Restored to Photos."
-                                    } catch {
-                                        if vault.isUnlocked {
-                                            vaultMessage = error.localizedDescription
-                                            if let failure = error as? GalleryVaultTransferError,
-                                               case .albumUnavailable = failure { vaultAlbumRetryIDs = [id] }
-                                        }
-                                    }
-                                }
-                            }
-                            .disabled(vault.isBusy)
-                        }
-                        Button("Private Vault", systemImage: "lock") { moreSessionID = nil; showingVault = true }
-                        Button("Share", systemImage: "square.and.arrow.up") {
-                            moreSessionID = nil
-                            if let asset = session.currentAsset { sharing.start(assets: [asset]) }
-                        }
-                        .disabled(session.currentAsset == nil || sharing.isPreparing)
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .padding(20)
-                    .onDisappear { morePopoverCovered = false }
-                }
-                Button(action: duplicate) {
-                    Label("Open another slideshow", systemImage: "rectangle.on.rectangle")
-                }
-                .labelStyle(.iconOnly)
-                .disabled(session.currentItem == nil)
-                .accessibilityIdentifier("gallery-viewer-duplicate")
-                Button(action: arrange) {
-                    Label("Arrange side by side", systemImage: "rectangle.split.2x1")
-                }
-                .labelStyle(.iconOnly)
-                .disabled(!canArrange)
-                .accessibilityIdentifier("gallery-viewer-arrange")
-            }
-            .padding(.horizontal, 8)
-
             GeometryReader { geometry in
                 mediaStage(height: geometry.size.height)
                     .frame(width: width, height: geometry.size.height)
                     .background {
-                        RoundedRectangle(cornerRadius: 16)
-                            .fill(.black.opacity(0.85))
-                            .rotation3DEffect(.degrees(backingYaw), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
+                        GalleryViewerBacking(aspectRatio: media.player == nil ? media.aspectRatio : nil,
+                            yawDegrees: backingYaw, showsMatte: media.imageEntity == nil)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .contentShape(Rectangle())
@@ -384,22 +374,25 @@ private struct GalleryViewerPane: View {
                     .accessibilityIdentifier("gallery-viewer-media")
             }
             .frame(minHeight: minimumMediaHeight, idealHeight: preferredMediaHeight, maxHeight: .infinity)
-            // Spatial content projects forward from the window. Leave clearance
-            // for the header and bottom ornament even at a portrait aspect ratio.
-            // The window height budget includes both insets so media keeps its room.
-            .padding(.vertical, GalleryViewerLayout.mediaVerticalPadding)
-
-            if let actionError {
-                Text(actionError).font(.caption).foregroundStyle(.red).lineLimit(2)
-            } else if let message = media.status {
-                Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
+            // The matching window budget preserves media size while keeping projection clearance.
+            .padding(.vertical, verticalClearance)
         }
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
         .gallerySharing(sharing)
         .ornament(attachmentAnchor: .scene(ornamentAnchor), contentAlignment: .top) {
-            controls.padding(12).glassBackgroundEffect()
+            GalleryViewerDock(width: width) {
+                controls
+            } details: {
+                VStack(alignment: .leading, spacing: 4) {
+                    viewerDetails
+                    if let actionError {
+                        Text(actionError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                    } else if let message = media.status {
+                        Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+            }
         }
         .task(id: loadKey) {
             let requestedKey = loadKey
@@ -453,12 +446,104 @@ private struct GalleryViewerPane: View {
         }
     }
 
+    private var viewerDetails: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(session.albumTitle).font(.title3.weight(.semibold)).lineLimit(1)
+                Text(session.count == 0 ? "Album is empty" : "\(session.position) of \(session.count)")
+                    .font(.subheadline.monospacedDigit()).foregroundStyle(LensLabTheme.mutedInk)
+            }
+            Spacer()
+            GalleryVaultSessionButton()
+            Button {
+                // Raised native media can cover even an ordinary SwiftUI menu.
+                media.setPresentationCovered(true)
+                morePopoverCovered = true
+                moreSessionID = session.id
+            } label: {
+                Label("More slideshow actions", systemImage: "ellipsis")
+            }
+            .labelStyle(.iconOnly)
+            .galleryHoverLabel("More")
+            .accessibilityIdentifier("gallery-viewer-more")
+            .popover(isPresented: Binding(
+                get: { moreSessionID == session.id },
+                set: { if !$0 { moreSessionID = nil } }
+            )) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let asset = session.currentAsset {
+                        Button("Move to Private Vault", systemImage: "lock") {
+                            moreSessionID = nil
+                            vaultTransfer = .items([asset])
+                        }
+                        .disabled(vault.isBusy)
+                    }
+                    if let record = session.currentItem?.vaultRecord {
+                        Button("Restore to Photos", systemImage: "lock.open") {
+                            moreSessionID = nil
+                            let id = record.id
+                            showingVault = true
+                            vaultMessage = nil
+                            vaultAlbumRetryIDs = []
+                            Task { @MainActor in
+                                do {
+                                    try await vault.restore(recordID: id)
+                                    vaultMessage = "Restored to Photos."
+                                } catch {
+                                    if vault.isUnlocked {
+                                        vaultMessage = error.localizedDescription
+                                        if let failure = error as? GalleryVaultTransferError,
+                                           case .albumUnavailable = failure { vaultAlbumRetryIDs = [id] }
+                                    }
+                                }
+                            }
+                        }
+                        .disabled(vault.isBusy)
+                    }
+                    Button("Private Vault", systemImage: "lock") { moreSessionID = nil; showingVault = true }
+                    Button("Share", systemImage: "square.and.arrow.up") {
+                        moreSessionID = nil
+                        if let asset = session.currentAsset { sharing.start(assets: [asset]) }
+                    }
+                    .disabled(session.currentAsset == nil || sharing.isPreparing)
+                }
+                .labelStyle(.titleAndIcon)
+                .padding(20)
+                .galleryLightBackdrop(cornerRadius: 24)
+                .onDisappear { morePopoverCovered = false }
+            }
+            Button(action: duplicate) {
+                GalleryViewerActionLabel(title: "New", symbol: "rectangle.on.rectangle")
+            }
+            .labelStyle(.iconOnly)
+            .disabled(session.currentItem == nil)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open another slideshow")
+            .galleryHoverLabel("Open another slideshow")
+            .accessibilityIdentifier("gallery-viewer-duplicate")
+            Button(action: arrange) {
+                GalleryViewerActionLabel(title: "Pair", symbol: "rectangle.split.2x1")
+            }
+            .labelStyle(.iconOnly)
+            .disabled(!canArrange)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Arrange side by side")
+            .galleryHoverLabel("Arrange side by side")
+            .accessibilityIdentifier("gallery-viewer-arrange")
+        }
+        .padding(.horizontal, 8)
+    }
+
     @ViewBuilder
     private func mediaStage(height: CGFloat) -> some View {
         if moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos || vaultCovered {
-            // A move sheet belongs to the whole window: either raised surface
-            // could occlude it. Keep both prepared scenes for dismissal.
-            Color.clear
+            // Only More may retain flat context; privacy and mutation covers always stay blank.
+            if GalleryMorePreviewPolicy.canShow(sessionID: session.id, moreSessionID: moreSessionID,
+                previewItemKey: media.menuPreviewKey, currentItemKey: session.currentItem?.cacheKey,
+                privacyCovered: privacyCovered || moveTarget != nil || pendingDelete != nil || isDeletingFromPhotos),
+               let preview = media.menuPreview {
+                GalleryViewerMenuPreview(image: preview)
+            } else { Color.clear }
         } else if session.currentItem == nil {
             ContentUnavailableView("No items left", systemImage: "photo",
                 description: Text("Moved items stay in their destination album."))
@@ -496,7 +581,7 @@ private struct GalleryViewerPane: View {
     private var controls: some View {
         // Bind a tap to the displayed photo without a fresh Photos lookup on press.
         let displayedAssetID = session.currentItem?.localIdentifier
-        return HStack(spacing: 52) {
+        return GalleryViewerControlBar(presentsBackdrop: false) {
             Button {
                 actionError = nil
                 store.previous(session.id)
@@ -508,9 +593,10 @@ private struct GalleryViewerPane: View {
 
             if session.currentItem?.mediaType == .image {
                 Button { spatialEnabled.toggle() } label: {
-                    Label(spatialEnabled ? "Show Original" : "Spatial Scene",
-                        systemImage: spatialEnabled ? "photo" : "cube")
+                    GalleryViewerActionLabel(title: spatialEnabled ? "Original" : "Spatial",
+                        symbol: spatialEnabled ? "photo" : "cube")
                 }
+                .accessibilityLabel(spatialEnabled ? "Show original" : "Show spatial scene")
                 .accessibilityIdentifier("gallery-viewer-spatial")
                 .accessibilityValue(media.isShowingSpatial ? "Spatial" : "2D")
             }
@@ -586,10 +672,7 @@ private struct GalleryViewerPane: View {
             .disabled(!session.canGoNext)
             .accessibilityIdentifier("gallery-viewer-next")
         }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
-        .controlSize(.large)
-        .padding(.top, 18)
+
     }
 
     private var isInRecycleBin: Bool {
@@ -769,7 +852,7 @@ private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
     }
 }
 
-private struct GalleryRealityImage: View {
+struct GalleryRealityImage: View {
     let entity: Entity
     var initialYawDegrees: Float = 0
 

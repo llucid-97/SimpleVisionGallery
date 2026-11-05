@@ -16,10 +16,10 @@ enum LensLabTheme {
 
     static let ink = Color.white
     static let mutedInk = Color.white.opacity(0.76)
-    static let card = Color(red: 0.08, green: 0.10, blue: 0.15)
+    static let card = Color(red: 0.105, green: 0.115, blue: 0.122)
     static var primaryButtonInk: Color { GalleryAppearance.accentForeground }
     static let secondaryButtonSurface = Color.white.opacity(0.10)
-    static let cardLine = Color(red: 207 / 255, green: 198 / 255, blue: 184 / 255)
+    static let cardLine = Color.white.opacity(0.16)
 
     static let shellWarm = Color(red: 181 / 255, green: 172 / 255, blue: 157 / 255)
     static let shellShadow = Color(red: 88 / 255, green: 78 / 255, blue: 65 / 255)
@@ -29,28 +29,24 @@ enum LensLabTheme {
 }
 
 struct LensLabCardModifier: ViewModifier {
-    var radius: CGFloat = 8
+    var radius: CGFloat = 18
 
     func body(content: Content) -> some View {
-        content
-            .background(LensLabTheme.card, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(LensLabTheme.cardLine.opacity(0.72), lineWidth: 1)
-            }
-            .shadow(color: LensLabTheme.shellShadow.opacity(0.08), radius: 16, y: 8)
+        content.galleryLightSurface(role: .raised, cornerRadius: radius)
     }
 }
 
 extension View {
-    func lensLabCard(radius: CGFloat = 8) -> some View {
+    func lensLabCard(radius: CGFloat = 18) -> some View {
         modifier(LensLabCardModifier(radius: radius))
     }
 }
 
 struct LensLabPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.galleryLightReduceMotion) private var previewReduceMotion
+    private var reduceMotion: Bool { systemReduceMotion || previewReduceMotion }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -60,39 +56,21 @@ struct LensLabPrimaryButtonStyle: ButtonStyle {
             .padding(.vertical, 10)
             .frame(minWidth: 60, minHeight: 60)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(isEnabled ? LensLabTheme.cyan : LensLabTheme.mutedInk.opacity(0.34))
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(.white.opacity(isEnabled ? 0.25 : 0.1), lineWidth: 1)
             }
-            .scaleEffect(configuration.isPressed && isEnabled ? 0.98 : 1)
+            .scaleEffect(configuration.isPressed && isEnabled && !reduceMotion ? 0.98 : 1)
             .hoverEffect(.highlight)
     }
 }
 
 struct LensLabSecondaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.callout.weight(.medium))
-            .foregroundStyle(isEnabled ? LensLabTheme.ink : LensLabTheme.mutedInk)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .frame(minWidth: 60, minHeight: 60)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(LensLabTheme.secondaryButtonSurface.opacity(isEnabled ? 1 : 0.4))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(LensLabTheme.cardLine.opacity(isEnabled ? 0.9 : 0.35), lineWidth: 1)
-            }
-            .opacity(isEnabled ? 1 : 0.62)
-            .scaleEffect(configuration.isPressed && isEnabled ? 0.98 : 1)
-            .hoverEffect(.highlight)
+        GalleryLightButtonStyle().makeBody(configuration: configuration)
     }
 }
 
@@ -109,7 +87,7 @@ struct LensLabToolHeader: View {
                 .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(tint)
                 .frame(width: 42, height: 42)
-                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)

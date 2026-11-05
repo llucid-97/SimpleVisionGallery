@@ -2,6 +2,11 @@ import SwiftUI
 
 struct GalleryAboutView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var firstFAQExpanded: Bool
+
+    init(expandFAQ: Bool = false) {
+        _firstFAQExpanded = State(initialValue: expandFAQ)
+    }
     private let repository = URL(string: "https://github.com/llucid-97/simple-vision-gallery")!
     private let issues = URL(string: "https://github.com/llucid-97/simple-vision-gallery/issues")!
     private let support = URL(string: "mailto:agim.gershom@gmail.com")!
@@ -22,7 +27,7 @@ struct GalleryAboutView: View {
                     Text(version).monospacedDigit().accessibilityIdentifier("gallery-about-version")
                 }
                 Section("Frequently Asked Questions") {
-                    DisclosureGroup("How do spatial scenes work?") {
+                    DisclosureGroup("How do spatial scenes work?", isExpanded: $firstFAQExpanded) {
                         Text("Open a photo and Gallery prepares a spatial scene on your device. Use the photo button below it to switch between spatial and 2D views. Some images cannot be converted and remain available in 2D.")
                     }
                     DisclosureGroup("Can I open more than one photo?") {
@@ -66,6 +71,8 @@ struct GalleryAboutView: View {
                         .accessibilityIdentifier("gallery-about-licenses")
                 }
             }
+            .scrollContentBackground(.hidden)
+            .galleryLightBackdrop(cornerRadius: 24)
             .navigationTitle("About")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -78,7 +85,7 @@ struct GalleryAboutView: View {
     }
 }
 
-private struct GalleryPrivacyView: View {
+struct GalleryPrivacyView: View {
     var body: some View {
         List {
             Section {
@@ -107,11 +114,13 @@ private struct GalleryPrivacyView: View {
                 Text("If you contact support by email or Discord, the developer receives the information you include and uses it to respond.")
             }
         }
+        .scrollContentBackground(.hidden)
+        .galleryLightBackdrop(cornerRadius: 24)
         .navigationTitle("Privacy Policy")
     }
 }
 
-private struct GalleryLicensesView: View {
+struct GalleryLicensesView: View {
     var body: some View {
         List {
             Section("Software") {
@@ -121,6 +130,8 @@ private struct GalleryLicensesView: View {
                 Text("The app logo is original artwork. Interface symbols are Apple SF Symbols provided by the system. Your photos and videos remain yours.")
             }
         }
+        .scrollContentBackground(.hidden)
+        .galleryLightBackdrop(cornerRadius: 24)
         .navigationTitle("Third-Party Licenses")
     }
 }

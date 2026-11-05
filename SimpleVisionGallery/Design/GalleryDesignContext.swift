@@ -10,6 +10,7 @@ struct GalleryDesignContext {
     let selectedAlbumIDs: Set<String>
     let actions: AnyView
     let albumToolbar: AnyView
+    let ornamentToolbar: AnyView
     let mediaContent: AnyView
     let emptyContent: AnyView
     let cover: (GalleryAlbum) -> AnyView
@@ -64,13 +65,16 @@ struct GalleryDesignAlbumActions: View {
 
 struct GalleryDesignSearchField: View {
     @Binding var query: String
+    var placeholder = "Find an album"
+    var isSearching = false
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Find an album", text: $query)
+            TextField(placeholder, text: $query, prompt: Text(placeholder).foregroundStyle(LensLabTheme.mutedInk))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .accessibilityIdentifier("gallery-album-search")
+            if isSearching { ProgressView().controlSize(.small) }
             if !query.isEmpty {
                 Button("Clear Search", systemImage: "xmark.circle.fill") { query = "" }
                     .labelStyle(.iconOnly)
@@ -80,6 +84,6 @@ struct GalleryDesignSearchField: View {
         .font(.body)
         .padding(.horizontal, 16)
         .frame(minHeight: 68)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .galleryLightSurface(role: .control, cornerRadius: 18)
     }
 }

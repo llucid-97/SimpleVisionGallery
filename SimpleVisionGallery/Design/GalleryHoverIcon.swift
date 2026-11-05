@@ -25,6 +25,8 @@ struct GalleryHoverIcon: View {
 
 private struct GalleryHoverLabelModifier: ViewModifier {
     let title: String
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.galleryLightReduceMotion) private var previewReduceMotion
 
     func body(content: Content) -> some View {
         #if os(visionOS)
@@ -41,7 +43,8 @@ private struct GalleryHoverLabelModifier: ViewModifier {
                     .accessibilityHidden(true)
                     .allowsHitTesting(false)
                     .hoverEffect { effect, active, _ in
-                        effect.animation(.easeInOut(duration: 0.16).delay(active ? 0.7 : 0.1)) {
+                        effect.animation(systemReduceMotion || previewReduceMotion ? nil
+                            : .easeInOut(duration: 0.16).delay(active ? 0.7 : 0.1)) {
                             $0.opacity(active ? 1 : 0)
                         }
                     }

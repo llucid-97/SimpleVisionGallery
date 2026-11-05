@@ -83,185 +83,20 @@ struct GalleryVaultView: View {
                 Button("Done") { dismiss() }
                     .buttonStyle(LensLabSecondaryButtonStyle())
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text(vault.isUnlocked
-                         ? "Your private items appear in Gallery's Photos view and their original albums while the vault is unlocked."
-                         : "Unlock to show private items in Gallery's Photos view and their original albums.")
-                        .foregroundStyle(LensLabTheme.mutedInk)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if vault.isUnlocked {
-                        if vault.needsAlbumDeletionReview {
-                            Text("Album cleanup needs review. Your readable private items remain available. Moving and restoring are paused until this is resolved.")
-                            if let error = vault.albumDeletionRecoveryError {
-                                Text(error).foregroundStyle(.red)
-                                    .accessibilityIdentifier("gallery-album-recovery-error")
-                                Button("Retry Album Cleanup") { vault.retryAlbumDeletionRecovery() }
-                                    .disabled(vault.isBusy)
-                                if vault.pendingAlbumDeletion?.photosCommitted == true {
-                                    Button("Finish Without Remaining Items") { confirmFinishAlbumDeletion = true }
-                                        .disabled(vault.isBusy)
-                                        .accessibilityIdentifier("gallery-album-cleanup-finish")
-                                }
-                            }
-                            if vault.pendingAlbumDeletion == nil {
-                                Button("Discard Unreadable Recovery Note…") { confirmDiscardAlbumDeletion = true }
-                                    .disabled(vault.isBusy)
-                            } else if vault.pendingAlbumDeletion?.photosCommitted == false {
-                                Button("Review Interrupted Album Deletion") {
-                                    Task { @MainActor in
-                                        do {
-                                            let plan = try await vault.reviewInterruptedAlbumDeletion()
-                                            vault.isReviewingAlbumDeletion = true
-                                            albumDeletion = plan
-                                        }
-                                        catch { unlockError = error.localizedDescription }
-                                    }
-                                }.disabled(vault.isBusy)
-                            }
-                        }
-                        Button("Lock Vault", systemImage: "lock") { vault.lock() }
-                            .buttonStyle(LensLabSecondaryButtonStyle())
-                            .accessibilityIdentifier("gallery-vault-lock")
-                        Text("Select private items in an album and choose Restore to Photos to return them to your library.")
-                            .font(.callout)
-                            .foregroundStyle(LensLabTheme.mutedInk)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if vault.unreadableRecordCount > 0 {
-                            Text("\(vault.unreadableRecordCount) saved item\(vault.unreadableRecordCount == 1 ? "" : "s") could not be read. Their files have been kept; any readable private items remain available.")
-                                .font(.callout)
-                                .foregroundStyle(LensLabTheme.mutedInk)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .accessibilityIdentifier("gallery-vault-unreadable-warning")
-                        }
-                    } else {
-                        Button("Unlock Vault", systemImage: "lock.open") {
-                            unlockError = nil
-                            Task { @MainActor in
-                                do { try await vault.unlock() }
-                                catch { unlockError = error.localizedDescription }
-                            }
-                        }
-                        .buttonStyle(LensLabPrimaryButtonStyle())
-                        .disabled(vault.isBusy)
-                        .accessibilityIdentifier("gallery-vault-unlock")
+            Group {
+                if vault.isUnlocked {
+                    ScrollView { vaultContents }
+                } else {
+                    ViewThatFits(in: .vertical) {
+                        vaultContents
+                        ScrollView { vaultContents }
                     }
-
-                    if let progress = vault.progress, vault.isBusy || progress.phase == "Restoring" {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(progress.phase).font(.headline)
-                            ProgressView(value: Double(progress.processed), total: Double(max(1, progress.total)))
-                            Text("\(progress.processed) of \(progress.total)")
-                                .font(.callout.monospacedDigit())
-                            if let detail = progress.detail {
-                                Text(detail).font(.callout).foregroundStyle(LensLabTheme.mutedInk)
-                            }
-                            if vault.isBusy {
-                                Button("Stop") { vault.cancel() }
-                                    .buttonStyle(LensLabSecondaryButtonStyle())
-                                Text(progress.phase == "Restoring"
-                                     ? "Completed items stay restored. Any remaining items stay in the vault."
-                                     : "The current copy may stop. Already saved items can still be removed from Photos as one batch.")
-                                    .font(.caption)
-                                    .foregroundStyle(LensLabTheme.mutedInk)
-                            }
-                        }
-                        .accessibilityIdentifier("gallery-vault-progress")
-                    }
-
-                    if vault.isUnlocked && !vault.isBusy {
-                        if vault.records.contains(where: { $0.state == .restoring }) {
-                            Button("Resume Interrupted Restores", systemImage: "arrow.clockwise") {
-                                let ids = vault.records.filter { $0.state == .restoring }.map(\.id)
-                                restore(ids)
-                            }
-                            .buttonStyle(LensLabSecondaryButtonStyle())
-                        }
-                        Button("Restore All Private Items", systemImage: "lock.open") {
-                            let ids = vault.records.filter { $0.state == .privateItem }.map(\.id)
-                            restore(ids)
-                        }
-                        .buttonStyle(LensLabSecondaryButtonStyle())
-                        .disabled(!vault.records.contains { $0.state == .privateItem })
-
-                        Button("Retry Removing Saved Originals", systemImage: "arrow.clockwise") {
-                            resultMessage = nil
-                            Task { @MainActor in
-                                do {
-                                    let outcome = try await vault.retryPendingDeletion()
-                                    resultMessage = Self.message(for: outcome)
-                                } catch {
-                                    if vault.isUnlocked { resultMessage = error.localizedDescription }
-                                }
-                            }
-                        }
-                        .buttonStyle(LensLabSecondaryButtonStyle())
-                        Text("Use this if copies were saved but Photos did not remove the originals.")
-                            .font(.caption)
-                            .foregroundStyle(LensLabTheme.mutedInk)
-
-                        if !albumRetryIDs.isEmpty {
-                            Button("Restore Without Unavailable Albums", systemImage: "exclamationmark.triangle") {
-                                confirmAlbumRetry = true
-                            }
-                            .buttonStyle(LensLabSecondaryButtonStyle())
-                            .accessibilityIdentifier("gallery-vault-retry-missing-albums")
-                        }
-
-                        if !pendingCopies.isEmpty {
-                            Text("Saved copies awaiting removal from Photos")
-                                .font(.headline)
-                            Text("Removal from Photos has not been confirmed. Retry removal, or discard a saved copy if its original is still in Photos.")
-                                .font(.callout)
-                                .foregroundStyle(LensLabTheme.mutedInk)
-                            Button("Discard All Saved Copies", systemImage: "trash") {
-                                discardIDs = pendingCopies.map(\.id)
-                                confirmDiscard = true
-                            }
-                            .buttonStyle(LensLabSecondaryButtonStyle())
-                            LazyVStack(alignment: .leading, spacing: 10) {
-                                ForEach(pendingCopies.prefix(pendingVisibleCount)) { record in
-                                    HStack {
-                                        Text(record.filename)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                        Spacer()
-                                        Button("Discard Copy", systemImage: "trash") {
-                                            discardIDs = [record.id]
-                                            confirmDiscard = true
-                                        }
-                                        .labelStyle(.iconOnly)
-                                        .help("Discard saved copy")
-                                    }
-                                }
-                            }
-                            if pendingVisibleCount < pendingCopies.count {
-                                Button("Show More Saved Copies") {
-                                    pendingVisibleCount = min(pendingCopies.count, pendingVisibleCount + 50)
-                                }
-                                .buttonStyle(LensLabSecondaryButtonStyle())
-                            }
-                        }
-                    }
-
-                    if let message = unlockError ?? resultMessage ?? vault.error {
-                        Text(message)
-                            .font(.callout)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("gallery-vault-message")
-                    }
-
-                    Text("Private Vault is stored on this device. Deleting the app or losing the device can remove its only copies. Removing your device passcode may make them inaccessible.")
-                        .font(.caption)
-                        .foregroundStyle(LensLabTheme.mutedInk)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(24)
         .frame(minWidth: 480, idealWidth: 580, minHeight: 360)
-        .background(LensLabTheme.card)
+        .galleryLightBackdrop(cornerRadius: 24)
         .accessibilityIdentifier("gallery-vault-sheet")
         .onReceive(vault.$records) { records in
             pendingCopies = records.filter { $0.state == .copiedAwaitingDeletion }
@@ -329,6 +164,188 @@ struct GalleryVaultView: View {
         }
         .sheet(item: $albumDeletion, onDismiss: { vault.isReviewingAlbumDeletion = false }) { plan in GalleryAlbumDeletionSheet(plan: plan, isRecoveryReview: true) }
 
+    }
+
+    private var vaultContents: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(vault.isUnlocked
+                 ? "Private items are visible in Gallery’s Photos view and their original albums."
+                 : "Unlock to see private items in Gallery’s Photos view and their original albums.")
+                .foregroundStyle(LensLabTheme.mutedInk)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if vault.isUnlocked {
+                if vault.needsAlbumDeletionReview {
+                    Text("Album cleanup needs review. Your readable private items remain available. Moving and restoring are paused until this is resolved.")
+                    if let error = vault.albumDeletionRecoveryError {
+                        Text(error).foregroundStyle(.red)
+                            .accessibilityIdentifier("gallery-album-recovery-error")
+                        Button("Retry Album Cleanup") { vault.retryAlbumDeletionRecovery() }
+                            .disabled(vault.isBusy)
+                        if vault.pendingAlbumDeletion?.photosCommitted == true {
+                            Button("Finish Without Remaining Items") { confirmFinishAlbumDeletion = true }
+                                .disabled(vault.isBusy)
+                                .accessibilityIdentifier("gallery-album-cleanup-finish")
+                        }
+                    }
+                    if vault.pendingAlbumDeletion == nil {
+                        Button("Discard Unreadable Recovery Note…") { confirmDiscardAlbumDeletion = true }
+                            .disabled(vault.isBusy)
+                    } else if vault.pendingAlbumDeletion?.photosCommitted == false {
+                        Button("Review Interrupted Album Deletion") {
+                            Task { @MainActor in
+                                do {
+                                    let plan = try await vault.reviewInterruptedAlbumDeletion()
+                                    vault.isReviewingAlbumDeletion = true
+                                    albumDeletion = plan
+                                }
+                                catch { unlockError = error.localizedDescription }
+                            }
+                        }.disabled(vault.isBusy)
+                    }
+                }
+                Button("Lock Vault", systemImage: "lock") { vault.lock() }
+                    .buttonStyle(LensLabSecondaryButtonStyle())
+                    .accessibilityIdentifier("gallery-vault-lock")
+                Text("Select private items in an album and choose Restore to Photos to return them to your library.")
+                    .font(.callout)
+                    .foregroundStyle(LensLabTheme.mutedInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                if vault.unreadableRecordCount > 0 {
+                    Text("\(vault.unreadableRecordCount) saved item\(vault.unreadableRecordCount == 1 ? "" : "s") could not be read. Their files have been kept; any readable private items remain available.")
+                        .font(.callout)
+                        .foregroundStyle(LensLabTheme.mutedInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("gallery-vault-unreadable-warning")
+                }
+            } else {
+                Button("Unlock Vault", systemImage: "lock.open") {
+                    unlockError = nil
+                    Task { @MainActor in
+                        do { try await vault.unlock() }
+                        catch { unlockError = error.localizedDescription }
+                    }
+                }
+                .buttonStyle(LensLabPrimaryButtonStyle())
+                .disabled(vault.isBusy)
+                .accessibilityIdentifier("gallery-vault-unlock")
+            }
+
+            if let progress = vault.progress, vault.isBusy || progress.phase == "Restoring" {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(progress.phase).font(.headline)
+                    ProgressView(value: Double(progress.processed), total: Double(max(1, progress.total)))
+                    Text("\(progress.processed) of \(progress.total)")
+                        .font(.callout.monospacedDigit())
+                    if let detail = progress.detail {
+                        Text(detail).font(.callout).foregroundStyle(LensLabTheme.mutedInk)
+                    }
+                    if vault.isBusy {
+                        Button("Stop") { vault.cancel() }
+                            .buttonStyle(LensLabSecondaryButtonStyle())
+                        Text(progress.phase == "Restoring"
+                             ? "Completed items stay restored. Any remaining items stay in the vault."
+                             : "The current copy may stop. Already saved items can still be removed from Photos as one batch.")
+                            .font(.caption)
+                            .foregroundStyle(LensLabTheme.mutedInk)
+                    }
+                }
+                .accessibilityIdentifier("gallery-vault-progress")
+            }
+
+            if vault.isUnlocked && !vault.isBusy {
+                if vault.records.contains(where: { $0.state == .restoring }) {
+                    Button("Resume Interrupted Restores", systemImage: "arrow.clockwise") {
+                        let ids = vault.records.filter { $0.state == .restoring }.map(\.id)
+                        restore(ids)
+                    }
+                    .buttonStyle(LensLabSecondaryButtonStyle())
+                }
+                Button("Restore All Private Items", systemImage: "lock.open") {
+                    let ids = vault.records.filter { $0.state == .privateItem }.map(\.id)
+                    restore(ids)
+                }
+                .buttonStyle(LensLabSecondaryButtonStyle())
+                .disabled(!vault.records.contains { $0.state == .privateItem })
+
+                Button("Retry Removing Saved Originals", systemImage: "arrow.clockwise") {
+                    resultMessage = nil
+                    Task { @MainActor in
+                        do {
+                            let outcome = try await vault.retryPendingDeletion()
+                            resultMessage = Self.message(for: outcome)
+                        } catch {
+                            if vault.isUnlocked { resultMessage = error.localizedDescription }
+                        }
+                    }
+                }
+                .buttonStyle(LensLabSecondaryButtonStyle())
+                Text("Use this if copies were saved but Photos did not remove the originals.")
+                    .font(.caption)
+                    .foregroundStyle(LensLabTheme.mutedInk)
+
+                if !albumRetryIDs.isEmpty {
+                    Button("Restore Without Unavailable Albums", systemImage: "exclamationmark.triangle") {
+                        confirmAlbumRetry = true
+                    }
+                    .buttonStyle(LensLabSecondaryButtonStyle())
+                    .accessibilityIdentifier("gallery-vault-retry-missing-albums")
+                }
+
+                if !pendingCopies.isEmpty {
+                    Text("Saved copies awaiting removal from Photos")
+                        .font(.headline)
+                    Text("Removal from Photos has not been confirmed. Retry removal, or discard a saved copy if its original is still in Photos.")
+                        .font(.callout)
+                        .foregroundStyle(LensLabTheme.mutedInk)
+                    Button("Discard All Saved Copies", systemImage: "trash") {
+                        discardIDs = pendingCopies.map(\.id)
+                        confirmDiscard = true
+                    }
+                    .buttonStyle(LensLabSecondaryButtonStyle())
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(pendingCopies.prefix(pendingVisibleCount)) { record in
+                            HStack {
+                                Text(record.filename)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer()
+                                Button("Discard Copy", systemImage: "trash") {
+                                    discardIDs = [record.id]
+                                    confirmDiscard = true
+                                }
+                                .labelStyle(.iconOnly)
+                                .help("Discard saved copy")
+                            }
+                        }
+                    }
+                    if pendingVisibleCount < pendingCopies.count {
+                        Button("Show More Saved Copies") {
+                            pendingVisibleCount = min(pendingCopies.count, pendingVisibleCount + 50)
+                        }
+                        .buttonStyle(LensLabSecondaryButtonStyle())
+                    }
+                }
+            }
+
+            if let message = unlockError ?? resultMessage ?? vault.error {
+                Text(message)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("gallery-vault-message")
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Stored only on this device", systemImage: "exclamationmark.shield")
+                    .font(.headline)
+                Text("Deleting the app or losing this device can remove the only copies. Removing your device passcode may make the saved items impossible to open.")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(LensLabTheme.ink)
+            .padding(16)
+            .galleryLightSurface(role: .raised, cornerRadius: 16)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func restore(_ ids: [UUID], omittingUnavailableAlbums: Bool = false) {
