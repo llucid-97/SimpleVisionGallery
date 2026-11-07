@@ -12,6 +12,7 @@ nonisolated enum GalleryDeleteAction: Sendable {
     }
 }
 
+// Capture the target and session at the tap so later asynchronous work uses the same intent.
 nonisolated struct GalleryDeleteRequest: Identifiable, Sendable {
     enum Target: Sendable {
         case photos(String, sourceAlbumID: String?)
@@ -70,6 +71,7 @@ import OSLog
 @preconcurrency import Photos
 
 @MainActor
+// Own pending deletes and their worker so views share one ordered operation stream.
 final class GalleryDeleteQueue: ObservableObject {
     static let shared = GalleryDeleteQueue()
     @Published private(set) var pendingCount = 0

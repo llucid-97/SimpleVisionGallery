@@ -102,9 +102,11 @@ nonisolated final class GalleryVaultSession: @unchecked Sendable {
         try withKey { key in try removeThumbnails(recordID: recordID, urls: urls, inMutationLease: key) }
     }
 
+    // Remove cached thumbnails under the mutation lease and keep their totals accurate.
     func removeThumbnails(recordID: UUID, urls: [URL], inMutationLease key: SymmetricKey) throws {
         // Fence thumbnail writes already queued when the record was removed.
         removedThumbnailRecords.insert(recordID)
+        // Missing files are harmless, while other removal failures must reach the caller.
         for url in urls {
             do {
                 let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
@@ -371,6 +373,7 @@ final class GalleryVaultStorage: ObservableObject {
         let error: (any Error)?
         let warning: (any Error)?
     }
+    // Hold temporary batch data in one revocable object so locking can clear it.
     private nonisolated final class MutationBatchState: @unchecked Sendable {
         var mutations: [GalleryVaultMutation]
         var recordsByID: [UUID: GalleryVaultRecord]
@@ -389,6 +392,7 @@ final class GalleryVaultStorage: ObservableObject {
             self.recordDates = recordDates
         }
 
+        // Drop temporary private data when the session is revoked.
         func clear() {
             mutations.removeAll(keepingCapacity: false)
             recordsByID.removeAll(keepingCapacity: false)

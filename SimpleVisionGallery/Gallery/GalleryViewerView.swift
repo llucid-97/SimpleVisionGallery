@@ -752,6 +752,7 @@ private struct GalleryViewerMoveTarget: Identifiable {
     var id: String { "\(sessionID.uuidString):\(assetID)" }
 }
 
+// Bind a confirmation to the originally displayed item even if the cursor moves.
 private struct GalleryViewerDeleteTarget: Identifiable {
     enum Item {
         case photos(PHAsset)

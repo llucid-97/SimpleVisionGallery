@@ -427,6 +427,7 @@ struct GalleryVaultIndex {
             if record.state == .restoring,
                let restoredID = record.restoredIdentifier, restoredPhotoIDs.contains(restoredID) { continue }
             indexedRecords[record.id] = record
+            // Count binned items separately so normal album totals exclude them.
             if GalleryVaultRecycleBin.contains(record) {
                 recycleBin.append(record)
                 for album in record.albums where album.id != GalleryVaultRecycleBin.id {
@@ -531,6 +532,7 @@ struct GalleryVaultIndex {
             }
             return (record, position, randomOrder, record.id.uuidString)
         }
+        // Break ties consistently so incremental inserts preserve the selected sort order.
         func precedes(_ lhs: Key, _ rhs: Key) -> Bool {
             let a = lhs.0, b = rhs.0
             switch sort {
@@ -942,6 +944,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }
     }
 
+    // Refresh the grid from vault updates while preserving order for queued mutations.
     private func vaultRecordsDidChange(_ records: [GalleryVaultRecord]) {
         let keepsCurrentOrder = GalleryVaultService.shared.isPublishingQueuedMutations
             && selectedAlbum.map { currentVaultQueryKey == vaultKey(for: $0) } == true
@@ -960,6 +963,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
                 coverAsset: nil, photoCount: 0, videoCount: 0))
         }
         albums = sortedAlbums(current)
+        // Reconcile the selected album and selection after the vault index changes.
         if let album = selectedAlbum {
             if album.collection == nil, album.virtualScope == nil, vaultIndex.albumTitles[album.id] == nil {
                 closeAlbum()
