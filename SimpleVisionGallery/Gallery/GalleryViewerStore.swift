@@ -100,6 +100,8 @@ struct GalleryViewerSnapshot {
     let album: GalleryAlbum
     let fetch: PHFetchResult<PHAsset>
     let displayOrder: [Int]?
+    // Carry committed grid removals into new playlists without losing pending rollback state.
+    var committedNativeRemovals = IndexSet()
     var vaultRecords: [GalleryVaultRecord] = []
     var mediaFilter: GalleryMediaFilter = .all
     var mediaSearch: String = ""
@@ -130,6 +132,7 @@ fileprivate final class GalleryViewerPlaylist {
     init(_ snapshot: GalleryViewerSnapshot) {
         self.snapshot = snapshot
         index = GalleryPlaylistIndex(originalCount: snapshot.count)
+        index.remove(snapshot.committedNativeRemovals)
         vaultPositionByID = Dictionary(uniqueKeysWithValues: snapshot.vaultRecords.enumerated().map {
             ($1.id, snapshot.nativeCount + $0)
         })
@@ -466,6 +469,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 album: refreshed,
                 fetch: playlist.snapshot.fetch,
                 displayOrder: playlist.snapshot.displayOrder,
+                committedNativeRemovals: playlist.snapshot.committedNativeRemovals,
                 vaultRecords: playlist.snapshot.vaultRecords,
                 mediaFilter: playlist.snapshot.mediaFilter,
                 mediaSearch: playlist.snapshot.mediaSearch,
@@ -490,6 +494,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 album: renamed,
                 fetch: playlist.snapshot.fetch,
                 displayOrder: playlist.snapshot.displayOrder,
+                committedNativeRemovals: playlist.snapshot.committedNativeRemovals,
                 vaultRecords: playlist.snapshot.vaultRecords,
                 mediaFilter: playlist.snapshot.mediaFilter,
                 mediaSearch: playlist.snapshot.mediaSearch,

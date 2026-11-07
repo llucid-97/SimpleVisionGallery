@@ -801,6 +801,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     /// Maps compact grid positions to the frozen media snapshot while deletes are pending.
     private var pendingDisplayIndex = GalleryPlaylistIndex(originalCount: 0)
     private var pendingDisplayIndexDirty = true
+    private var committedNativeRemovals = IndexSet()
     /// Successful Photos deletes stay masked until a refreshed fetch reflects the change.
     private var committedPhotoDeletes: [String: GalleryDeleteRequest] = [:]
     private var committedPhotoAssets: [String: PHAsset] = [:]
@@ -1118,6 +1119,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     private func rebuildPendingDisplayIndexIfNeeded() {
         guard pendingDisplayIndexDirty else { return }
         var index = GalleryPlaylistIndex(originalCount: backingTotalAssetCount)
+        var committed = IndexSet()
         let queue = GalleryDeleteQueue.shared
         var photoRequests: [String: GalleryDeleteRequest] = [:]
         for request in queue.pendingRequests {
@@ -1144,6 +1146,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
                     index.remove(IndexSet(integer: displayIndex))
                 }
             }
+            // Save only committed positions; pending deletes need rollback tracking in the viewer.
             for id in committedRequests.keys {
                 guard let asset = committedPhotoAssets[id] else { continue }
                 let sourceIndex = fetch.index(of: asset)
@@ -1151,10 +1154,12 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
                 let displayIndex = nativeDisplayBySource?[sourceIndex] ?? (assetDisplayOrder == nil ? sourceIndex : nil)
                 if let displayIndex, displayIndex >= 0, displayIndex < nativeAssetCount {
                     index.remove(IndexSet(integer: displayIndex))
+                    committed.insert(displayIndex)
                 }
             }
         }
 
+        committedNativeRemovals = committed
         for id in queue.pendingVaultIDs {
             guard let offset = currentVaultPositions[id], !currentVaultDisplayIndex.removed.contains(offset) else { continue }
             let displayIndex = nativeAssetCount + currentVaultDisplayIndex.position(of: offset)
@@ -1716,6 +1721,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     func viewerSnapshot() -> GalleryViewerSnapshot? {
         guard let album = selectedAlbum, let fetch = assetFetchResult,
               assetFetchAlbumID == album.id, !isLoadingAlbum, !isSortingAssets else { return nil }
+        rebuildPendingDisplayIndexIfNeeded()
         let liveVaultRecords: [GalleryVaultRecord]
         if currentVaultDisplayIndex.removed.isEmpty {
             liveVaultRecords = currentVaultRecords
@@ -1725,7 +1731,8 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             }
         }
         return GalleryViewerSnapshot(id: viewerSnapshotID, album: album, fetch: fetch, displayOrder: assetDisplayOrder,
-            vaultRecords: liveVaultRecords, mediaFilter: mediaFilter, mediaSearch: mediaSearchQuery,
+            committedNativeRemovals: committedNativeRemovals, vaultRecords: liveVaultRecords,
+            mediaFilter: mediaFilter, mediaSearch: mediaSearchQuery,
             vaultSort: assetSortMode, vaultSortAscending: assetSortAscending, vaultShuffleSeed: vaultShuffleSeed)
     }
     #endif
