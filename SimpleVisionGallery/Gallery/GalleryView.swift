@@ -58,6 +58,7 @@ struct GalleryView: View {
     @State private var deletionReview: GalleryDeletionPlan?
     @StateObject private var sharing = GalleryShareController()
     @ObservedObject private var vault = GalleryVaultService.shared
+    @ObservedObject private var deleteQueue = GalleryDeleteQueue.shared
     @State private var showingVault = false
     @State private var vaultTransfer: GalleryVaultTransferRequest?
     @State private var vaultMessage: String?
@@ -464,6 +465,11 @@ struct GalleryView: View {
     }
 
     private var toolbarSubtitle: String {
+        if deleteQueue.pendingCount > 0 {
+            let count = "\(deleteQueue.pendingCount) pending"
+            return deleteQueue.photosUnresponsive ? "\(count) · Photos hasn’t responded yet" : count
+        }
+        if let message = deleteQueue.errorMessage { return message }
         guard manager.hasPhotoAccess else { return pageStatus }
         if manager.isPerformingOperation, let message = manager.operationMessage {
             return message
@@ -1000,6 +1006,14 @@ struct GalleryView: View {
 
     private var albumDetailView: some View {
         VStack(spacing: 12) {
+            if deleteQueue.photosUnresponsive {
+                GalleryMessageBanner(message: "Photos hasn’t responded yet. Deletes remain queued.",
+                    tint: LensLabTheme.orange, icon: "clock")
+            }
+            if let errorMessage = deleteQueue.errorMessage {
+                GalleryMessageBanner(message: errorMessage,
+                    tint: LensLabTheme.red, icon: "exclamationmark.triangle.fill")
+            }
             if let errorMessage = manager.errorMessage {
                 GalleryMessageBanner(
                     message: errorMessage, tint: LensLabTheme.red, icon: "exclamationmark.triangle.fill")
@@ -1019,24 +1033,12 @@ struct GalleryView: View {
                     thumbnailSize: CGFloat(thumbnailSize),
                     showsSourceBadge: vault.isUnlocked,
                     onOpen: openMedia,
-                    onVaultRecycle: { id in
-                        performVaultItemAction {
-                            try await vault.recycle(recordID: id)
-                        }
-                    },
-                    onVaultPutBack: { id in
-                        performVaultItemAction {
-                            try await vault.putBack(recordID: id)
-                        }
-                    },
-                    onVaultDelete: { id in
-                        performVaultItemAction {
-                            try await vault.delete(recordID: id)
-                        }
-                    }
+                    onVaultRecycle: { id in deleteQueue.enqueueVaultRecycle(recordID: id) },
+                    onVaultPutBack: { id in deleteQueue.enqueueVaultPutBack(recordID: id) },
+                    onVaultDelete: { id in deleteQueue.enqueuePermanentVaultDelete(recordID: id) }
                 )
-                .allowsHitTesting(!manager.isSortingAssets && !manager.isPerformingOperation)
-                .opacity(manager.isSortingAssets ? 0.72 : 1)
+                .allowsHitTesting(!(manager.isSortingAssets && manager.sortingMessage != nil) && !manager.isPerformingOperation)
+                .opacity(manager.isSortingAssets && manager.sortingMessage != nil ? 0.72 : 1)
             }
         }
     }
@@ -1141,14 +1143,6 @@ struct GalleryView: View {
                        case .albumUnavailable = failure { vaultAlbumRetryIDs = ids }
                 }
             }
-        }
-    }
-
-    private func performVaultItemAction(_ action: @escaping @MainActor () async throws -> Void) {
-        manager.errorMessage = nil
-        Task { @MainActor in
-            do { try await action() }
-            catch { manager.errorMessage = error.localizedDescription }
         }
     }
 
@@ -1332,16 +1326,13 @@ private struct GalleryAssetCell: View {
                         Button("Put Back", systemImage: "arrow.uturn.backward") {
                             onVaultPutBack(record.id)
                         }
-                        .disabled(vault.isBusy)
                         Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {
                             pendingVaultDeleteID = record.id
                         }
-                        .disabled(vault.isBusy)
                     } else {
                         Button("Move to Recycle Bin", systemImage: "trash") {
                             onVaultRecycle(record.id)
                         }
-                        .disabled(vault.isBusy)
                     }
                 }
             }
