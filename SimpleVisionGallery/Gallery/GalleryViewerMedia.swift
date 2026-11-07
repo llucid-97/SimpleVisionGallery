@@ -323,19 +323,18 @@ final class GalleryViewerMedia {
             let key = GallerySceneCache.key(for: asset)
             guard !GallerySceneCache.shared.hasPrefetched(key, owner: prefetchOwnerID),
                   !prefetchFailures.contains(key) else { continue }
-            // Ordinary photos are bounded to 2560px; undersized mono photos may
+            // Still images use one eye bounded to 2560px; undersized photos may
             // be upscaled to the local 320px short-edge generation heuristic.
             let width = Double(asset.pixelWidth), height = Double(asset.pixelHeight)
             var sourceScale = min(1, 2560 / max(1, max(width, height)))
             let aspect = width / max(1, height)
             let shortEdge = min(width, height) * sourceScale
-            if !asset.mediaSubtypes.contains(.spatialMedia),
-               shortEdge < 320,
+            if shortEdge < 320,
                aspect >= 1.0 / 3.0, aspect <= 3.0 {
                 sourceScale *= 320 / max(1, shortEdge)
             }
             let pixelEstimate = asset.mediaType == .image
-                ? width * height * (asset.mediaSubtypes.contains(.spatialMedia) ? 2 : sourceScale * sourceScale) : 0
+                ? width * height * sourceScale * sourceScale : 0
             guard pixelEstimate <= Double(pixelBudgetPerViewer - usedPixels) else { continue }
             let remainingPixels = pixelBudgetPerViewer - usedPixels
             let priority = GalleryPrefetchPriority()
@@ -902,6 +901,7 @@ private final class GallerySceneCache {
             aspectRatio: Double(decoded.preview.size.width / decoded.preview.size.height),
             pixelCost: decoded.pixelCost + menuPreviewCost
         )
+        result.supportsSpatial = decoded.canGenerate
         #if targetEnvironment(simulator)
         // Simulator cannot generate spatial scenes, but it can render the real
         // image component. Use it so layout tests cover the native media plane.
@@ -912,13 +912,11 @@ private final class GallerySceneCache {
         }
         try Task.checkCancellation()
         if spatial {
-            result.status = "Spatial scenes need Apple Vision Pro. Showing the original in Simulator."
+            result.status = "Spatial scenes need Apple Vision Pro. Showing Original in Simulator."
         }
         return result
         #else
-        let modes = ImagePresentationComponent.supportedViewingModes(for: decoded.source)
-        result.supportsSpatial = modes.contains(.spatialStereo) || decoded.canGenerate
-        if spatial && !modes.contains(.spatialStereo) && decoded.canGenerate {
+        if spatial && decoded.canGenerate {
             do {
                 let scene = try await ImagePresentationComponent.Spatial3DImage(imageSource: decoded.source)
                 try Task.checkCancellation()
@@ -930,7 +928,6 @@ private final class GallerySceneCache {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                let firstError = error.localizedDescription
                 if decoded.canRetryGeneration,
                    let retryPlan = decoded.retryPlan,
                    GalleryRetryBudget.permits(
@@ -960,24 +957,23 @@ private final class GallerySceneCache {
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch GalleryMediaError.prefetchBudgetExceeded {
-                        result.status = "Could not create a spatial scene. Showing the original. \(firstError)"
+                        result.status = "Could not create a spatial scene. Showing Original."
                     } catch {
-                        result.status = "Could not create a spatial scene. Showing the original. \(error.localizedDescription)"
+                        result.status = "Could not create a spatial scene. Showing Original."
                     }
                 } else {
-                    result.status = "Could not create a spatial scene. Showing the original. \(firstError)"
+                    result.status = "Could not create a spatial scene. Showing Original."
                 }
             }
-        } else if spatial && !modes.contains(.spatialStereo) {
-            result.status = "This photo's size or shape does not support spatial scenes."
+        } else if spatial {
+            result.status = "Spatial Scene isn’t available for this photo. Showing Original."
         }
         do {
             result.component = try await ImagePresentationComponent(imageSource: decoded.source)
-            if modes.contains(.spatialStereo) { result.spatialMode = .spatialStereo }
         } catch {
             result.fallback = decoded.preview
             result.pixelCost = decoded.previewPixelCost + menuPreviewCost
-            result.status = "Showing a 2D preview. \(error.localizedDescription)"
+            if result.status == nil { result.status = "Showing Original." }
         }
         try Task.checkCancellation()
         return result
@@ -1042,8 +1038,18 @@ private nonisolated struct GalleryDecodedImage: @unchecked Sendable {
     private let thumbnail: CGImage
 
     init(data: Data) throws {
-        guard let original = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(original, 0, nil) as? [CFString: Any],
+        guard let original = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw GalleryMediaError.invalidImage
+        }
+        let groups = (CGImageSourceCopyProperties(original, nil) as? [CFString: Any])?[kCGImagePropertyGroups]
+            as? [[CFString: Any]] ?? []
+        let stereoPair = groups.first {
+            ($0[kCGImagePropertyGroupType] as? String) == (kCGImagePropertyGroupTypeStereoPair as String)
+        }
+        let leftIndex = stereoPair?[kCGImagePropertyGroupImageIndexLeft] as? Int
+        let imageIndex = leftIndex.flatMap { (0..<CGImageSourceGetCount(original)).contains($0) ? $0 : nil }
+            ?? CGImageSourceGetPrimaryImageIndex(original)
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(original, imageIndex, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
               width > 0, height > 0 else { throw GalleryMediaError.invalidImage }
@@ -1053,58 +1059,49 @@ private nonisolated struct GalleryDecodedImage: @unchecked Sendable {
             kCGImageSourceThumbnailMaxPixelSize: 2560,
             kCGImageSourceShouldCacheImmediately: true
         ]
-        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(original, 0, options as CFDictionary) else {
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(original, imageIndex, options as CFDictionary) else {
             throw GalleryMediaError.invalidImage
         }
         self.thumbnail = thumbnail
         // The full preview is temporary; prepared entries retain only a bounded512px menu preview.
         previewPixelCost = thumbnail.width * thumbnail.height
         preview = UIImage(cgImage: thumbnail)
-        // Keep every channel and all camera metadata of multi-image HEIC sources.
-        // The spatial-mode query is performed on the main actor before presentation.
-        if CGImageSourceGetCount(original) > 1 {
-            source = original
-            pixelCost = width * height * min(CGImageSourceGetCount(original), 2)
-        } else {
-            let ratio = Double(width) / Double(height)
-            let shortEdge = min(thumbnail.width, thumbnail.height)
-            let spatialCandidate = ratio >= 1.0 / 3.0 && ratio <= 3.0
-            let spatialSource: CGImage
-            if spatialCandidate && shortEdge < 320 {
-                let scale = CGFloat(320) / CGFloat(shortEdge)
-                let targetWidth = max(1, Int((CGFloat(thumbnail.width) * scale).rounded()))
-                let targetHeight = max(1, Int((CGFloat(thumbnail.height) * scale).rounded()))
-                guard let context = CGContext(
-                    data: nil,
-                    width: targetWidth,
-                    height: targetHeight,
-                    bitsPerComponent: 8,
-                    bytesPerRow: 0,
-                    space: CGColorSpaceCreateDeviceRGB(),
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                ) else { throw GalleryMediaError.invalidImage }
-                context.interpolationQuality = .high
-                context.draw(thumbnail, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-                guard let upscaled = context.makeImage() else { throw GalleryMediaError.invalidImage }
-                spatialSource = upscaled
-            } else {
-                spatialSource = thumbnail
-            }
-            let resized = NSMutableData()
-            guard let destination = CGImageDestinationCreateWithData(resized, UTType.png.identifier as CFString, 1, nil) else {
-                throw GalleryMediaError.invalidImage
-            }
-            CGImageDestinationAddImage(destination, spatialSource, nil)
-            guard CGImageDestinationFinalize(destination),
-                  let bounded = CGImageSourceCreateWithData(resized, nil) else { throw GalleryMediaError.invalidImage }
-            source = bounded
-            pixelCost = spatialSource.width * spatialSource.height
-        }
+        // Bake the selected eye's orientation and color into one bounded in-memory source.
         let ratio = Double(width) / Double(height)
-        let supportsGenerationAspect = ratio >= 1.0 / 3.0 && ratio <= 3.0
-        canGenerate = supportsGenerationAspect
-            && (min(thumbnail.width, thumbnail.height) >= 320 || CGImageSourceGetCount(original) == 1)
-        canRetryGeneration = supportsGenerationAspect && CGImageSourceGetCount(original) == 1
+        let shortEdge = min(thumbnail.width, thumbnail.height)
+        let spatialCandidate = ratio >= 1.0 / 3.0 && ratio <= 3.0
+        let spatialSource: CGImage
+        if spatialCandidate && shortEdge < 320 {
+            let scale = CGFloat(320) / CGFloat(shortEdge)
+            let targetWidth = max(1, Int((CGFloat(thumbnail.width) * scale).rounded()))
+            let targetHeight = max(1, Int((CGFloat(thumbnail.height) * scale).rounded()))
+            guard let context = CGContext(
+                data: nil,
+                width: targetWidth,
+                height: targetHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: thumbnail.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { throw GalleryMediaError.invalidImage }
+            context.interpolationQuality = .high
+            context.draw(thumbnail, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+            guard let upscaled = context.makeImage() else { throw GalleryMediaError.invalidImage }
+            spatialSource = upscaled
+        } else {
+            spatialSource = thumbnail
+        }
+        let resized = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(resized, UTType.png.identifier as CFString, 1, nil) else {
+            throw GalleryMediaError.invalidImage
+        }
+        CGImageDestinationAddImage(destination, spatialSource, nil)
+        guard CGImageDestinationFinalize(destination),
+              let bounded = CGImageSourceCreateWithData(resized, nil) else { throw GalleryMediaError.invalidImage }
+        source = bounded
+        pixelCost = spatialSource.width * spatialSource.height
+        canGenerate = spatialCandidate
+        canRetryGeneration = spatialCandidate
             && min(thumbnail.width, thumbnail.height) < 1024
         retryPlan = canRetryGeneration
             ? GalleryImageSizePlan(sourceWidth: thumbnail.width, sourceHeight: thumbnail.height, shortEdge: 1024, maximumLongEdge: 3072)
@@ -1132,7 +1129,7 @@ private nonisolated struct GalleryDecodedImage: @unchecked Sendable {
             height: plan.height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { throw GalleryMediaError.invalidImage }
         context.interpolationQuality = .high

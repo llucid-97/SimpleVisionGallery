@@ -638,12 +638,12 @@ private struct GalleryViewerPane: View {
 
             if session.currentItem?.mediaType == .image {
                 Button { spatialEnabled.toggle() } label: {
-                    GalleryViewerActionLabel(title: spatialEnabled ? "Original" : "Spatial",
+                    GalleryViewerActionLabel(title: spatialEnabled ? "Original" : "Spatial Scene",
                         symbol: spatialEnabled ? "photo" : "cube")
                 }
                 .accessibilityLabel(spatialEnabled ? "Show original" : "Show spatial scene")
                 .accessibilityIdentifier("gallery-viewer-spatial")
-                .accessibilityValue(media.isShowingSpatial ? "Spatial" : "2D")
+                .accessibilityValue(media.isShowingSpatial ? "Spatial Scene" : "Original")
             }
 
             if session.currentItem?.mediaType == .video {
