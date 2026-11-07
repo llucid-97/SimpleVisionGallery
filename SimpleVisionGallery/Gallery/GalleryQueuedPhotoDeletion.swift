@@ -84,6 +84,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                         itemErrors[request.id] = PhotoDeleteError.assetUnavailable
                         continue
                     }
+                    // Build the change for each action, rechecking permanent deletion before staging it.
                     switch request.action {
                     case .recycle:
                         additions.append(asset)
@@ -154,6 +155,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
         case .permanent:
             guard status == .authorized else { throw PhotoDeleteError.fullAccessRequired }
         }
+        // Apply action-specific permission and membership checks before staging a change.
         switch request.action {
         case .recycle:
             guard !lookup.contains(asset, in: bin) else { throw PhotoDeleteError.alreadyInBin }
@@ -181,6 +183,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
     }
 }
 
+/// Cache PhotoKit lookups during a transaction to reuse consistent asset and album references.
 private nonisolated struct PhotoLookup {
     private var assets: [String: PHAsset] = [:]
     private var collections: [String: PHAssetCollection] = [:]
@@ -212,11 +215,13 @@ private nonisolated struct PhotoLookup {
     }
 }
 
+/// Give each rejected Photos operation a specific error that the queue can display.
 private nonisolated enum PhotoDeleteError: LocalizedError, Sendable {
     case unsupportedTarget, duplicateAsset, assetUnavailable, sourceUnavailable, binUnavailable
     case alreadyInBin, notInBin, accessRequired, fullAccessRequired, assetNotDeletable
     case changeUnavailable, deletePostcondition
     var errorDescription: String? {
+        // Map each failure to a useful message for the person who requested the change.
         switch self {
         case .unsupportedTarget: "Unsupported Photos deletion target."
         case .duplicateAsset: "This Photos item has more than one queued action."

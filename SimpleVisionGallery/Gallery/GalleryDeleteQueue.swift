@@ -137,6 +137,7 @@ final class GalleryDeleteQueue: ObservableObject {
         pendingCount = fifo.identifiers.count
     }
 
+    /// Stage each accepted target immediately and start one worker to preserve order.
     private func enqueue(_ request: GalleryDeleteRequest, asset: PHAsset? = nil, publishing: Bool = true) {
         guard fifo.append(request) else { return } // Sibling taps on an already pending item coalesce.
         errorMessage = nil

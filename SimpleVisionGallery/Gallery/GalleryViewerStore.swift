@@ -526,6 +526,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         for playlist in playlists.values { stageQueuedDelete(request, asset: asset, in: playlist) }
     }
 
+    /// Hide the pending item and move affected cursors so the viewer responds immediately.
     private func stageQueuedDelete(_ request: GalleryDeleteRequest, asset: PHAsset?, in playlist: GalleryViewerPlaylist) {
         let position: Int?
         switch request.target {
@@ -572,6 +573,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         }
     }
 
+    /// Serialize Photos deletes with moves while running the transaction away from the UI.
     func performQueuedPhotoDeletes(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
         // Serialize with existing Move transactions; the delete UI never waits on this gate.

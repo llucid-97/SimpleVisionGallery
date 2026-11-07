@@ -267,13 +267,16 @@ nonisolated final class GalleryVaultStagingItem {
     func record(id: UUID) -> GalleryVaultRecord? { durable[id] }
     func record(sourceIdentifier: String) -> GalleryVaultRecord? { durable.values.first { $0.sourceIdentifier == sourceIdentifier } }
     var mutationRevision: UInt = 0
+    /// Simulate vault mutations so queue tests can inspect outcomes without real storage.
     func applyMutations(_ mutations: [GalleryVaultMutation]) async -> [GalleryVaultMutationResult] {
         let before = durable
         defer { if durable != before { mutationRevision &+= 1 } }
 
         return mutations.map { mutation in
+            // Isolate failures by item so one fake mutation does not stop the rest.
             do {
                 guard isUnlocked, var record = durable[mutation.id] else { throw GalleryVaultStorageError.corruptRecord }
+                // Update the fake record for the requested action to model its resulting state.
                 switch mutation {
                 case .recycle:
                     if !GalleryVaultRecycleBin.contains(record) { record.albums.append(GalleryVaultRecycleBin.album) }

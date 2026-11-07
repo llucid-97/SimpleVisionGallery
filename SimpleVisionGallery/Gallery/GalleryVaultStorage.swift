@@ -743,6 +743,7 @@ final class GalleryVaultStorage: ObservableObject {
                         var itemChanged = false
                         var durabilityWarning: Error?
 
+                        // Apply the requested mutation under the session lease and record any durability warning.
                         switch mutation {
                         case .recycle:
                             if !GalleryVaultRecycleBin.contains(record) {
@@ -893,6 +894,7 @@ final class GalleryVaultStorage: ObservableObject {
         }
     }
 
+    /// Write the encrypted cache asynchronously so manifest persistence does not block mutations.
     private func saveManifestCiphertext(_ bytes: Data) {
         guard manifestDirty, isUnlocked else { return }
         manifestDirty = false

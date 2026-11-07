@@ -520,6 +520,7 @@ struct GalleryVaultIndex {
                  shuffleSeed: UUID = UUID(), preservingOrderOf previous: [GalleryVaultRecord]? = nil,
                  changedIDs: Set<UUID>? = nil) -> [GalleryVaultRecord] {
         typealias Key = (GalleryVaultRecord, Int?, Int, String)
+        // Compute sort keys so incremental ordering uses the same rules as a full sort.
         func key(_ record: GalleryVaultRecord) -> Key {
             let position = album.virtualScope == nil && !GalleryRecycleBin.isRecycleBinTitle(album.title)
                 ? record.albums.first(where: { $0.id == album.id })?.position : nil
@@ -1729,6 +1730,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     }
     #endif
 
+    /// Drop committed overlays once the current Photos fetch no longer displays them.
     private func pruneCommittedPhotoDeletes(using fetch: PHFetchResult<PHAsset>) {
         guard !committedPhotoDeletes.isEmpty else { return }
         let visibleSources = assetDisplayOrder.map { Set($0) }
@@ -1757,6 +1759,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         return assetAtSnapshotIndex(snapshotIndex)
     }
 
+    /// Resolve a snapshot position through its display order while hiding vaulted sources.
     private func assetAtSnapshotIndex(_ index: Int) -> PHAsset? {
         guard let assetFetchResult, index >= 0, index < nativeAssetCount else {
             return nil

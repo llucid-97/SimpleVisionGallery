@@ -10,6 +10,7 @@ nonisolated enum GalleryVaultMutation: Sendable {
 nonisolated struct GalleryVaultMutationResult: Sendable { let id: UUID; let error: Error?; var warning: Error? = nil }
 nonisolated enum Injected: Error { case failed, locked }
 extension Notification.Name { static let galleryVaultWillLock = Notification.Name("test-vault-lock") }
+/// Simulate a revocable vault so queue behavior can be tested without private storage.
 @MainActor final class GalleryVaultService {
     static let shared = GalleryVaultService()
     var isUnlocked = true
@@ -22,6 +23,7 @@ extension Notification.Name { static let galleryVaultWillLock = Notification.Nam
     }
     func lock() { isUnlocked = false; authEpoch = UUID(); NotificationCenter.default.post(name: .galleryVaultWillLock, object: nil) }
 }
+/// Capture queue activity and inject Photos failures without calling PhotoKit.
 @MainActor final class GalleryViewerStore {
     static let shared = GalleryViewerStore()
     var captured: [String] = []
@@ -42,6 +44,7 @@ extension Notification.Name { static let galleryVaultWillLock = Notification.Nam
     }
     func reset() { captured = []; completed = []; failures = []; batches = []; failing = []; photoDelay = 10 }
 }
+/// Exercise the production queue against fakes to check ordering and recovery.
 @main struct Check {
     @MainActor static func idle(_ queue: GalleryDeleteQueue) async {
         let limit = ContinuousClock.now + .seconds(10)
@@ -51,6 +54,7 @@ extension Notification.Name { static let galleryVaultWillLock = Notification.Nam
     @MainActor static func photo(_ id: String) {
         GalleryDeleteQueue.shared.enqueueRecycle(item: .photos(.init(localIdentifier: id)), sourceAlbumID: nil)
     }
+    /// Run mixed, failure, and lock scenarios to verify the queue contract end to end.
     @MainActor static func main() async {
         let queue = GalleryDeleteQueue.shared, store = GalleryViewerStore.shared, vault = GalleryVaultService.shared
         let ids = (0..<20).map { _ in UUID() }
