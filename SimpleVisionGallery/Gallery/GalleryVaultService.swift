@@ -455,6 +455,7 @@ final class GalleryVaultService: ObservableObject {
         try storage.update(updated)
     }
 
+    // Serialize queued mutations and publish only while their captured authorization remains valid.
     func applyQueuedMutations(_ mutations: [GalleryVaultMutation], epoch: UUID) async -> [GalleryVaultMutationResult] {
         guard isCurrent(epoch) else { return mutations.map { .init(id: $0.id, error: GalleryVaultTransferError.locked) } }
         await waitForIdle(epoch: epoch)

@@ -43,8 +43,10 @@ nonisolated struct GalleryDeleteFIFO {
     }
     mutating func takeBatch() -> [GalleryDeleteRequest] {
         precondition(active.isEmpty)
-        active = waiting
-        waiting.removeAll(keepingCapacity: true)
+        guard let first = waiting.first else { return [] }
+        let count = waiting.prefix { $0.isVault == first.isVault }.count
+        active = Array(waiting.prefix(count))
+        waiting.removeFirst(count)
         return active
     }
     mutating func finish(failed: Set<UUID>) -> [GalleryDeleteRequest] {
@@ -135,6 +137,7 @@ final class GalleryDeleteQueue: ObservableObject {
 
     private func enqueue(_ request: GalleryDeleteRequest, asset: PHAsset? = nil, publishing: Bool = true) {
         guard fifo.append(request) else { return } // Sibling taps on an already pending item coalesce.
+        errorMessage = nil
         if let asset { pendingPhotoAssets[asset.localIdentifier] = asset }
         GalleryViewerStore.shared.stageQueuedDelete(request, asset: asset)
         if publishing { pendingCount = fifo.identifiers.count }
@@ -146,21 +149,14 @@ final class GalleryDeleteQueue: ObservableObject {
         }
     }
 
+    // Drain each store prefix before later requests so completion follows capture order.
     private func drain() async {
+        // Finalize the current prefix before accepting results from the next store.
         while !fifo.waiting.isEmpty {
             let batch = fifo.takeBatch()
-            let photos = batch.filter { !$0.isVault }
-            let vault = batch.filter(\.isVault)
-            var failures: [UUID: Error] = [:]
-            // Each batch owns distinct items. Independent backing-store changes commute;
-            // preserve capture order within each store and finish results in capture order.
-            if batch.first?.isVault == true {
-                failures.merge(await executeVault(vault)) { _, new in new }
-                failures.merge(await executePhotos(photos)) { _, new in new }
-            } else {
-                failures.merge(await executePhotos(photos)) { _, new in new }
-                failures.merge(await executeVault(vault)) { _, new in new }
-            }
+            // Finish each contiguous store prefix before starting the next one.
+            let failures = batch.first?.isVault == true
+                ? await executeVault(batch) : await executePhotos(batch)
             for request in batch where fifo.active.contains(where: { $0.id == request.id }) {
                 let error = failures[request.id]
                 GalleryViewerStore.shared.finishQueuedDelete(request, succeeded: error == nil)
@@ -177,6 +173,7 @@ final class GalleryDeleteQueue: ObservableObject {
         worker = nil
     }
 
+    // Keep the watchdog scoped to the Photos await so slow prompts remain visible.
     private func executePhotos(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
         let watchdog = Task { [weak self] in
@@ -189,10 +186,12 @@ final class GalleryDeleteQueue: ObservableObject {
         return await GalleryViewerStore.shared.performQueuedPhotoDeletes(requests)
     }
 
+    // Submit vault changes under their captured epochs and map outcomes back to requests.
     private func executeVault(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
         var errors: [UUID: Error] = [:]
         // Epochs may differ only if lock/unlock happened while a Photos prompt was open.
+        // Group by authorization epoch so a lock cannot authorize an older request.
         for epoch in Set(requests.compactMap { if case .vault(_, let epoch) = $0.target { return epoch }; return nil }) {
             let group = requests.filter { if case .vault(_, let value) = $0.target { return value == epoch }; return false }
             let mutations: [GalleryVaultMutation] = group.compactMap { request in

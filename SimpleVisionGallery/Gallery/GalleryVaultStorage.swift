@@ -708,6 +708,7 @@ final class GalleryVaultStorage: ObservableObject {
         publishChangesIfNeeded()
     }
 
+    // Apply a batch under a revocable session and publish only if its generation is current.
     func applyMutations(_ mutations: [GalleryVaultMutation]) async -> [GalleryVaultMutationResult] {
         guard let session, isUnlocked else {
             return mutations.map { .init(id: $0.id, error: GalleryVaultStorageError.locked) }
@@ -723,6 +724,7 @@ final class GalleryVaultStorage: ObservableObject {
 
         let mutationCount = mutations.count
         await Task.detached(priority: .userInitiated) {
+            // Process each item independently so one storage error does not discard later outcomes.
             for index in 0..<mutationCount {
                 if session.isRevoked { break }
                 do {

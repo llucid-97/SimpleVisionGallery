@@ -484,6 +484,7 @@ struct GalleryVaultIndex {
         return GalleryVaultIndex(records: records, restoredPhotoIDs: restored, excludedIDs: excludedIDs)
     }
 
+    // Apply record deltas to the vault index without rebuilding every album.
     mutating func applyMutationChanges(_ ids: Set<UUID>, records: [GalleryVaultRecord]) {
         let before = GalleryVaultIndex(records: ids.compactMap { indexedRecords[$0] })
         // Successful queue changes contain only private items; no Photos lookup is needed.
@@ -1108,6 +1109,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         return pendingDisplayIndex.index(at: displayIndex)
     }
 
+    // Map pending changes to display positions so the grid hides the right items.
     private func rebuildPendingDisplayIndexIfNeeded() {
         guard pendingDisplayIndexDirty else { return }
         var index = GalleryPlaylistIndex(originalCount: backingTotalAssetCount)
@@ -1120,6 +1122,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         let committedRequests = committedPhotoDeletes.filter { requestAffectsCurrentGrid($0.value) }
         let shouldMapPhotos = !photoRequests.isEmpty || !committedRequests.isEmpty
 
+        // Resolve Photos IDs against the current fetch before translating their display positions.
         if let fetch = assetFetchResult, assetFetchAlbumID == selectedAlbum?.id {
             let nativeDisplayBySource: [Int: Int]? = {
                 guard shouldMapPhotos, let order = assetDisplayOrder else { return nil }

@@ -404,10 +404,10 @@ private struct GalleryViewerPane: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("gallery-viewer-photos-pending")
                     }
-                    if let errorMessage = deleteQueue.errorMessage {
-                        Text(errorMessage).font(.caption).foregroundStyle(.red).lineLimit(2)
-                    } else if let actionError {
+                    if let actionError {
                         Text(actionError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                    } else if let errorMessage = deleteQueue.errorMessage {
+                        Text(errorMessage).font(.caption).foregroundStyle(.red).lineLimit(2)
                     } else if let message = media.status {
                         Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }

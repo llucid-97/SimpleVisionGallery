@@ -3,6 +3,7 @@ import Foundation
 
 /// The delete queue calls this from its detached worker task.
 nonisolated enum GalleryQueuedPhotoDeletion {
+    // Validate and stage one Photos transaction, retaining per-item errors for the queue.
     static func execute(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         var failures: [UUID: Error] = [:]
         let photos = requests.filter {
@@ -18,6 +19,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
 
         var itemErrors: [UUID: Error] = [:]
         var staged = Set<UUID>()
+        // Validate again inside the transaction because library membership can change.
         do {
             try await PHPhotoLibrary.shared().performChanges {
                 var lookup = PhotoLookup()
@@ -76,6 +78,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
 
                 var additions: [PHAsset] = [], deletions: [PHAsset] = []
                 var removals: [String: [PHAsset]] = [:]
+                // Collect valid changes together while keeping individual rejection reasons.
                 for request in stageable {
                     guard let asset = assets[request.id] else {
                         itemErrors[request.id] = PhotoDeleteError.assetUnavailable
