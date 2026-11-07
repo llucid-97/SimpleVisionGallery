@@ -72,6 +72,7 @@ struct GalleryDeleteRequest {
     func notify(_ playlist: GalleryViewerPlaylist, orderChanged: Bool = false) {}
     // STORE_METHODS
 }
+/// Run the isolated handoff regression without linking the full app.
 @main struct Check {
     /// Check a stale fetch and a pending rollback through newly created playlists.
     @MainActor static func main() {

@@ -141,6 +141,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
         return failures
     }
 
+    /// Recheck permissions and captured memberships so only the intended Photos asset can change.
     private static func validate(_ request: GalleryDeleteRequest, lookup: inout PhotoLookup,
                                  bin: PHAssetCollection?) throws -> (PHAsset, PHAssetCollection?) {
         guard case .photos(let id, let sourceID) = request.target, let asset = lookup.asset(id) else {

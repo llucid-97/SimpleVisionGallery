@@ -10,6 +10,7 @@ manager = (source_root / 'SimpleVisionGallery/Gallery/GalleryManager.swift').rea
 viewer = (source_root / 'SimpleVisionGallery/Gallery/GalleryViewerStore.swift').read_text()
 
 def block(source, marker):
+    """Extract production bodies so the regression exercises the real handoff code."""
     start = source.index(marker)
     opening = source.index('{', start)
     depth = 0
