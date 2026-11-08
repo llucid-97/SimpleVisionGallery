@@ -3,7 +3,11 @@ import SwiftUI
 @main
 struct SimpleVisionGalleryApp: App {
     var body: some Scene {
-        WindowGroup("Simple Vision Gallery", id: "gallery-main") { galleryContent }
+        WindowGroup("Simple Vision Gallery", id: GalleryMainWindow.sceneID, for: String.self) { _ in
+            galleryContent
+        } defaultValue: {
+            GalleryMainWindow.value
+        }
         #if DEBUG
         .windowResizability(CaptureSurfaceArgument.value?.hasPrefix("native-viewer") == true ? .contentSize : .automatic)
         #endif

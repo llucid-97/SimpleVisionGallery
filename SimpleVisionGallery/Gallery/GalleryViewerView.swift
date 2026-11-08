@@ -216,8 +216,17 @@ struct GalleryViewerWindowRoot: View {
     }
 
     private var unavailableView: some View {
-        ContentUnavailableView("Open an album to start", systemImage: "photo.on.rectangle.angled",
-            description: Text("This slideshow is no longer open. Choose a photo or video in Gallery."))
+        ContentUnavailableView {
+            Label("Open an album to start", systemImage: "photo.on.rectangle.angled")
+        } description: {
+            Text("This slideshow is no longer open. Choose a photo or video in Gallery.")
+        } actions: {
+            Button("Albums", systemImage: "square.grid.2x2") {
+                GalleryMainWindow.openAlbums(using: openWindow)
+            }
+            .accessibilityIdentifier("gallery-viewer-albums")
+        }
+        .galleryOrnamentBackdrop(cornerRadius: 24)
     }
 }
 
@@ -298,6 +307,7 @@ private struct GalleryViewerPane: View {
     @ObservedObject private var store = GalleryViewerStore.shared
     @ObservedObject private var vault = GalleryVaultService.shared
     @ObservedObject private var deleteQueue = GalleryDeleteQueue.shared
+    @Environment(\.openWindow) private var openWindow
     @State private var media = GalleryViewerMedia()
     @State private var spatialEnabled = true
     @State private var actionError: String?
@@ -489,6 +499,14 @@ private struct GalleryViewerPane: View {
                     .font(.subheadline.monospacedDigit()).foregroundStyle(LensLabTheme.mutedInk)
             }
             Spacer()
+            Button {
+                GalleryMainWindow.openAlbums(using: openWindow)
+            } label: {
+                GalleryViewerActionLabel(title: "Albums", symbol: "square.grid.2x2")
+            }
+            .buttonStyle(.plain)
+            .galleryHoverLabel("Open albums")
+            .accessibilityIdentifier("gallery-viewer-albums")
             GalleryVaultSessionButton()
             Button {
                 // Raised native media can cover even an ordinary SwiftUI menu.

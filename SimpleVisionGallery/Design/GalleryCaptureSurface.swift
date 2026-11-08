@@ -31,7 +31,7 @@ struct GalleryCaptureMainSceneRecovery: View {
             Self.hasRequestedMain = true
             // Recreate exactly one capture main scene; its appearance retires this empty fixture.
             dismissWindow(id: "gallery-main")
-            openWindow(id: "gallery-main")
+            openWindow(id: GalleryMainWindow.sceneID, value: GalleryMainWindow.value)
         }
     }
 }

@@ -157,6 +157,10 @@ struct GalleryView: View {
         .onReceive(NotificationCenter.default.publisher(for: .galleryPhotosAccessDidRevoke)) { _ in
             sharing.tearDown()
         }
+        .onReceive(NotificationCenter.default.publisher(for: GalleryMainWindow.showAlbums)) { _ in
+            clearAlbumSelection()
+            manager.closeAlbum()
+        }
         .onChange(of: manager.selectedAlbum?.id) {
             showingThumbnailSize = false
             mediaSearch = ""
@@ -188,7 +192,7 @@ struct GalleryView: View {
 
     @ViewBuilder private var ornamentMediaToolbar: some View {
         if let album = manager.selectedAlbum {
-            mediaHeaderRow(album: album, compact: true, showsBackButton: false, searchMaxWidth: 320)
+            mediaHeaderRow(album: album, compact: true, searchMaxWidth: 320)
                 .popover(isPresented: $showingThumbnailSize, arrowEdge: .top) {
                     thumbnailSizePopover.presentationCompactAdaptation(.popover)
                 }
