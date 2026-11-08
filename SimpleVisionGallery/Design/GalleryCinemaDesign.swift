@@ -23,8 +23,7 @@ struct GalleryCinemaDesign: View {
     var body: some View {
         GeometryReader { geometry in
             Group {
-                if photosUseOrnaments && (!context.hasOpenAlbum || context.manager.librarySection == .photos)
-                    && geometry.size.width >= 1040 && !dynamicTypeSize.isAccessibilitySize {
+                if photosUseOrnaments && geometry.size.width >= 1040 && !dynamicTypeSize.isAccessibilitySize {
                     ornamentLibrary(width: geometry.size.width)
                 } else {
                 HStack(spacing: 0) {
@@ -65,9 +64,9 @@ struct GalleryCinemaDesign: View {
                 Label("Gallery", systemImage: "square.stack.3d.up")
                     .font(.headline).foregroundStyle(CinemaPalette.accent)
                     .padding(.horizontal, 16).padding(.vertical, 10)
-                ornamentNavigation("Albums", symbol: "square.grid.2x2", selected: !context.hasOpenAlbum) { context.selectSection(.albums) }
-                ornamentNavigation("Photos", symbol: "photo.on.rectangle", selected: context.hasOpenAlbum) { context.selectSection(.photos) }
-                ornamentNavigation("Recycle Bin", symbol: "trash", selected: false) { context.selectSection(.recycleBin) }
+                ornamentNavigation("Albums", symbol: "square.grid.2x2", selected: context.manager.librarySection == .albums || context.manager.librarySection == .unfiled) { context.selectSection(.albums) }
+                ornamentNavigation("Photos", symbol: "photo.on.rectangle", selected: context.manager.librarySection == .photos) { context.selectSection(.photos) }
+                ornamentNavigation("Recycle Bin", symbol: "trash", selected: context.manager.librarySection == .recycleBin) { context.selectSection(.recycleBin) }
                 Divider().padding(.horizontal, 12)
                 ornamentNavigation("Private Vault", symbol: "lock", selected: false, action: context.showVault)
                 ornamentNavigation("Settings", symbol: "gearshape", selected: false, action: context.showSettings)
@@ -80,7 +79,11 @@ struct GalleryCinemaDesign: View {
             attachmentAnchor: .scene(UnitPoint3D(x: 0.5, y: 0, z: 0.5)), contentAlignment: .bottom) {
             HStack(spacing: 20) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(context.hasOpenAlbum ? "Photos" : "Albums").font(.title2.weight(.semibold))
+                    Text(context.manager.selectedAlbum?.title ?? "Albums")
+                        .font(.title2.weight(.semibold))
+                        .lineLimit(1)
+                        .frame(maxWidth: 240, alignment: .leading)
+                        .help(context.manager.selectedAlbum?.title ?? "Albums")
                     if context.hasOpenAlbum {
                         Text("\(context.manager.totalAssetCount) items").font(.callout).foregroundStyle(CinemaPalette.secondaryText)
                     } else { collectionCount }

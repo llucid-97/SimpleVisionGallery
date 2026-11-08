@@ -188,7 +188,7 @@ struct GalleryView: View {
 
     @ViewBuilder private var ornamentMediaToolbar: some View {
         if let album = manager.selectedAlbum {
-            mediaHeaderRow(album: album, compact: true, showsBackButton: false, searchMaxWidth: 320)
+            mediaHeaderRow(album: album, compact: true, searchMaxWidth: 320)
                 .popover(isPresented: $showingThumbnailSize, arrowEdge: .top) {
                     thumbnailSizePopover.presentationCompactAdaptation(.popover)
                 }
