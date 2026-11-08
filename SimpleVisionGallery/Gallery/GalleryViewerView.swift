@@ -226,6 +226,7 @@ struct GalleryViewerWindowRoot: View {
             }
             .accessibilityIdentifier("gallery-viewer-albums")
         }
+        .galleryOrnamentBackdrop(cornerRadius: 24)
     }
 }
 
