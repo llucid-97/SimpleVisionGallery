@@ -157,6 +157,10 @@ struct GalleryView: View {
         .onReceive(NotificationCenter.default.publisher(for: .galleryPhotosAccessDidRevoke)) { _ in
             sharing.tearDown()
         }
+        .onReceive(NotificationCenter.default.publisher(for: GalleryMainWindow.showAlbums)) { _ in
+            clearAlbumSelection()
+            manager.closeAlbum()
+        }
         .onChange(of: manager.selectedAlbum?.id) {
             showingThumbnailSize = false
             mediaSearch = ""

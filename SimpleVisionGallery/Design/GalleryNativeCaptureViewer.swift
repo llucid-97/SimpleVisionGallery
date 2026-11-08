@@ -28,6 +28,12 @@ struct GalleryNativeCaptureViewer: View {
                 Text("2 of \(GalleryCaptureFixtures.records.count)").font(.subheadline.monospacedDigit()).foregroundStyle(LensLabTheme.mutedInk)
             }
             Spacer()
+            Button {} label: {
+                GalleryViewerActionLabel(title: "Albums", symbol: "square.grid.2x2")
+            }
+            .buttonStyle(.plain)
+            .galleryHoverLabel("Open albums")
+            .accessibilityIdentifier("gallery-viewer-albums")
             Button {} label: { Image(systemName: "ellipsis") }
                 .popover(isPresented: .constant(showsMoreMenu)) {
                     VStack(alignment: .leading, spacing: 12) {

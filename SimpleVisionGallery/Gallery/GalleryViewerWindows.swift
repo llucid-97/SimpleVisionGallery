@@ -1,7 +1,19 @@
 #if os(visionOS)
 import Combine
 import Foundation
+import SwiftUI
 import UIKit
+
+enum GalleryMainWindow {
+    static let sceneID = "gallery-main"
+    static let value = "main"
+    static let showAlbums = Notification.Name("galleryShowAlbums")
+
+    static func openAlbums(using openWindow: OpenWindowAction) {
+        NotificationCenter.default.post(name: showAlbums, object: nil)
+        openWindow(id: sceneID, value: value)
+    }
+}
 
 struct GalleryViewerWindowValue: Codable, Hashable, Identifiable {
     let id: UUID

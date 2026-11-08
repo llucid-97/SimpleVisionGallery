@@ -1312,7 +1312,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         case .unfiled: .unfiled
         case .recycleBin: .recycleBin
         }
+        let selectionGeneration = albumSelectionGeneration
         let snapshot = await GalleryVirtualLibraryIndex.shared.snapshot(for: scope, mediaFilter: scopeMediaFilter)
+        guard albumSelectionGeneration == selectionGeneration else { return }
         virtualAssetCounts[scope] = snapshot.photoCount + snapshot.videoCount
         virtualPhotoCounts[scope] = snapshot.photoCount
         virtualVideoCounts[scope] = snapshot.videoCount
