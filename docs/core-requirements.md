@@ -50,7 +50,7 @@ At minimum, run sequential and shuffled playlists, 1k and 10k vault records, a l
 
 ## Release checklist
 
-- Run the tracked core regression runner and relevant native build on the final integrated revision.
+- Run `python3 tests/run_core_checks.py` through the shared compute queue and the relevant native build on the final integrated revision.
 - Run generated Simulator transition checks for changed loading, queue, storage or window behavior; shut down the owned Simulator afterward.
 - Review the four requirements above, with a result and evidence for each. An untested path or known failure must be visible in the handoff.
 - Check that tests fail for the regression they guard, cover failure/cancel/lock and verify IDs rather than counts alone.

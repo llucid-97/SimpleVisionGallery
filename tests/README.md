@@ -10,3 +10,5 @@ The PhotoKit-double check asserts exact asset IDs and album memberships, transac
 The confirmation check runs the production request factory and confirmation method. It checks synchronous enqueue while unlocked, authentication while locked, exact captured target and destination, cancellation and stale-epoch rejection. It does not model the platform authentication dialog.
 
 Shared-media checks exercise borrowing prepared content across viewers and privacy invalidation. A real temporary-file lease check verifies that closing the first consumer keeps playback available and closing the last removes the file; the cache holds only weak references.
+
+The vault-index check compiles the production index with generated records and a stand-in Photos scope. It compares bin visibility, counts, sorting and incremental updates with a full rebuild. The publication check runs the production publication methods with controlled storage and delayed detached work to exercise lock and revision races. These extracted host probes do not replace real PhotoKit, native Simulator or headset checks.
