@@ -273,6 +273,9 @@ final class GalleryVaultService: ObservableObject {
         }
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         let result = try await deleteConfirmed(candidates, epoch: epoch)
+        if let destination, result.deleted > 0, isCurrent(epoch) {
+            GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: destination.id)
+        }
         let detail = [stopMessage, result.message].compactMap { $0 }.joined(separator: " ")
         return .init(copied: copied, deleted: result.deleted, message: detail.isEmpty ? nil : detail,
             reused: reused, notMoved: count - result.deleted, skipped: skipped, editsDiscarded: result.editsDiscarded)
@@ -453,6 +456,7 @@ final class GalleryVaultService: ObservableObject {
         updated.albums = GalleryVaultStorage.destinationAlbums(record.albums,
             destination: destination, sourceAlbumID: sourceAlbumID)
         try storage.update(updated)
+        GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: destination.id)
     }
 
     // Serialize queued mutations and publish only while their captured authorization remains valid.

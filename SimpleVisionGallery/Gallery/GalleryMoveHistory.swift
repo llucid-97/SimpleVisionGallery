@@ -7,31 +7,64 @@ import Foundation
 final class GalleryMoveHistory {
     static let shared = GalleryMoveHistory()
     static let limit = 3
-    private static let defaultsKey = "gallery.recentMoveDestinationIDs.v1"
+    private static let defaultsKey = "gallery.recentMoveDestinations.v2"
+    private static let legacyKey = "gallery.recentMoveDestinationIDs.v1"
+    private static let photosPrefix = "photos:"
+    private static let vaultPrefix = "vault:"
 
     private let defaults: UserDefaults
-    private var destinationIDs: [String]
+    private var destinations: [String]
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        destinationIDs = Array((defaults.stringArray(forKey: Self.defaultsKey) ?? []).prefix(Self.limit))
+        if let saved = defaults.stringArray(forKey: Self.defaultsKey) {
+            destinations = Array(saved.prefix(Self.limit))
+        } else {
+            destinations = Array((defaults.stringArray(forKey: Self.legacyKey) ?? [])
+                .prefix(Self.limit).map { Self.photosPrefix + $0 })
+        }
     }
 
     func recordSuccessfulMove(to albumID: String) {
-        guard !albumID.isEmpty else { return }
-        destinationIDs.removeAll { $0 == albumID }
-        destinationIDs.insert(albumID, at: 0)
-        destinationIDs = Array(destinationIDs.prefix(Self.limit))
-        defaults.set(destinationIDs, forKey: Self.defaultsKey)
+        record(Self.photosPrefix + albumID, id: albumID)
+    }
+
+    func recordSuccessfulVaultMove(to albumID: String) {
+        guard albumID != GalleryVaultRecycleBin.id else { return }
+        record(Self.vaultPrefix + albumID, id: albumID)
+    }
+
+    private func record(_ destination: String, id: String) {
+        guard !id.isEmpty else { return }
+        destinations.removeAll { $0 == destination }
+        destinations.insert(destination, at: 0)
+        destinations = Array(destinations.prefix(Self.limit))
+        defaults.set(destinations, forKey: Self.defaultsKey)
     }
 
     func recentAlbums(from albums: [GalleryAlbum], excluding albumID: String?) -> [GalleryAlbum] {
         var seen = Set<String>()
         let byID = Dictionary(albums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return destinationIDs.compactMap { id in
+        return destinations.compactMap { destination in
+            guard destination.hasPrefix(Self.photosPrefix) else { return nil }
+            let id = String(destination.dropFirst(Self.photosPrefix.count))
             guard id != albumID, seen.insert(id).inserted,
-                  let album = byID[id],
+                  let album = byID[id], !GalleryRecycleBin.isRecycleBin(album),
                   album.collection?.canPerform(.addContent) == true
+            else { return nil }
+            return album
+        }
+    }
+
+    // Call only with the currently unlocked vault's destinations; no names are persisted.
+    func recentVaultAlbums(from albums: [GalleryVaultAlbum], excluding albumID: String?) -> [GalleryVaultAlbum] {
+        var seen = Set<String>()
+        let byID = Dictionary(albums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return destinations.compactMap { destination in
+            guard destination.hasPrefix(Self.vaultPrefix) else { return nil }
+            let id = String(destination.dropFirst(Self.vaultPrefix.count))
+            guard id != albumID, id != GalleryVaultRecycleBin.id, seen.insert(id).inserted,
+                  let album = byID[id], !GalleryRecycleBin.isRecycleBinTitle(album.title)
             else { return nil }
             return album
         }
