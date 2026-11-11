@@ -1,3 +1,4 @@
+# Target audience: developers. Production shared-media behavior with generated fixtures.
 from pathlib import Path
 import subprocess,sys,tempfile
 root=Path(sys.argv[1]) if len(sys.argv)>1 else Path.cwd()
@@ -22,11 +23,13 @@ enum GalleryMediaError:Error { case missingMedia }
 @MainActor final class GalleryPrefetchPriority {var foreground=false}
 enum GalleryMediaRequest { static func value<T>(of task:Task<T,Error>) async throws -> T {try await task.value} }
 @MainActor final class GallerySceneCache {
- static let shared=GallerySceneCache(); var warm:GalleryPrefetchedMedia?;var imageCalls=0,videoCalls=0
+ static let shared=GallerySceneCache(); var warm:GalleryPrefetchedMedia?;var completedImage:GalleryPreparedImage?, completedVideo:GalleryPreparedVideo?;var imageCalls=0,videoCalls=0
  static func key(for a:GalleryMediaItem)->String {a.localIdentifier}
  func retainPrefetched(_ media:GalleryPrefetchedMedia,key:String,owner:UUID)->Bool {true}
  func takePrefetched(key:String,owner:UUID)->GalleryPrefetchedMedia? {let value=warm;warm=nil;return value}
  func promote(asset:GalleryMediaItem){}
+ func preparedImage(for asset:GalleryMediaItem,spatial:Bool)->GalleryPreparedImage? {guard let image=completedImage, !spatial || image.attemptedSpatial else{return nil};return image}
+ func preparedVideo(for asset:GalleryMediaItem,foreground:Bool)->GalleryPreparedVideo? {completedVideo}
  func image(for asset:GalleryMediaItem,spatial:Bool) async throws->GalleryPreparedImage {imageCalls+=1;return GalleryPreparedImage(attemptedSpatial:spatial,marker:"fetched")}
  func video(for asset:GalleryMediaItem,foreground:Bool) async throws->GalleryPreparedVideo {videoCalls+=1;return GalleryPreparedVideo(false,nil)}
 }
@@ -49,6 +52,10 @@ enum GalleryMediaRequest { static func value<T>(of task:Task<T,Error>) async thr
   precondition(activeLoad==nil && imageMarker=="warm" && cache.imageCalls==0 && !isLoading,"warm image must complete inline without a foreground task")
   await load(item:photo,spatialEnabled:false)
   precondition(activeLoad==nil && imageMarker=="warm" && cache.imageCalls==0,"same-key prepared image must complete inline")
+  let second=Probe();cache.completedImage=GalleryPreparedImage(attemptedSpatial:true,marker:"shared")
+  await second.load(item:photo,spatialEnabled:true)
+  precondition(second.activeLoad==nil && second.imageMarker=="shared" && cache.imageCalls==0,"second window must use shared image without task or fetch")
+  cache.completedImage=nil
   let other=GalleryMediaItem(localIdentifier:"q",mediaType:.image,vaultRecord:nil)
   cache.warm = .image(GalleryPreparedImage(attemptedSpatial:false,marker:"mono"))
   await load(item:other,spatialEnabled:true)
@@ -57,10 +64,13 @@ enum GalleryMediaRequest { static func value<T>(of task:Task<T,Error>) async thr
   cache.warm = .video(GalleryPreparedVideo(true,1.5))
   await load(item:vid,spatialEnabled:true)
   precondition(activeLoad==nil && cache.videoCalls==0 && videoMetadata?.0==true && videoMetadata?.1==1.5,"warm video must use its prepared metadata inline")
+  let secondVideo=Probe();cache.completedVideo=GalleryPreparedVideo(true,2.0)
+  await secondVideo.load(item:vid,spatialEnabled:true)
+  precondition(secondVideo.activeLoad==nil && secondVideo.videoMetadata?.1==2.0 && cache.videoCalls==0,"second viewer must reuse active video metadata without task")
   GalleryVaultStorage.shared.isUnlocked=false
   await load(item:vid,spatialEnabled:true)
   precondition(wasCanceled,"locked vault rejects inline presentation")
-  print("PASS: actual load method, inline warm image/video, same-key reuse, async miss and locked vault")
+  print("PASS: actual load method, inline warm image/video, same-key and second-window reuse, async miss and locked vault")
  }
 }
 @main struct Main { @MainActor static func main() async {let probe=Probe();await probe.run()} }
