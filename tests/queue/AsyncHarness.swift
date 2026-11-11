@@ -58,6 +58,7 @@ extension Notification.Name { static let galleryVaultWillLock = Notification.Nam
         try? await Task.sleep(for: .milliseconds(photoDelay))
         return failing.contains(request.itemID) ? Injected.failed : nil
     }
+    func refreshAlbums() async {}
     func reset() { captured = []; completed = []; failures = []; batches = []; failing = []; photoDelay = 10 }
 }
 /// Exercise the production queue against fakes to check ordering and recovery.

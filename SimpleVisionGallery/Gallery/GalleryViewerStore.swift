@@ -620,7 +620,6 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [id],
                 addedAlbumID: value.destinationID, removedAlbumID: sourceID)
             if let destinationID = value.destinationID { GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationID) }
-            Task { await refreshAlbums() }
             return nil
         }
     }

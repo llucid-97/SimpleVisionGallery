@@ -202,6 +202,7 @@ final class GalleryDeleteQueue: ObservableObject {
 
     // Drain each store prefix before later requests so completion follows capture order.
     private func drain() async {
+        var needsAlbumRefresh = false
         // Finalize the current prefix before accepting results from the next store.
         while !fifo.waiting.isEmpty {
             let batch = fifo.takeBatch()
@@ -211,6 +212,12 @@ final class GalleryDeleteQueue: ObservableObject {
             for request in batch where fifo.active.contains(where: { $0.id == request.id }) {
                 let error = failures[request.id]
                 GalleryViewerStore.shared.finishQueuedDelete(request, succeeded: error == nil)
+                if error == nil {
+                    switch request.action {
+                    case .moveToPhotos, .moveToVault, .removeFromAlbum: needsAlbumRefresh = true
+                    default: break
+                    }
+                }
                 if error == nil, !request.isVault {
                     NotificationCenter.default.post(name: .galleryQueuedPhotoDeleteCommitted,
                         object: nil, userInfo: ["request": request])
@@ -230,6 +237,7 @@ final class GalleryDeleteQueue: ObservableObject {
             }
         }
         worker = nil
+        if needsAlbumRefresh { Task { await GalleryViewerStore.shared.refreshAlbums() } }
     }
 
     // Keep the watchdog scoped to the Photos await so slow prompts remain visible.
