@@ -167,8 +167,11 @@ final class GalleryDeleteQueue: ObservableObject {
     func enqueuePhotos(_ assets: [PHAsset], sourceAlbumID: String?, permanently: Bool,
                        completion: (@MainActor (Bool) -> Void)? = nil) -> Bool {
         let ids = assets.map(\.localIdentifier)
-        guard !ids.isEmpty, Set(ids).count == ids.count,
-              ids.allSatisfy({ !fifo.identifiers.contains($0) }) else { return false }
+        guard !ids.isEmpty else { return false }
+        if completion != nil {
+            guard Set(ids).count == ids.count,
+                  ids.allSatisfy({ !fifo.identifiers.contains($0) }) else { return false }
+        }
         let group = completion.map { BulkCompletion(count: assets.count, completion: $0) }
         for asset in assets {
             let request = GalleryDeleteRequest(target: .photos(asset.localIdentifier, sourceAlbumID: sourceAlbumID),
