@@ -234,6 +234,7 @@ final class GalleryViewerMedia {
         }
     }
 
+    // Attach one viewer-owned player using metadata already loaded during preparation.
     private func presentVideo(_ video: GalleryPreparedVideo, token: UUID) {
         video.promote()
         self.prepared = nil
@@ -278,6 +279,7 @@ final class GalleryViewerMedia {
         else { self.resumePlaybackWhenActive = true }
     }
 
+    // Present completed media inline so a warm navigation does not wait on another task.
     private func presentImage(_ image: GalleryPreparedImage, key: String, spatialEnabled: Bool) {
         self.prepared = image
         self.preparedKey = key
@@ -285,6 +287,7 @@ final class GalleryViewerMedia {
         self.aspectRatio = image.aspectRatio
         self.spatialAvailable = image.supportsSpatial
         self.status = spatialEnabled ? image.status : nil
+        // A fresh entity can attach the shared prepared component in this window.
         if var component = image.component {
             component.desiredViewingMode = spatialEnabled ? image.spatialMode : .mono
             let entity = Entity()
@@ -1552,6 +1555,7 @@ private enum GalleryVaultMediaRequest {
         }
     }
 
+    // Warm orientation and stereo metadata once so playback can attach without another fetch.
     private static func prepareVideo(_ video: GalleryPreparedVideo, spatialHint: Bool) async throws -> GalleryPreparedVideo {
         var spatial = spatialHint
         if !spatial {
