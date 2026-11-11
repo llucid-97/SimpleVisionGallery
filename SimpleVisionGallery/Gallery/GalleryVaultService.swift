@@ -302,6 +302,7 @@ final class GalleryVaultService: ObservableObject {
     }
 
     @discardableResult
+    /// Finish pending transfers and publish committed changes even when a later item fails.
     func retryPendingDeletion() async throws -> GalleryVaultTransferOutcome {
         try beginOperation()
         let epoch = authEpoch
@@ -317,6 +318,7 @@ final class GalleryVaultService: ObservableObject {
         return try outcome.get()
     }
 
+    /// Reverify pending copies before Photos deletion while keeping the completed prefix recoverable.
     private func retryPendingDeletionInBatch(_ pending: [GalleryVaultRecord], epoch: UUID) async throws -> GalleryVaultTransferOutcome {
         var verified: [GalleryVaultRecord] = []
         var skipped: [GalleryVaultSkipReason: Int] = [:]
@@ -542,6 +544,7 @@ final class GalleryVaultService: ObservableObject {
               !GalleryRecycleBin.isRecycleBinTitle(destination.title) else { throw GalleryVaultTransferError.invalidVaultDestination }
     }
 
+    /// Publish both successful and partial restores through the shared off-main batch preparation.
     func restore(recordIDs: [UUID], omittingUnavailableAlbums: Bool = false) async throws {
         try beginOperation()
         let epoch = authEpoch
@@ -556,6 +559,7 @@ final class GalleryVaultService: ObservableObject {
         try result.get()
     }
 
+    /// Restore verified resources in order, preserving a journal for interrupted or failed imports.
     private func restoreInBatch(recordIDs: [UUID], epoch: UUID, omittingUnavailableAlbums: Bool) async throws {
         for (index, id) in recordIDs.enumerated() {
             guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
