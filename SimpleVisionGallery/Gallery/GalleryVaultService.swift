@@ -196,7 +196,19 @@ final class GalleryVaultService: ObservableObject {
         try beginOperation()
         let epoch = authEpoch
         storage.beginBatch()
-        defer { storage.endBatch(); publishIfCurrent(epoch); endOperation() }
+        defer { endOperation() }
+        let result: Result<GalleryVaultTransferOutcome, Error>
+        do {
+            result = .success(try await moveInBatch(count: count, sourceAlbumID: sourceAlbumID,
+                destination: destination, epoch: epoch, assetAt: assetAt))
+        } catch { result = .failure(error) }
+        let changedIDs = await storage.finishTransferBatch()
+        publishIfCurrent(epoch, queuedMutationIDs: changedIDs.isEmpty ? nil : changedIDs)
+        return try result.get()
+    }
+
+    private func moveInBatch(count: Int, sourceAlbumID: String?, destination: GalleryVaultAlbum?,
+                             epoch: UUID, assetAt: (Int) -> PHAsset) async throws -> GalleryVaultTransferOutcome {
         var candidates: [GalleryVaultRecord] = []
         var copied = 0
         var reused = 0
@@ -237,24 +249,26 @@ final class GalleryVaultService: ObservableObject {
                     if let destination {
                         record.albums = GalleryVaultStorage.destinationAlbums(record.albums, destination: destination, sourceAlbumID: sourceAlbumID)
                     }
-                    let item = try storage.createItem(id: record.id)
+                    let item = try await storage.createItemForTransfer(id: record.id)
                     do {
                         for (resource, descriptor) in zip(prepared.resources, prepared.record.resources) {
                             guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.cancelled }
-                            let writer = try item.writer(resourceID: descriptor.id)
+                            let writer = try await Task.detached(priority: .userInitiated) {
+                                try item.writer(resourceID: descriptor.id)
+                            }.value
                             let stream = GalleryVaultPhotoStream()
                             activeStream = stream
                             try await stream.run(resource: resource, consume: { try writer.append($0) }, finish: { try writer.finish() })
                             activeStream = nil
                         }
                         guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.cancelled }
-                        try storage.commit(record, from: item, sourceAlbums: sourceAlbums)
+                        try await storage.commitTransfer(record, from: item, sourceAlbums: sourceAlbums)
                         // A successful commit already verified the bytes; the source is never touched on a thrown commit.
                         candidates.append(record)
                         copied += 1
                     } catch {
                         activeStream = nil
-                        item.discard()
+                        await Task.detached { item.discard() }.value
                         throw error
                     }
                 }
@@ -342,7 +356,7 @@ final class GalleryVaultService: ObservableObject {
         let deletedIDs = current.map { $0.1.sourceIdentifier }
         for var record in alreadyAbsent {
             record.state = .privateItem
-            try storage.update(record)
+            try await storage.updateTransfer(record)
         }
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         if !current.isEmpty {
@@ -358,7 +372,7 @@ final class GalleryVaultService: ObservableObject {
             let deletedSet = Set(deletedIDs)
             for var record in candidates where deletedSet.contains(record.sourceIdentifier) {
                 record.state = .privateItem
-                try storage.update(record)
+                try await storage.updateTransfer(record)
             }
         }
         if !alreadyAbsent.isEmpty {
