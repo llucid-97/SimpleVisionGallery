@@ -420,8 +420,7 @@ nonisolated struct GalleryAlbumCommitActions: Equatable, Sendable {
 }
 
 /// In-memory index exists only while the vault is unlocked. Native Photos fetches remain lazy.
-@MainActor
-struct GalleryVaultIndex {
+nonisolated struct GalleryVaultIndex: Sendable {
     private(set) var all: [GalleryVaultRecord] = []
     private(set) var unfiled: [GalleryVaultRecord] = []
     private(set) var recycleBin: [GalleryVaultRecord] = []
@@ -532,7 +531,7 @@ struct GalleryVaultIndex {
         }
     }
 
-    func records(for album: GalleryAlbum, filter: GalleryMediaFilter, search: String,
+    @MainActor func records(for album: GalleryAlbum, filter: GalleryMediaFilter, search: String,
                  sort: GalleryAssetSortMode = .photosOrder, ascending: Bool = true,
                  shuffleSeed: UUID = UUID(), preservingOrderOf previous: [GalleryVaultRecord]? = nil,
                  changedIDs: Set<UUID>? = nil) -> [GalleryVaultRecord] {
@@ -653,7 +652,7 @@ struct GalleryVaultIndex {
         mediaCounts[albumID] ?? (0, 0)
     }
 
-    func containsOnlyBinnedItems(in album: GalleryAlbum) -> Bool {
+    @MainActor func containsOnlyBinnedItems(in album: GalleryAlbum) -> Bool {
         guard album.collection != nil, album.assetCount == 0, binnedAlbumIDs.contains(album.id) else { return false }
         let counts = counts(for: album.id)
         return counts.photos + counts.videos == 0
@@ -970,7 +969,10 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         if !restoredVaultIDs.isEmpty { restoredVaultIDs.formIntersection(Set(records.map(\.id))) }
         vaultIndexGeneration = UUID()
         let service = GalleryVaultService.shared
-        if service.isUnlocked && service.isPublishingQueuedMutations {
+        if service.isUnlocked && service.isPublishingQueuedMutations, var prepared = service.publishingVaultIndex {
+            for id in restoredVaultIDs { prepared.excludeRestored(id) }
+            vaultIndex = prepared
+        } else if service.isUnlocked && service.isPublishingQueuedMutations {
             vaultIndex.applyMutationChanges(service.publishingMutationIDs, records: service.publishingMutationRecords)
         } else {
             vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)

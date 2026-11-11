@@ -299,6 +299,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     private var restoredVaultIDs: Set<UUID> = []
     private var vaultIndex = GalleryVaultIndex()
     private var queuedVaultUpdates = Set<UUID>()
+    private var queuedVaultIndex: GalleryVaultIndex?
     private var vaultUpdateTask: Task<Void, Never>?
 
     private override init() {
@@ -323,11 +324,12 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 guard let self else { return }
                 let service = GalleryVaultService.shared
                 if unlocked && service.isPublishingQueuedMutations {
-                    self.scheduleVaultPlaylistUpdate(service.publishingMutationIDs, epoch: service.authEpoch)
+                    self.scheduleVaultPlaylistUpdate(service.publishingMutationIDs, epoch: service.authEpoch, index: service.publishingVaultIndex)
                     return
                 }
                 self.vaultUpdateTask?.cancel()
                 self.queuedVaultUpdates.removeAll()
+                self.queuedVaultIndex = nil
                 let visibleRecords = unlocked ? records : []
                 if !self.restoredVaultIDs.isEmpty { self.restoredVaultIDs.formIntersection(Set(visibleRecords.map(\.id))) }
                 self.updateVaultPlaylists(visibleRecords)
@@ -726,8 +728,9 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
 
     /// Rebuild only the vault suffix. Never materialize the native Photos fetch.
     /// Removing the old suffix before releasing metadata prevents locked scenes remaining visible.
-    private func scheduleVaultPlaylistUpdate(_ ids: Set<UUID>, epoch: UUID) {
+    private func scheduleVaultPlaylistUpdate(_ ids: Set<UUID>, epoch: UUID, index: GalleryVaultIndex?) {
         queuedVaultUpdates.formUnion(ids)
+        queuedVaultIndex = index
         vaultUpdateTask?.cancel()
         vaultUpdateTask = Task { @MainActor [weak self] in
             // Pending masks already advanced every viewer; give that frame time before metadata work.
@@ -736,14 +739,20 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             guard let self, service.isUnlocked, service.authEpoch == epoch else { return }
             let changes = self.queuedVaultUpdates
             self.queuedVaultUpdates.removeAll()
-            self.updateVaultPlaylists(service.records, mutatedIDs: changes)
+            let prepared = self.queuedVaultIndex
+            self.queuedVaultIndex = nil
+            self.updateVaultPlaylists(service.records, mutatedIDs: changes, preparedIndex: prepared)
             self.vaultUpdateTask = nil
         }
     }
 
-    private func updateVaultPlaylists(_ records: [GalleryVaultRecord], mutatedIDs: Set<UUID>? = nil) {
+    private func updateVaultPlaylists(_ records: [GalleryVaultRecord], mutatedIDs: Set<UUID>? = nil,
+                                      preparedIndex: GalleryVaultIndex? = nil) {
         let service = GalleryVaultService.shared
-        if service.isUnlocked, let mutatedIDs {
+        if service.isUnlocked, mutatedIDs != nil, var preparedIndex {
+            for id in restoredVaultIDs { preparedIndex.excludeRestored(id) }
+            vaultIndex = preparedIndex
+        } else if service.isUnlocked, let mutatedIDs {
             vaultIndex.applyMutationChanges(mutatedIDs, records: mutatedIDs.compactMap { GalleryVaultStorage.shared.record(id: $0) })
         } else {
             vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)

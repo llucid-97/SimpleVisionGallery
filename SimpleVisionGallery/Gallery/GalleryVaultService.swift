@@ -78,6 +78,7 @@ final class GalleryVaultService: ObservableObject {
     @Published private(set) var records: [GalleryVaultRecord] = []
     private(set) var isPublishingQueuedMutations = false
     private(set) var publishingMutationIDs = Set<UUID>()
+    private(set) var publishingVaultIndex: GalleryVaultIndex?
     var publishingMutationRecords: [GalleryVaultRecord] {
         guard isUnlocked else { return [] }
         return publishingMutationIDs.compactMap { storage.record(id: $0) }
@@ -205,7 +206,8 @@ final class GalleryVaultService: ObservableObject {
                 destination: destination, epoch: epoch, assetAt: assetAt))
         } catch { result = .failure(error) }
         let changedIDs = await storage.finishTransferBatch()
-        publishIfCurrent(epoch, queuedMutationIDs: changedIDs.isEmpty ? nil : changedIDs)
+        if changedIDs.isEmpty { publishIfCurrent(epoch) }
+        else { await publishQueuedIfCurrent(epoch, mutationIDs: changedIDs) }
         return try result.get()
     }
 
@@ -493,7 +495,7 @@ final class GalleryVaultService: ObservableObject {
         let revision = storage.mutationRevision
         let results = await storage.applyMutations(mutations)
         if storage.mutationRevision != revision {
-            publishIfCurrent(epoch, queuedMutationIDs: Set(results.filter { $0.error == nil }.map(\.id)))
+            await publishQueuedIfCurrent(epoch, mutationIDs: Set(results.filter { $0.error == nil }.map(\.id)))
         }
         return results
     }
@@ -913,11 +915,28 @@ final class GalleryVaultService: ObservableObject {
         wakeOperationWaiters()
     }
     private func isCurrent(_ epoch: UUID) -> Bool { isUnlocked && authEpoch == epoch }
-    private func publishIfCurrent(_ epoch: UUID, queuedMutationIDs: Set<UUID>? = nil) {
+    // Prepare one shared value before publication; a stale generation must never reveal data after lock.
+    private func publishQueuedIfCurrent(_ epoch: UUID, mutationIDs: Set<UUID>) async {
+        while isCurrent(epoch) {
+            let revision = storage.mutationRevision
+            let snapshot = storage.records
+            let index = await Task.detached(priority: .userInitiated) {
+                GalleryVaultIndex.fromPhotoLibrary(records: snapshot)
+            }.value
+            guard isCurrent(epoch) else { return }
+            guard storage.mutationRevision == revision else { continue }
+            publishIfCurrent(epoch, queuedMutationIDs: mutationIDs, preparedIndex: index)
+            return
+        }
+    }
+
+    private func publishIfCurrent(_ epoch: UUID, queuedMutationIDs: Set<UUID>? = nil,
+                                  preparedIndex: GalleryVaultIndex? = nil) {
         guard isCurrent(epoch), queuedMutationIDs != nil || records != storage.records else { return }
         isPublishingQueuedMutations = queuedMutationIDs != nil
         publishingMutationIDs = queuedMutationIDs ?? []
-        defer { isPublishingQueuedMutations = false; publishingMutationIDs.removeAll() }
+        publishingVaultIndex = preparedIndex
+        defer { isPublishingQueuedMutations = false; publishingMutationIDs.removeAll(); publishingVaultIndex = nil }
         records = storage.records
     }
 

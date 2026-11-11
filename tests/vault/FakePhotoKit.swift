@@ -340,3 +340,8 @@ nonisolated final class GalleryVaultStagingItem: @unchecked Sendable {
     static let shared = GalleryMoveHistory()
     func recordSuccessfulVaultMove(to albumID: String) {}
 }
+
+// The transfer harness does not render indexes; preserve the service publication contract.
+nonisolated struct GalleryVaultIndex: Sendable {
+    static func fromPhotoLibrary(records: [GalleryVaultRecord]) -> GalleryVaultIndex { GalleryVaultIndex() }
+}
