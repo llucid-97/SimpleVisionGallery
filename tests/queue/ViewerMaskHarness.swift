@@ -12,7 +12,7 @@ enum GalleryRecycleBin { static func isRecycleBinTitle(_ title: String) -> Bool 
 struct GalleryVaultRecord { let id: UUID }
 enum GalleryMediaFilter { case all }
 enum GalleryAssetSortMode { case photosOrder }
-enum Action { case recycle, permanent; func keepsVaultItemHidden(inRecycleBin: Bool) -> Bool { true } }
+enum Action: Equatable { case recycle, permanent, moveToPhotos(destinationID: String?, newName: String?), moveToVault(id: String?, epoch: UUID, sourceAlbumID: String?), removeFromAlbum; func keepsVaultItemHidden(inRecycleBin: Bool) -> Bool { true } }
 struct GalleryDeleteRequest {
     enum Target { case photos(String, sourceAlbumID: String?), vault(UUID, epoch: UUID) }
     let target: Target; let action: Action
@@ -90,6 +90,31 @@ struct GalleryDeleteRequest {
         precondition(pendingPlaylist.pendingRemovals["B"] != nil && pendingPlaylist.index.count == 2)
         pendingStore.finishQueuedDelete(request, succeeded: false)
         precondition(pendingPlaylist.index.count == 3 && !pendingPlaylist.index.removed.contains(2), "failed pending delete must return")
-        print("PASS stale committed mask and pending rollback with fake PhotoKit")
+        // A Move only removes the source membership. All Photos and unrelated albums return the item.
+        let move = GalleryDeleteRequest(target: .photos("B", sourceAlbumID: "album"),
+            action: .moveToPhotos(destinationID: "destination", newName: nil))
+        queue.pendingRequests = [move]
+        let moveStore = Store()
+        let source = GalleryManager(); source.selectedAlbum = .init(id: "album", virtualScope: nil)
+        let all = GalleryManager(); all.selectedAlbum = .init(id: "all", virtualScope: .photos); all.assetFetchAlbumID = "all"
+        let other = GalleryManager(); other.selectedAlbum = .init(id: "other", virtualScope: nil); other.assetFetchAlbumID = "other"
+        let sourceID = moveStore.createSession(from: source, at: 0)!
+        let allID = moveStore.createSession(from: all, at: 0)!
+        let otherID = moveStore.createSession(from: other, at: 0)!
+        let sourcePlaylist = moveStore.sessions[sourceID]!.playlist
+        let allPlaylist = moveStore.sessions[allID]!.playlist
+        let otherPlaylist = moveStore.sessions[otherID]!.playlist
+        precondition([sourcePlaylist, allPlaylist, otherPlaylist].allSatisfy { $0.index.count == 2 }, "pending move must be masked in all windows")
+        moveStore.finishQueuedDelete(move, succeeded: true)
+        precondition(sourcePlaylist.index.count == 2 && allPlaylist.index.count == 3 && otherPlaylist.index.count == 3,
+                     "only source album keeps a committed move masked")
+        source.committedPhotoDeletes["B"] = move; source.committedPhotoAssets["B"] = b
+        all.committedPhotoDeletes["B"] = move; all.committedPhotoAssets["B"] = b
+        other.committedPhotoDeletes["B"] = move; other.committedPhotoAssets["B"] = b
+        queue.pendingRequests = []
+        source.pendingDisplayIndexDirty = true; all.pendingDisplayIndexDirty = true; other.pendingDisplayIndexDirty = true
+        precondition(source.visibleIDs() == ["C", "A"] && all.visibleIDs() == ["C", "A", "B"] && other.visibleIDs() == ["C", "A", "B"],
+                     "fresh grid must keep a committed move only in the source album")
+        print("PASS stale committed mask, pending rollback, and cross-album move masks with fake PhotoKit")
     }
 }

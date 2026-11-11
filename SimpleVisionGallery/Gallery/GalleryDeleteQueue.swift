@@ -1,13 +1,17 @@
 import Foundation
 
-nonisolated enum GalleryDeleteAction: Sendable {
+nonisolated enum GalleryDeleteAction: Sendable, Equatable {
     case recycle, permanent, putBack
+    case moveToPhotos(destinationID: String?, newName: String?)
+    case moveToVault(id: String?, epoch: UUID, sourceAlbumID: String?)
+    case removeFromAlbum
 
     func keepsVaultItemHidden(inRecycleBin: Bool) -> Bool {
         switch self {
         case .recycle: !inRecycleBin
         case .putBack: inRecycleBin
         case .permanent: true
+        case .moveToPhotos, .moveToVault, .removeFromAlbum: false
         }
     }
 }
@@ -29,6 +33,11 @@ nonisolated struct GalleryDeleteRequest: Identifiable, Sendable {
         }
     }
     var isVault: Bool { if case .vault = target { return true }; return false }
+    var requiresVault: Bool {
+        if isVault { return true }
+        if case .moveToVault = action { return true }
+        return false
+    }
 }
 
 /// Pending targets remain owned until their batch completes, including taps made during an await.
@@ -57,9 +66,9 @@ nonisolated struct GalleryDeleteFIFO {
         return failures
     }
     mutating func cancelVault() -> [GalleryDeleteRequest] {
-        let cancelled = (active + waiting).filter(\.isVault)
-        active.removeAll(where: \.isVault)
-        waiting.removeAll(where: \.isVault)
+        let cancelled = (active + waiting).filter(\.requiresVault)
+        active.removeAll(where: \.requiresVault)
+        waiting.removeAll(where: \.requiresVault)
         for request in cancelled { identifiers.remove(request.itemID) }
         return cancelled
     }
@@ -79,8 +88,21 @@ final class GalleryDeleteQueue: ObservableObject {
     @Published private(set) var errorMessage: String?
     private var fifo = GalleryDeleteFIFO()
     private var worker: Task<Void, Never>?
+    private var photosWatchdog: Task<Void, Never>?
+    var photosWatchdogDelay: Duration = .seconds(20)
     private var lockObserver: AnyCancellable?
+    private final class BulkCompletion {
+        var remaining: Int
+        var failed = false
+        let completion: @MainActor (Bool) -> Void
+        init(count: Int, completion: @escaping @MainActor (Bool) -> Void) {
+            remaining = count; self.completion = completion
+        }
+    }
+    private var bulkCompletions: [UUID: BulkCompletion] = [:]
     private(set) var pendingPhotoAssets: [String: PHAsset] = [:]
+    // Album titles are cleared immediately on lock, including while another request is stalled.
+    private var pendingVaultDestinations: [UUID: GalleryVaultAlbum] = [:]
     private static let log = Logger(subsystem: "com.llucid.simplevisiongallery", category: "viewer-gate")
 
     var pendingRequests: [GalleryDeleteRequest] { fifo.active + fifo.waiting }
@@ -98,6 +120,8 @@ final class GalleryDeleteQueue: ObservableObject {
             // Queued vault requests contain IDs and an epoch, never private metadata or a key.
             for request in self.fifo.cancelVault() {
                 GalleryViewerStore.shared.finishQueuedDelete(request, succeeded: false)
+                self.pendingVaultDestinations.removeValue(forKey: request.id)
+                self.pendingPhotoAssets.removeValue(forKey: request.itemID)
             }
             self.pendingCount = self.fifo.identifiers.count
         }
@@ -129,19 +153,47 @@ final class GalleryDeleteQueue: ObservableObject {
         enqueue(.init(target: .photos(asset.localIdentifier, sourceAlbumID: sourceAlbumID),
             action: .permanent, sessionID: sessionID), asset: asset)
     }
-    func enqueuePhotos(_ assets: [PHAsset], sourceAlbumID: String?, permanently: Bool) {
-        for asset in assets {
+    /// Freeze the target and vault epoch before staging so a later cursor change cannot retarget it.
+    func enqueueMove(item: GalleryMediaItem, sourceAlbumID: String?, sessionID: UUID,
+                     action: GalleryDeleteAction, vaultDestination: GalleryVaultAlbum? = nil) {
+        switch item {
+        case .photos(let asset):
             enqueue(.init(target: .photos(asset.localIdentifier, sourceAlbumID: sourceAlbumID),
-                action: permanently ? .permanent : .recycle, sessionID: nil), asset: asset, publishing: false)
+                          action: action, sessionID: sessionID), asset: asset, vaultDestination: vaultDestination)
+        case .vault(let record):
+            guard GalleryVaultService.shared.isUnlocked else { return }
+            enqueue(.init(target: .vault(record.id, epoch: GalleryVaultService.shared.authEpoch),
+                          action: action, sessionID: sessionID), vaultDestination: vaultDestination)
+        }
+    }
+    /// Admit a confirmed batch atomically so its completion cannot start the vault phase after a partial enqueue.
+    @discardableResult
+    func enqueuePhotos(_ assets: [PHAsset], sourceAlbumID: String?, permanently: Bool,
+                       completion: (@MainActor (Bool) -> Void)? = nil) -> Bool {
+        let ids = assets.map(\.localIdentifier)
+        guard !ids.isEmpty else { return false }
+        if completion != nil {
+            guard Set(ids).count == ids.count,
+                  ids.allSatisfy({ !fifo.identifiers.contains($0) }) else { return false }
+        }
+        let group = completion.map { BulkCompletion(count: assets.count, completion: $0) }
+        for asset in assets {
+            let request = GalleryDeleteRequest(target: .photos(asset.localIdentifier, sourceAlbumID: sourceAlbumID),
+                action: permanently ? .permanent : .recycle, sessionID: nil)
+            if let group { bulkCompletions[request.id] = group }
+            enqueue(request, asset: asset, publishing: false)
         }
         pendingCount = fifo.identifiers.count
+        return true
     }
 
     /// Stage each accepted target immediately and start one worker to preserve order.
-    private func enqueue(_ request: GalleryDeleteRequest, asset: PHAsset? = nil, publishing: Bool = true) {
+    private func enqueue(_ request: GalleryDeleteRequest, asset: PHAsset? = nil, publishing: Bool = true,
+                         vaultDestination: GalleryVaultAlbum? = nil) {
         guard fifo.append(request) else { return } // Sibling taps on an already pending item coalesce.
         errorMessage = nil
         if let asset { pendingPhotoAssets[asset.localIdentifier] = asset }
+        if let vaultDestination { pendingVaultDestinations[request.id] = vaultDestination }
         GalleryViewerStore.shared.stageQueuedDelete(request, asset: asset)
         if publishing { pendingCount = fifo.identifiers.count }
         guard worker == nil else { return }
@@ -152,44 +204,105 @@ final class GalleryDeleteQueue: ObservableObject {
         }
     }
 
-    // Drain each store prefix before later requests so completion follows capture order.
+    /// Drain each store prefix before later requests so completion follows capture order.
     private func drain() async {
+        var needsAlbumRefresh = false
         // Finalize the current prefix before accepting results from the next store.
         while !fifo.waiting.isEmpty {
             let batch = fifo.takeBatch()
             // Finish each contiguous store prefix before starting the next one.
             let failures = batch.first?.isVault == true
                 ? await executeVault(batch) : await executePhotos(batch)
+            // A lock can remove active vault requests while the worker is suspended.
             for request in batch where fifo.active.contains(where: { $0.id == request.id }) {
                 let error = failures[request.id]
                 GalleryViewerStore.shared.finishQueuedDelete(request, succeeded: error == nil)
+                if error == nil {
+                    switch request.action {
+                    case .moveToPhotos, .moveToVault, .removeFromAlbum: needsAlbumRefresh = true
+                    default: break
+                    }
+                }
                 if error == nil, !request.isVault {
                     NotificationCenter.default.post(name: .galleryQueuedPhotoDeleteCommitted,
                         object: nil, userInfo: ["request": request])
                 }
                 if let error { errorMessage = error.localizedDescription }
                 pendingPhotoAssets.removeValue(forKey: request.itemID)
+                pendingVaultDestinations.removeValue(forKey: request.id)
             }
             _ = fifo.finish(failed: Set(failures.keys))
             pendingCount = fifo.identifiers.count
+            // Do not start the next phase of a mixed bulk operation on partial failure.
+            for request in batch {
+                guard let group = bulkCompletions.removeValue(forKey: request.id) else { continue }
+                group.failed = group.failed || failures[request.id] != nil
+                group.remaining -= 1
+                if group.remaining == 0 { group.completion(!group.failed) }
+            }
         }
         worker = nil
+        if needsAlbumRefresh { Task { await GalleryViewerStore.shared.refreshAlbums() } }
     }
 
-    // Keep the watchdog scoped to the Photos await so slow prompts remain visible.
+    /// Execute Photos requests in capture order and time only the Photos waits.
     private func executePhotos(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
-        let watchdog = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(20)) } catch { return }
+        var failures: [UUID: Error] = [:]
+        // Mixed delete/move batches must retain capture order through the shared gate.
+        var pendingDeletes: [GalleryDeleteRequest] = []
+        func flushDeletes() async {
+            guard !pendingDeletes.isEmpty else { return }
+            failures.merge(await GalleryViewerStore.shared.performQueuedPhotoDeletes(pendingDeletes,
+                onPhotosWaitChanged: setPhotosAwaiting)) { _, new in new }
+            pendingDeletes.removeAll()
+        }
+        // Flush contiguous deletes before each move to keep their captured order.
+        for request in requests {
+            switch request.action {
+            case .recycle, .permanent, .putBack:
+                pendingDeletes.append(request)
+            case .moveToPhotos, .removeFromAlbum:
+                await flushDeletes()
+                if let error = await GalleryViewerStore.shared.performQueuedPhotoMove(request, onPhotosWaitChanged: setPhotosAwaiting) { failures[request.id] = error }
+            case .moveToVault:
+                await flushDeletes()
+                if let asset = pendingPhotoAssets[request.itemID],
+                   case .moveToVault(let id, let epoch, let sourceID) = request.action {
+                    let destination = pendingVaultDestinations[request.id]
+                    guard id == nil || destination?.id == id else {
+                        failures[request.id] = GalleryQueuedMoveError.unavailable; continue
+                    }
+                    do {
+                        let outcome = try await GalleryVaultService.shared.moveQueuedToVault(asset: asset,
+                            destination: destination, sourceAlbumID: sourceID, epoch: epoch,
+                            onPhotosWaitChanged: setPhotosAwaiting)
+                        guard outcome.deleted == 1 else { throw GalleryQueuedMoveError.notMoved }
+                        if let id { GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: id) }
+                    } catch { failures[request.id] = error }
+                } else { failures[request.id] = GalleryQueuedMoveError.unavailable }
+            }
+        }
+        await flushDeletes()
+        return failures
+    }
+
+    /// Start the timer at the Photos call, never while encrypting or waiting for the gate.
+    private func setPhotosAwaiting(_ waiting: Bool) {
+        photosWatchdog?.cancel()
+        photosWatchdog = nil
+        photosUnresponsive = false
+        guard waiting else { return }
+        let delay = photosWatchdogDelay
+        photosWatchdog = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
             guard let self, !Task.isCancelled else { return }
             self.photosUnresponsive = true
             Self.log.notice("photos_pending pending_count=\(self.pendingCount, privacy: .public)")
         }
-        defer { watchdog.cancel(); photosUnresponsive = false }
-        return await GalleryViewerStore.shared.performQueuedPhotoDeletes(requests)
     }
 
-    // Submit vault changes under their captured epochs and map outcomes back to requests.
+    /// Submit vault changes under captured epochs and map independent outcomes back to requests.
     private func executeVault(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
         var errors: [UUID: Error] = [:]
@@ -203,6 +316,10 @@ final class GalleryDeleteQueue: ObservableObject {
                 case .recycle: return .recycle(id)
                 case .putBack: return .putBack(id)
                 case .permanent: return .delete(id)
+                case .moveToVault(let albumID, _, let sourceID):
+                    guard let albumID, let destination = pendingVaultDestinations[request.id], destination.id == albumID else { return nil }
+                    return .move(id, sourceAlbumID: sourceID, destination: destination)
+                case .moveToPhotos, .removeFromAlbum: return nil
                 }
             }
             let results = await GalleryVaultService.shared.applyQueuedMutations(mutations, epoch: epoch)
@@ -218,9 +335,22 @@ final class GalleryDeleteQueue: ObservableObject {
                     continue
                 }
                 if let error = result.error { errors[request.id] = error }
+                else if case .moveToVault(let albumID?, _, _) = request.action {
+                    GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: albumID)
+                }
             }
         }
         return errors
+    }
+}
+
+private enum GalleryQueuedMoveError: LocalizedError {
+    case unavailable, notMoved
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: "This item is no longer available to move."
+        case .notMoved: "The item was not moved. Please try again."
+        }
     }
 }
 

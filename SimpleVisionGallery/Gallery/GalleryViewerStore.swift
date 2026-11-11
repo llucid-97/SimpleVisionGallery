@@ -287,7 +287,6 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     @Published private(set) var sessions: [UUID: GalleryViewerSession] = [:]
     @Published private(set) var albums: [GalleryAlbum] = []
     private static let gateLog = Logger(subsystem: "com.llucid.simplevisiongallery", category: "viewer-gate")
-    @Published private(set) var pendingPhotosSessionID: UUID?
     @Published private(set) var isPerformingOperation = false
     private var playlists: [UUID: GalleryViewerPlaylist] = [:]
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -300,6 +299,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     private var restoredVaultIDs: Set<UUID> = []
     private var vaultIndex = GalleryVaultIndex()
     private var queuedVaultUpdates = Set<UUID>()
+    private var queuedVaultIndex: GalleryVaultIndex?
     private var vaultUpdateTask: Task<Void, Never>?
 
     private override init() {
@@ -324,11 +324,12 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
                 guard let self else { return }
                 let service = GalleryVaultService.shared
                 if unlocked && service.isPublishingQueuedMutations {
-                    self.scheduleVaultPlaylistUpdate(service.publishingMutationIDs, epoch: service.authEpoch)
+                    self.scheduleVaultPlaylistUpdate(service.publishingMutationIDs, epoch: service.authEpoch, index: service.publishingVaultIndex)
                     return
                 }
                 self.vaultUpdateTask?.cancel()
                 self.queuedVaultUpdates.removeAll()
+                self.queuedVaultIndex = nil
                 let visibleRecords = unlocked ? records : []
                 if !self.restoredVaultIDs.isEmpty { self.restoredVaultIDs.formIntersection(Set(visibleRecords.map(\.id))) }
                 self.updateVaultPlaylists(visibleRecords)
@@ -398,7 +399,6 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             }
         }
     }
-
 
     func duplicateSession(_ id: UUID) -> UUID? {
         guard let original = sessions[id], let cursor = original.cursor else { return nil }
@@ -511,21 +511,6 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         }
     }
 
-    func move(_ id: UUID, to destination: GalleryAlbum, expectedAssetID: String? = nil) async throws {
-        guard let collection = destination.collection, destination.virtualScope == nil else {
-            throw ViewerMutationError.destinationNotEditable
-        }
-        try await mutate(id, destination: collection, newAlbumName: nil, expectedAssetID: expectedAssetID)
-        await refreshAlbums()
-    }
-
-    func move(_ id: UUID, toNewAlbumNamed name: String, expectedAssetID: String? = nil) async throws {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { throw ViewerMutationError.emptyName }
-        try await mutate(id, destination: nil, newAlbumName: name, expectedAssetID: expectedAssetID)
-        await refreshAlbums()
-    }
-
     /// Freeze the target before any suspension, and mask it in every open playlist.
     func stageQueuedDelete(_ request: GalleryDeleteRequest, asset: PHAsset?) {
         for playlist in playlists.values { stageQueuedDelete(request, asset: asset, in: playlist) }
@@ -551,7 +536,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         notify(playlist, orderChanged: true)
     }
 
-    // Reconcile each playlist after the backend finishes, restoring failed removals.
+    /// Reconcile each playlist after the backend finishes, restoring failed removals.
     func finishQueuedDelete(_ request: GalleryDeleteRequest, succeeded: Bool) {
         // Reconcile every affected playlist so failed items can return at their saved positions.
         for playlist in playlists.values {
@@ -561,11 +546,18 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             case .vault:
                 let album = playlist.snapshot.album
                 let inBin = album.virtualScope == .recycleBin || GalleryRecycleBin.isRecycleBinTitle(album.title)
-                keepRemoved = succeeded && request.action.keepsVaultItemHidden(inRecycleBin: inBin)
+                if case .moveToVault(_, _, let sourceID) = request.action {
+                    keepRemoved = succeeded && (album.id == sourceID || (sourceID == nil && album.virtualScope == .unfiled))
+                } else { keepRemoved = succeeded && request.action.keepsVaultItemHidden(inRecycleBin: inBin) }
             case .photos(_, let sourceID):
                 let album = playlist.snapshot.album
-                keepRemoved = succeeded && (request.action == .permanent || album.id == sourceID
-                    || album.virtualScope == .photos || album.virtualScope == .unfiled)
+                switch request.action {
+                case .moveToPhotos, .removeFromAlbum:
+                    keepRemoved = succeeded && (album.id == sourceID || (sourceID == nil && album.virtualScope == .unfiled))
+                default:
+                    keepRemoved = succeeded && (request.action == .permanent || album.id == sourceID
+                        || album.virtualScope == .photos || album.virtualScope == .unfiled)
+                }
             }
             if !keepRemoved && !pending.confirmed {
                 playlist.index.restore(IndexSet(integer: pending.position))
@@ -579,127 +571,45 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     }
 
     /// Serialize Photos deletes with moves while running the transaction away from the UI.
-    func performQueuedPhotoDeletes(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
+    func performQueuedPhotoDeletes(_ requests: [GalleryDeleteRequest], onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
         // Serialize with existing Move transactions; the delete UI never waits on this gate.
         Self.gateLog.info("queue_acquire_begin")
         await acquireMutation()
         Self.gateLog.info("queue_acquire_end")
         let started = ProcessInfo.processInfo.systemUptime
+        onPhotosWaitChanged(true)
         let result = await Task.detached(priority: .userInitiated) {
             await GalleryQueuedPhotoDeletion.execute(requests)
         }.value
+        onPhotosWaitChanged(false)
         releaseMutation()
         Self.gateLog.info("queue_release duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1000), privacy: .public)")
         GalleryVirtualLibraryIndex.shared.invalidate()
         return result
     }
 
-    /// Removes the current item from its real source album without deleting it
-    /// from Photos or placing it in Recycle Bin.
-    func removeFromSourceAlbum(sessionID: UUID, expectedAssetID: String) async throws {
-        guard let session = sessions[sessionID], let asset = session.currentAsset else { throw ViewerMutationError.noAsset }
-        guard asset.localIdentifier == expectedAssetID else { return }
-        guard session.playlist.snapshot.album.virtualScope == nil else { throw ViewerMutationError.sourceNotEditable }
-        try await withMutation(sessionID: sessionID) {
-            guard let live = sessions[sessionID], live.currentAsset?.localIdentifier == expectedAssetID else { return }
-            guard let source = PHAssetCollection.fetchAssetCollections(
-                withLocalIdentifiers: [session.albumID], options: nil).firstObject,
-                  source.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
-            var staged = false
-            Self.gateLog.info("remove_change_begin")
-            let changeStart = ProcessInfo.processInfo.systemUptime
-            try await PHPhotoLibrary.shared().performChanges {
-                guard let request = PHAssetCollectionChangeRequest(for: source) else { return }
-                request.removeAssets([asset] as NSArray)
-                staged = true
-            }
-            Self.gateLog.info("remove_change_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - changeStart) * 1000), privacy: .public)")
-            guard staged else { throw ViewerMutationError.changeUnavailable }
-            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], removedAlbumID: source.localIdentifier)
-            synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: false,
-                recycling: false, removedFromSource: true)
-            removeFromAlbum(source.localIdentifier, assets: [asset])
-        }
-        await refreshAlbums()
-    }
-
-    // Capture the requested asset before waiting: a second tap must not act on the next slide.
-    private func mutate(_ id: UUID, destination: PHAssetCollection?, newAlbumName: String?, expectedAssetID: String?) async throws {
-        guard let session = sessions[id], let asset = session.currentAsset else { throw ViewerMutationError.noAsset }
-        guard expectedAssetID == nil || expectedAssetID == asset.localIdentifier else { return }
-        let sourceAlbum = session.playlist.snapshot.album
-        let sourceID = session.albumID
-        try await withMutation(sessionID: id) {
-            guard let liveSession = sessions[id], liveSession.currentAsset?.localIdentifier == asset.localIdentifier else { return }
-            let source: PHAssetCollection?
-            if sourceAlbum.virtualScope == nil {
-                guard let realSource = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [sourceID], options: nil).firstObject,
-                      realSource.canPerform(.removeContent) else { throw ViewerMutationError.sourceNotEditable }
-                source = realSource
-            } else {
-                source = nil
-            }
-
-            let target = destination
-            let createName = newAlbumName
-            if let target, target.localIdentifier == source?.localIdentifier { return }
-            if let target, !target.canPerform(.addContent) { throw ViewerMutationError.destinationNotEditable }
-            var staged = false
-            var createdIdentifier: String?
-            Self.gateLog.info("move_change_begin")
-            let changeStart = ProcessInfo.processInfo.systemUptime
-            try await PHPhotoLibrary.shared().performChanges {
-                let sourceRequest = source.flatMap { PHAssetCollectionChangeRequest(for: $0) }
-                guard source == nil || sourceRequest != nil else { return }
-                let destinationRequest: PHAssetCollectionChangeRequest
-                if let target {
-                    guard let request = PHAssetCollectionChangeRequest(for: target) else { return }
-                    destinationRequest = request
-                } else if let createName {
-                    destinationRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: createName)
-                    createdIdentifier = destinationRequest.placeholderForCreatedAssetCollection.localIdentifier
-                } else { return }
-                destinationRequest.addAssets([asset] as NSArray)
-                sourceRequest?.removeAssets([asset] as NSArray)
-                staged = true
-            }
-            Self.gateLog.info("move_change_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - changeStart) * 1000), privacy: .public)")
-            guard staged else { throw ViewerMutationError.changeUnavailable }
-            let destinationID = target?.localIdentifier ?? createdIdentifier
-            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [asset.localIdentifier], addedAlbumID: destinationID, removedAlbumID: source?.localIdentifier)
-            let destinationIsBin = destinationID == GalleryRecycleBin.existingCollection()?.localIdentifier
-            synchronizeVirtualMembershipAfterMutation(assets: [asset], addedToAlbum: true,
-                recycling: destinationIsBin, removedFromSource: source != nil)
-            if let source { removeFromAlbum(source.localIdentifier, assets: [asset]) }
-            if let destinationID = target?.localIdentifier ?? createdIdentifier {
-                GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationID)
-            }
-        }
-    }
-
-    private func withMutation(sessionID: UUID, _ operation: () async throws -> Void) async throws {
-        let started = ProcessInfo.processInfo.systemUptime
-        Self.gateLog.info("acquire_begin")
+    /// Execute the captured Photos target without consulting the now-advanced viewer cursor.
+    func performQueuedPhotoMove(_ request: GalleryDeleteRequest, onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async -> Error? {
         await acquireMutation()
-        Self.gateLog.info("acquire_end duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1000), privacy: .public)")
-        let acquired = ProcessInfo.processInfo.systemUptime
-        let watchdog = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .seconds(20)) } catch { return }
-            guard !Task.isCancelled else { return }
-            self?.pendingPhotosSessionID = sessionID
-            Self.gateLog.notice("photos_pending duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - acquired) * 1000), privacy: .public)")
-        }
-        defer {
-            watchdog.cancel()
-            pendingPhotosSessionID = nil
-            releaseMutation()
-            Self.gateLog.info("release duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - acquired) * 1000), privacy: .public)")
-        }
-        do { try await operation() }
-        catch {
-            Self.gateLog.error("mutation_failed")
-            throw error
+        let result: Result<GalleryQueuedPhotoMove.Result, Error>
+        onPhotosWaitChanged(true)
+        do {
+            let value = try await Task.detached(priority: .userInitiated) {
+                try await GalleryQueuedPhotoMove.execute(request)
+            }.value
+            result = .success(value)
+        } catch { result = .failure(error) }
+        onPhotosWaitChanged(false)
+        releaseMutation()
+        switch result {
+        case .failure(let error): return error
+        case .success(let value):
+            guard case .photos(let id, let sourceID) = request.target else { return nil }
+            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [id],
+                addedAlbumID: value.destinationID, removedAlbumID: sourceID)
+            if let destinationID = value.destinationID { GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationID) }
+            return nil
         }
     }
 
@@ -818,8 +728,9 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
 
     /// Rebuild only the vault suffix. Never materialize the native Photos fetch.
     /// Removing the old suffix before releasing metadata prevents locked scenes remaining visible.
-    private func scheduleVaultPlaylistUpdate(_ ids: Set<UUID>, epoch: UUID) {
+    private func scheduleVaultPlaylistUpdate(_ ids: Set<UUID>, epoch: UUID, index: GalleryVaultIndex?) {
         queuedVaultUpdates.formUnion(ids)
+        queuedVaultIndex = index
         vaultUpdateTask?.cancel()
         vaultUpdateTask = Task { @MainActor [weak self] in
             // Pending masks already advanced every viewer; give that frame time before metadata work.
@@ -828,14 +739,20 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             guard let self, service.isUnlocked, service.authEpoch == epoch else { return }
             let changes = self.queuedVaultUpdates
             self.queuedVaultUpdates.removeAll()
-            self.updateVaultPlaylists(service.records, mutatedIDs: changes)
+            let prepared = self.queuedVaultIndex
+            self.queuedVaultIndex = nil
+            self.updateVaultPlaylists(service.records, mutatedIDs: changes, preparedIndex: prepared)
             self.vaultUpdateTask = nil
         }
     }
 
-    private func updateVaultPlaylists(_ records: [GalleryVaultRecord], mutatedIDs: Set<UUID>? = nil) {
+    private func updateVaultPlaylists(_ records: [GalleryVaultRecord], mutatedIDs: Set<UUID>? = nil,
+                                      preparedIndex: GalleryVaultIndex? = nil) {
         let service = GalleryVaultService.shared
-        if service.isUnlocked, let mutatedIDs {
+        if service.isUnlocked, mutatedIDs != nil, var preparedIndex {
+            for id in restoredVaultIDs { preparedIndex.excludeRestored(id) }
+            vaultIndex = preparedIndex
+        } else if service.isUnlocked, let mutatedIDs {
             vaultIndex.applyMutationChanges(mutatedIDs, records: mutatedIDs.compactMap { GalleryVaultStorage.shared.record(id: $0) })
         } else {
             vaultIndex = GalleryVaultIndex.fromPhotoLibrary(records: records, excludedIDs: restoredVaultIDs)
@@ -1002,16 +919,4 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
 
 }
 
-private enum ViewerMutationError: LocalizedError {
-    case noAsset, emptyName, sourceNotEditable, destinationNotEditable, changeUnavailable
-    var errorDescription: String? {
-        switch self {
-        case .noAsset: return "This slideshow has no current item."
-        case .emptyName: return "Enter an album name."
-        case .sourceNotEditable: return "Photos does not allow moving items out of this album."
-        case .destinationNotEditable: return "Photos does not allow adding items to that album."
-        case .changeUnavailable: return "Photos could not prepare this move. Please try again."
-        }
-    }
-}
 #endif

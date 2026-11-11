@@ -7,10 +7,44 @@ struct GalleryVaultTransferRequest: Identifiable {
     let title: String
     let destinationTitle: String?
     let transfer: @MainActor () async throws -> GalleryVaultTransferOutcome
+    var enqueueOnConfirmation: (@MainActor () throws -> Void)? = nil
+    private var enqueueEpoch: UUID? = nil
 
     static func items(_ assets: [PHAsset], destination: GalleryVaultAlbum? = nil, sourceAlbumID: String? = nil) -> Self {
         Self(title: "\(assets.count) item\(assets.count == 1 ? "" : "s")", destinationTitle: destination?.title) {
             try await GalleryVaultService.shared.moveToVault(assets: assets, destination: destination, sourceAlbumID: sourceAlbumID)
+        }
+    }
+
+    /// Capture the selected asset before confirmation and enqueue only after vault authentication succeeds.
+    static func queuedItem(_ asset: PHAsset, destination: GalleryVaultAlbum?, sourceAlbumID: String?, sessionID: UUID) -> Self {
+        let vault = GalleryVaultService.shared
+        let capturedEpoch = vault.isUnlocked ? vault.authEpoch : nil
+        var request = Self.items([asset], destination: destination, sourceAlbumID: sourceAlbumID)
+        request.enqueueEpoch = capturedEpoch
+        request.enqueueOnConfirmation = {
+            if let capturedEpoch {
+                guard vault.isUnlocked, vault.authEpoch == capturedEpoch else { throw GalleryVaultTransferError.locked }
+            }
+            guard vault.isUnlocked else { throw GalleryVaultTransferError.locked }
+            GalleryDeleteQueue.shared.enqueueMove(item: .photos(asset), sourceAlbumID: sourceAlbumID, sessionID: sessionID,
+                action: .moveToVault(id: destination?.id, epoch: vault.authEpoch, sourceAlbumID: sourceAlbumID),
+                vaultDestination: destination)
+        }
+        return request
+    }
+
+    // Enqueue on this turn when unlocked; authentication is the only asynchronous path.
+    func confirmQueued(onFailure: @escaping @MainActor (Error) -> Void) {
+        guard let enqueue = enqueueOnConfirmation else { return }
+        let vault = GalleryVaultService.shared
+        if vault.isUnlocked || enqueueEpoch != nil {
+            do { try enqueue() } catch { onFailure(error) }
+        } else {
+            Task { @MainActor in
+                do { try await vault.unlock(); try enqueue() }
+                catch { onFailure(error) }
+            }
         }
     }
 
@@ -32,6 +66,12 @@ struct GalleryVaultConfirmation: ViewModifier {
             presenting: request
         ) { target in
             Button("Move to Private Vault", role: .destructive) {
+                if target.enqueueOnConfirmation != nil {
+                    request = nil
+                    resultMessage = nil
+                    target.confirmQueued { resultMessage = $0.localizedDescription }
+                    return
+                }
                 showingVault = true
                 resultMessage = nil
                 Task { @MainActor in
@@ -425,7 +465,7 @@ struct GalleryVaultAlbumsToggle: View {
                 } catch { self.error = error.localizedDescription }
             }
         }))
-        .disabled(vault.isBusy)
+        .disabled(vault.isBusy && !vault.isUnlocked)
         .accessibilityIdentifier("gallery-move-vault-albums")
         if let error { Text(error).font(.caption).foregroundStyle(.red) }
     }

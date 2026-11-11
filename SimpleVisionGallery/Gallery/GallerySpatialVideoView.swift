@@ -8,6 +8,7 @@ import SwiftUI
 struct GallerySpatialVideoView: View {
     let player: AVPlayer
     var initialYawDegrees: Float = 0
+    var initialPitchDegrees: Float = 0
     @State private var videoEntity = Entity()
     @State private var position = 0.0
     @State private var duration = 0.0
@@ -90,18 +91,24 @@ struct GallerySpatialVideoView: View {
     private var video: some View {
         GeometryReader3D { geometry in
             RealityView { content in
-                // Match the initial inward angle of the paired window, then
-                // keep it fixed so head movement reveals spatial parallax.
+                // Keep orientation fixed between explicit calibration changes.
                 videoEntity.components.remove(BillboardComponent.self)
-                videoEntity.orientation = simd_quatf(angle: initialYawDegrees * .pi / 180, axis: [0, 1, 0])
+                applyOrientation()
                 content.add(videoEntity)
                 fit(content: content, geometry: geometry)
             } update: { content in
                 fit(content: content, geometry: geometry)
             }
+            .onChange(of: initialYawDegrees) { _, _ in applyOrientation() }
+            .onChange(of: initialPitchDegrees) { _, _ in applyOrientation() }
         }
         // Height-only layout must not collapse the native video volume.
         .frame(depth: 540)
+    }
+
+    private func applyOrientation() {
+        videoEntity.orientation = GalleryViewerPreferences.pairedOrientation(
+            yawDegrees: initialYawDegrees, pitchDegrees: initialPitchDegrees)
     }
 
     private func fit(content: RealityViewContent, geometry: GeometryProxy3D) {

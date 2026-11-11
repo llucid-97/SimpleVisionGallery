@@ -7,6 +7,10 @@ struct GallerySettingsView: View {
     @AppStorage(GalleryAppearance.accentColorKey)
     private var accentRGB = GalleryAppearance.defaultAccentRGB
     #if os(visionOS)
+    @AppStorage(GalleryViewerPreferences.pairedYawKey)
+    private var pairedYaw = GalleryViewerPreferences.defaultPairedYaw
+    @AppStorage(GalleryViewerPreferences.pairedPitchKey)
+    private var pairedPitch = GalleryViewerPreferences.defaultPairedPitch
     @AppStorage(GalleryViewerPreferences.prefetchWindowKey)
     private var prefetchWindow = GalleryViewerPreferences.defaultPrefetchWindow
     @AppStorage(GalleryViewerPreferences.backwardPrefetchWindowKey)
@@ -84,6 +88,42 @@ struct GallerySettingsView: View {
                                 .foregroundStyle(LensLabTheme.mutedInk)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                    }
+                    #endif
+
+                    #if os(visionOS)
+                    Divider()
+                    GallerySettingsSection(title: "Dual View") {
+                        HStack {
+                            Text("Inward yaw")
+                            Spacer()
+                            Text("\(Int(pairedYaw))°").monospacedDigit()
+                                .foregroundStyle(LensLabTheme.mutedInk)
+                        }
+                        Slider(value: $pairedYaw, in: GalleryViewerPreferences.pairedYawRange, step: 1)
+                            .accessibilityLabel("Inward yaw")
+                            .accessibilityValue("\(Int(pairedYaw)) degrees")
+                            .accessibilityIdentifier("gallery-dual-yaw")
+
+                        HStack {
+                            Text("Pitch")
+                            Spacer()
+                            Text("\(Int(pairedPitch))°").monospacedDigit()
+                                .foregroundStyle(LensLabTheme.mutedInk)
+                        }
+                        Slider(value: $pairedPitch, in: GalleryViewerPreferences.pairedPitchRange, step: 1)
+                            .accessibilityLabel("Pitch")
+                            .accessibilityValue("\(Int(pairedPitch)) degrees")
+                            .accessibilityIdentifier("gallery-dual-pitch")
+
+                        Button("Reset Angles") {
+                            pairedYaw = GalleryViewerPreferences.defaultPairedYaw
+                            pairedPitch = GalleryViewerPreferences.defaultPairedPitch
+                        }
+                        .buttonStyle(LensLabSecondaryButtonStyle())
+                        .disabled(pairedYaw == GalleryViewerPreferences.defaultPairedYaw &&
+                            pairedPitch == GalleryViewerPreferences.defaultPairedPitch)
+                        .accessibilityIdentifier("gallery-dual-angles-reset")
                     }
                     #endif
 

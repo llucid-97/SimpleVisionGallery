@@ -26,15 +26,22 @@ final class GalleryViewerMedia {
     private var generation = UUID()
     private var activeLoad: Task<Void, Never>?
     private var desiredPrefetchAssets: [GalleryMediaItem] = []
+    private var requestedPrefetchAssets: [GalleryMediaItem] = []
+    private var requestedExcludingCurrent: GalleryMediaItem?
+    private var requestedPreserving: GalleryMediaItem?
     private var prefetched: Set<String> = []
     private let prefetchOwnerID = UUID()
     private var prefetchFailures: Set<String> = []
+    private var prefetchVideoSlotFailures: Set<String> = []
     private var prefetchCoordinator: Task<Void, Never>?
     private var prefetchTask: Task<GalleryPrefetchedMedia, Error>?
     private var prefetchKey: String?
     private var prefetchPriority: GalleryPrefetchPriority?
     private var prefetchGeneration = UUID()
+    private var lastPrefetchOwnerCount = 1
     private var memoryWarningObserver: GalleryNotificationToken?
+    private var prefetchOwnersObserver: GalleryNotificationToken?
+    private var prefetchVideoSlotObserver: GalleryNotificationToken?
     private var currentKey: String?
     private var playerObservation: NSKeyValueObservation?
     private var playerEndObserver: GalleryNotificationToken?
@@ -72,6 +79,23 @@ final class GalleryViewerMedia {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.prefetch(assets: []) }
         })
+        prefetchOwnersObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
+            forName: GallerySceneCache.prefetchOwnersDidChange, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.prefetchOwnersDidChange() }
+        })
+        prefetchVideoSlotObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
+            forName: GallerySceneCache.prefetchVideoSlotDidChange, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.prefetchVideoSlotDidChange() }
+        })
+    }
+
+    deinit {
+        let owner = prefetchOwnerID
+        Task { @MainActor in
+            GallerySceneCache.shared.updatePrefetchDemand(owner: owner, orderedKeys: [])
+        }
     }
 
     func load(asset: PHAsset, spatialEnabled: Bool) async {
@@ -79,6 +103,11 @@ final class GalleryViewerMedia {
     }
 
     func load(item asset: GalleryMediaItem, spatialEnabled: Bool) async {
+        guard !Task.isCancelled else { return }
+        guard asset.vaultRecord == nil || GalleryVaultStorage.shared.isUnlocked else {
+            cancel()
+            return
+        }
         let requestedKey = GallerySceneCache.key(for: asset)
         if currentKey != requestedKey { aspectRatio = nil }
         if let oldKey = currentKey, desiredPrefetchAssets.contains(where: { GallerySceneCache.key(for: $0) == oldKey }) {
@@ -114,6 +143,40 @@ final class GalleryViewerMedia {
         isLoading = true
         error = nil
         status = nil
+        // A completed reservation is already safe to present on this actor.
+        // Avoid a second task hop, which can miss a display frame under load.
+        if asset.mediaType == .video {
+            let ready: GalleryPreparedVideo?
+            if case .video(let video) = warmed { ready = video }
+            else { ready = GallerySceneCache.shared.preparedVideo(for: asset, foreground: true) }
+            if let ready {
+                promoted?.cancel()
+                presentVideo(ready, token: token)
+                isLoading = false
+                startPrefetchIfNeeded()
+                return
+            }
+        }
+        if asset.mediaType != .video {
+            let ready: GalleryPreparedImage?
+            if case .image(let image) = warmed, !spatialEnabled || image.attemptedSpatial {
+                ready = image
+            } else if preparedKey == requestedKey, let image = prepared,
+                      !spatialEnabled || image.attemptedSpatial {
+                ready = image
+            } else if let image = GallerySceneCache.shared.preparedImage(for: asset, spatial: spatialEnabled) {
+                ready = image
+            } else {
+                ready = nil
+            }
+            if let ready {
+                promoted?.cancel()
+                presentImage(ready, key: requestedKey, spatialEnabled: spatialEnabled)
+                isLoading = false
+                startPrefetchIfNeeded()
+                return
+            }
+        }
         let task = Task { @MainActor [weak self] in
             guard let self else { promoted?.cancel(); return }
             defer { promoted?.cancel() }
@@ -122,9 +185,7 @@ final class GalleryViewerMedia {
                     self.prepared = nil
                     self.preparedKey = nil
                     let video: GalleryPreparedVideo
-                    if case .video(let retained) = warmed {
-                        video = retained
-                    } else if let promoted {
+                    if let promoted {
                         do {
                             guard case .video(let warmed) = try await GalleryMediaRequest.value(of: promoted) else {
                                 throw GalleryMediaError.missingMedia
@@ -135,57 +196,13 @@ final class GalleryViewerMedia {
                     } else {
                         video = try await GallerySceneCache.shared.video(for: asset, foreground: true)
                     }
-                    let avAsset = video.asset
-                    var spatialVideo = asset.mediaSubtypes.contains(.spatialMedia)
-                    if !spatialVideo {
-                        let stereoTracks = try? await avAsset.loadTracks(withMediaCharacteristic: .containsStereoMultiviewVideo)
-                        spatialVideo = !(stereoTracks?.isEmpty ?? true)
-                    }
-                    let videoAspectRatio = await Self.videoAspectRatio(avAsset)
                     try Task.checkCancellation()
                     guard self.generation == token else { return }
-                    self.currentVideo = video
-                    self.aspectRatio = videoAspectRatio
-                    self.isSpatialVideo = spatialVideo
-                    #if targetEnvironment(simulator)
-                    if spatialVideo { self.status = "Showing a 2D preview in Simulator. Spatial video needs Apple Vision Pro." }
-                    #endif
-                    let item = AVPlayerItem(asset: avAsset)
-                    self.player = AVPlayer(playerItem: item)
-                    self.player?.actionAtItemEnd = self.videoLooping ? .none : .pause
-                    self.playerEndObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
-                        forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
-                    ) { [weak self, weak item] _ in
-                        Task { @MainActor [weak self, weak item] in
-                            guard let self, let item, self.generation == token,
-                                  self.videoLooping, self.isSceneActive, !self.isPresentationCovered,
-                                  let player = self.player, player.currentItem === item,
-                                  player.rate > 0 else { return }
-                            // With .none, reaching the end does not pause the player.
-                            // A manual/background pause before this callback wins.
-                            // Play before the seek completes so no delayed completion
-                            // can restart a player the user pauses during the seek.
-                            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-                            player.play()
-                        }
-                    })
-                    self.playerObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-                        guard item.status == .failed else { return }
-                        let message = item.error?.localizedDescription ?? "This video could not be played."
-                        Task { @MainActor [weak self] in
-                            guard let self, self.generation == token else { return }
-                            self.error = message
-                        }
-                    }
-                    if self.isSceneActive && !self.isPresentationCovered { self.player?.play() }
-                    else { self.resumePlaybackWhenActive = true }
+                    self.presentVideo(video, token: token)
                 } else {
                     let key = GallerySceneCache.key(for: asset)
                     let image: GalleryPreparedImage
-                    if case .image(let retained) = warmed,
-                       !spatialEnabled || retained.attemptedSpatial {
-                        image = retained
-                    } else if let promoted {
+                    if let promoted {
                         do {
                             guard case .image(let retained) = try await GalleryMediaRequest.value(of: promoted) else {
                                 throw GalleryMediaError.missingMedia
@@ -203,21 +220,7 @@ final class GalleryViewerMedia {
                     }
                     try Task.checkCancellation()
                     guard self.generation == token else { return }
-                    self.prepared = image
-                    self.preparedKey = key
-                    self.menuPreviewState.set(image.menuPreview, for: requestedKey)
-                    self.aspectRatio = image.aspectRatio
-                    self.spatialAvailable = image.supportsSpatial
-                    self.status = spatialEnabled ? image.status : nil
-                    if var component = image.component {
-                        component.desiredViewingMode = spatialEnabled ? image.spatialMode : .mono
-                        let entity = Entity()
-                        entity.components.set(component)
-                        self.imageEntity = entity
-                        self.isShowingSpatial = spatialEnabled && image.spatialMode != .mono
-                    } else {
-                        self.fallbackImage = image.fallback
-                    }
+                    self.presentImage(image, key: key, spatialEnabled: spatialEnabled)
                 }
             } catch is CancellationError {
                 // A swipe or a closed window superseded this request.
@@ -238,7 +241,72 @@ final class GalleryViewerMedia {
         }
     }
 
-    private static func videoAspectRatio(_ asset: AVAsset) async -> Double? {
+    // Attach one viewer-owned player using metadata already loaded during preparation.
+    private func presentVideo(_ video: GalleryPreparedVideo, token: UUID) {
+        video.promote()
+        self.prepared = nil
+        self.preparedKey = nil
+        let avAsset = video.asset
+        let spatialVideo = video.isSpatialVideo
+        let videoAspectRatio = video.aspectRatio
+        self.currentVideo = video
+        self.aspectRatio = videoAspectRatio
+        self.isSpatialVideo = spatialVideo
+        #if targetEnvironment(simulator)
+        if spatialVideo { self.status = "Showing a 2D preview in Simulator. Spatial video needs Apple Vision Pro." }
+        #endif
+        let item = AVPlayerItem(asset: avAsset)
+        self.player = AVPlayer(playerItem: item)
+        self.player?.actionAtItemEnd = self.videoLooping ? .none : .pause
+        self.playerEndObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
+        ) { [weak self, weak item] _ in
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, self.generation == token,
+                      self.videoLooping, self.isSceneActive, !self.isPresentationCovered,
+                      let player = self.player, player.currentItem === item,
+                      player.rate > 0 else { return }
+                // With .none, reaching the end does not pause the player.
+                // A manual/background pause before this callback wins.
+                // Play before the seek completes so no delayed completion
+                // can restart a player the user pauses during the seek.
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                player.play()
+            }
+        })
+        self.playerObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            let message = item.error?.localizedDescription ?? "This video could not be played."
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == token else { return }
+                self.error = message
+            }
+        }
+        if self.isSceneActive && !self.isPresentationCovered { self.player?.play() }
+        else { self.resumePlaybackWhenActive = true }
+    }
+
+    // Present completed media inline so a warm navigation does not wait on another task.
+    private func presentImage(_ image: GalleryPreparedImage, key: String, spatialEnabled: Bool) {
+        self.prepared = image
+        self.preparedKey = key
+        self.menuPreviewState.set(image.menuPreview, for: key)
+        self.aspectRatio = image.aspectRatio
+        self.spatialAvailable = image.supportsSpatial
+        self.status = spatialEnabled ? image.status : nil
+        // A fresh entity can attach the shared prepared component in this window.
+        if var component = image.component {
+            component.desiredViewingMode = spatialEnabled ? image.spatialMode : .mono
+            let entity = Entity()
+            entity.components.set(component)
+            self.imageEntity = entity
+            self.isShowingSpatial = spatialEnabled && image.spatialMode != .mono
+        } else {
+            self.fallbackImage = image.fallback
+        }
+    }
+
+    fileprivate static func videoAspectRatio(_ asset: AVAsset) async -> Double? {
         // Metadata failure must not prevent playback. The window can fall back to
         // PhotoKit dimensions until an oriented presentation ratio is available.
         guard let track = try? await asset.loadTracks(withMediaType: .video).first,
@@ -262,9 +330,14 @@ final class GalleryViewerMedia {
                  preserving: preserving.map(GalleryMediaItem.photos))
     }
 
+    /// Recompute this window's ordered demand so retained media follows its current share of the shared budget.
     func prefetch(items assets: [GalleryMediaItem], excludingCurrent: GalleryMediaItem? = nil, preserving: GalleryMediaItem? = nil) {
+        requestedPrefetchAssets = assets
+        requestedExcludingCurrent = excludingCurrent
+        requestedPreserving = preserving
         var seen: Set<String> = []
-        let itemShare = max(1, GalleryViewerPreferences.globalPrefetchItemBudget / GallerySceneCache.shared.prefetchOwnerCount)
+        lastPrefetchOwnerCount = GallerySceneCache.shared.prefetchOwnerCount
+        let itemShare = max(1, GalleryViewerPreferences.globalPrefetchItemBudget / lastPrefetchOwnerCount)
         let currentAssetKey = excludingCurrent.map(GallerySceneCache.key(for:)) ?? currentKey
         desiredPrefetchAssets = Array(assets.prefix(itemShare)).filter {
             let key = GallerySceneCache.key(for: $0)
@@ -276,17 +349,37 @@ final class GalleryViewerMedia {
         prefetched.formIntersection(wanted)
         GallerySceneCache.shared.updatePrefetchDemand(owner: prefetchOwnerID,
             orderedKeys: preservedKey.map { [$0] + orderedKeys } ?? orderedKeys)
-        prefetchFailures.formIntersection(wanted)
+        // Each external demand refresh is one new chance after a transient failure.
+        prefetchFailures.removeAll()
+        prefetchVideoSlotFailures.removeAll()
         if let prefetchKey, !wanted.contains(prefetchKey) { cancelPrefetchWork() }
         if wanted.isEmpty { cancelPrefetchWork() }
         startPrefetchIfNeeded()
     }
 
+    private func prefetchOwnersDidChange() {
+        // A different owner count changes this viewer's item and pixel budgets.
+        guard GallerySceneCache.shared.prefetchOwnerCount != lastPrefetchOwnerCount else { return }
+        cancelPrefetchWork()
+        prefetchFailures.removeAll()
+        prefetchVideoSlotFailures.removeAll()
+        prefetch(items: requestedPrefetchAssets, excludingCurrent: requestedExcludingCurrent,
+                 preserving: requestedPreserving)
+    }
+
+    private func prefetchVideoSlotDidChange() {
+        prefetchFailures.subtract(prefetchVideoSlotFailures)
+        prefetchVideoSlotFailures.removeAll()
+        startPrefetchIfNeeded()
+    }
+
+    /// Start one ordered preparation worker so one window does not flood the shared budget.
     private func startPrefetchIfNeeded() {
         guard isSceneActive, !isLoading, prefetchCoordinator == nil,
               !desiredPrefetchAssets.isEmpty else { return }
         let token = prefetchGeneration
         prefetchCoordinator = Task(priority: .utility) { @MainActor [weak self] in
+            // Keep processing wanted media until cancellation or the current demand is satisfied.
             while !Task.isCancelled {
                 guard let (key, task) = self?.nextPrefetchRequest() else { break }
                 do {
@@ -306,7 +399,14 @@ final class GalleryViewerMedia {
                     self.prefetchTask = nil
                     self.prefetchKey = nil
                     self.prefetchPriority = nil
-                    self.prefetchFailures.insert(key)
+                    if case GalleryMediaError.prefetchVideoSlotUnavailable = error {
+                        if !GallerySceneCache.shared.vaultVideoSlotAvailable {
+                            self.prefetchFailures.insert(key)
+                            self.prefetchVideoSlotFailures.insert(key)
+                        }
+                    } else {
+                        self.prefetchFailures.insert(key)
+                    }
                 }
             }
             if let self, self.prefetchGeneration == token { self.prefetchCoordinator = nil }
@@ -317,9 +417,6 @@ final class GalleryViewerMedia {
         guard isSceneActive, !isLoading else { return nil }
         let usedPixels = GallerySceneCache.shared.retainedPixels(owner: prefetchOwnerID)
         for asset in desiredPrefetchAssets {
-            // Decrypting speculative videos consumes the full file size on disk.
-            // Keep these for foreground playback rather than filling the vault's free space.
-            if asset.vaultRecord != nil && asset.mediaType == .video { continue }
             let key = GallerySceneCache.key(for: asset)
             guard !GallerySceneCache.shared.hasPrefetched(key, owner: prefetchOwnerID),
                   !prefetchFailures.contains(key) else { continue }
@@ -379,7 +476,7 @@ final class GalleryViewerMedia {
         if currentKey.flatMap(GalleryMediaItem.sourceIdentifier(forCacheKey:)).map(ids.contains) == true {
             cancel()
         } else {
-            prefetch(items: desiredPrefetchAssets.filter { !ids.contains($0.localIdentifier) })
+            prefetch(items: requestedPrefetchAssets.filter { !ids.contains($0.localIdentifier) })
         }
     }
 
@@ -387,7 +484,7 @@ final class GalleryViewerMedia {
         if let currentKey, !currentKey.hasPrefix("vault:") {
             cancel()
         } else {
-            prefetch(items: desiredPrefetchAssets.filter { $0.vaultRecord != nil })
+            prefetch(items: requestedPrefetchAssets.filter { $0.vaultRecord != nil })
         }
     }
 
@@ -395,7 +492,7 @@ final class GalleryViewerMedia {
         // This runs synchronously before the storage removes plaintext leases.
         let showingPrivate = currentKey?.hasPrefix("vault:") == true
         if showingPrivate { cancel() }
-        else { prefetch(items: desiredPrefetchAssets.filter { $0.vaultRecord == nil }) }
+        else { prefetch(items: requestedPrefetchAssets.filter { $0.vaultRecord == nil }) }
     }
 
     private func cancelPrefetchWork() {
@@ -413,6 +510,8 @@ final class GalleryViewerMedia {
         guard active != isSceneActive else { return }
         isSceneActive = active
         if active {
+            prefetchFailures.removeAll()
+            prefetchVideoSlotFailures.removeAll()
             if !isPresentationCovered {
                 if resumePlaybackWhenActive { player?.play() }
                 resumePlaybackWhenActive = false
@@ -490,6 +589,17 @@ private enum GalleryPrefetchedMedia {
     }
 }
 
+/// Bound speculative plaintext independently of the in-memory image budget.
+private enum GalleryVaultVideoBudget {
+    static let maxBytes: Int64 = 256 * 1024 * 1024
+    static let freeReserve: Int64 = 512 * 1024 * 1024
+
+    static func permits(encryptedBytes: Int64, availableBytes: Int64) -> Bool {
+        encryptedBytes > 0 && encryptedBytes <= maxBytes
+            && availableBytes >= freeReserve && encryptedBytes <= availableBytes - freeReserve
+    }
+}
+
 private struct GalleryPreparedImage {
     var component: ImagePresentationComponent?
     var fallback: UIImage?
@@ -507,6 +617,8 @@ private struct GalleryPreparedImage {
 @MainActor
 private final class GallerySceneCache {
     static let shared = GallerySceneCache()
+    static let prefetchOwnersDidChange = Notification.Name("GalleryPrefetchOwnersDidChange")
+    static let prefetchVideoSlotDidChange = Notification.Name("GalleryPrefetchVideoSlotDidChange")
     private struct Entry {
         var image: GalleryPreparedImage
         var access: UInt64
@@ -522,9 +634,15 @@ private final class GallerySceneCache {
         var consumers: Set<UUID>
         var foreground: Bool
     }
+    private final class WeakVideo {
+        weak var video: GalleryPreparedVideo?
+        var access: UInt64
+        init(_ video: GalleryPreparedVideo, access: UInt64) { self.video = video; self.access = access }
+    }
     private var entries: [String: Entry] = [:]
     private var pending: [String: Pending] = [:]
     private var pendingVideos: [String: PendingVideo] = [:]
+    private var completedVideos: [String: WeakVideo] = [:]
     private struct RetainedPrefetch {
         var media: GalleryPrefetchedMedia
         var owners: Set<UUID>
@@ -540,6 +658,8 @@ private final class GallerySceneCache {
     private var vaultGeneration = UUID()
     private var photosGeneration = UUID()
     private var hiddenSourceGenerations: [String: UUID] = [:]
+    private var vaultVideoReservation: (key: String, id: UUID)?
+    var vaultVideoSlotAvailable: Bool { vaultVideoReservation == nil }
     private let generationGate = GalleryGenerationGate()
 
     private init() {
@@ -563,7 +683,10 @@ private final class GallerySceneCache {
         warningObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.entries.removeAll() }
+            Task { @MainActor [weak self] in
+                self?.entries.removeAll()
+                self?.completedVideos.removeAll()
+            }
         }
     }
 
@@ -582,8 +705,9 @@ private final class GallerySceneCache {
         pending = pending.filter { !matches($0.key) }
         pendingVideos = pendingVideos.filter { !matches($0.key) }
         entries = entries.filter { !matches($0.key) }
+        completedVideos = completedVideos.filter { !matches($0.key) }
         retainedPrefetch = retainedPrefetch.filter { !matches($0.key) }
-        for (owner, keys) in demands { demands[owner] = keys.filter { !matches($0) } }
+        removeDemandKeys(where: matches)
     }
 
     private func clearPhotos() {
@@ -593,20 +717,35 @@ private final class GallerySceneCache {
         pending = pending.filter { $0.key.hasPrefix("vault:") }
         pendingVideos = pendingVideos.filter { $0.key.hasPrefix("vault:") }
         entries = entries.filter { $0.key.hasPrefix("vault:") }
+        completedVideos = completedVideos.filter { $0.key.hasPrefix("vault:") }
         retainedPrefetch = retainedPrefetch.filter { $0.key.hasPrefix("vault:") }
-        for (owner, keys) in demands { demands[owner] = keys.filter { $0.hasPrefix("vault:") } }
+        removeDemandKeys { !$0.hasPrefix("vault:") }
         hiddenSourceGenerations.removeAll()
     }
 
     private func clearVault() {
         vaultGeneration = UUID()
+        if let key = vaultVideoReservation?.key { releaseVaultVideoReservation(key: key) }
         for (key, value) in pending where key.hasPrefix("vault:") { value.task.cancel() }
         for (key, value) in pendingVideos where key.hasPrefix("vault:") { value.task.cancel() }
         pending = pending.filter { !$0.key.hasPrefix("vault:") }
         pendingVideos = pendingVideos.filter { !$0.key.hasPrefix("vault:") }
         entries = entries.filter { !$0.key.hasPrefix("vault:") }
+        completedVideos = completedVideos.filter { !$0.key.hasPrefix("vault:") }
         retainedPrefetch = retainedPrefetch.filter { !$0.key.hasPrefix("vault:") }
-        for (owner, keys) in demands { demands[owner] = keys.filter { !$0.hasPrefix("vault:") } }
+        removeDemandKeys { $0.hasPrefix("vault:") }
+    }
+
+    private func removeDemandKeys(where shouldRemove: (String) -> Bool) {
+        let previousOwnerCount = demands.count
+        for (owner, keys) in demands {
+            let remaining = keys.filter { !shouldRemove($0) }
+            if remaining.isEmpty { demands.removeValue(forKey: owner) }
+            else { demands[owner] = remaining }
+        }
+        if max(1, demands.count) != max(1, previousOwnerCount) {
+            NotificationCenter.default.post(name: Self.prefetchOwnersDidChange, object: nil)
+        }
     }
 
     static func key(for asset: GalleryMediaItem) -> String { asset.cacheKey }
@@ -625,28 +764,121 @@ private final class GallerySceneCache {
             item.foreground = true
             pendingVideos[videoKey] = item
             generationGate.promote(key: videoKey)
+            releaseVaultVideoReservation(key: videoKey)
         }
     }
 
+    private func releaseVaultVideoReservation(key: String, id: UUID? = nil) {
+        guard let reservation = vaultVideoReservation, reservation.key == key,
+              id == nil || reservation.id == id else { return }
+        vaultVideoReservation = nil
+        NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)
+    }
+
+    /// Borrow completed media without extending the lifetime of another window's private lease.
+    func preparedVideo(for asset: GalleryMediaItem, foreground: Bool) -> GalleryPreparedVideo? {
+        let assetKey = Self.key(for: asset)
+        if var retained = retainedPrefetch[assetKey], case .video(let video) = retained.media,
+           asset.vaultRecord == nil || GalleryVaultStorage.shared.isUnlocked {
+            clock &+= 1
+            retained.access = clock
+            if foreground && video.isVault {
+                retainedPrefetch.removeValue(forKey: assetKey)
+                video.promote()
+            } else {
+                retainedPrefetch[assetKey] = retained
+                if foreground { video.promote() }
+            }
+            return video
+        }
+        guard asset.vaultRecord == nil || GalleryVaultStorage.shared.isUnlocked else { return nil }
+        guard let entry = completedVideos[assetKey], let video = entry.video else {
+            completedVideos.removeValue(forKey: assetKey)
+            return nil
+        }
+        clock &+= 1
+        entry.access = clock
+        if foreground { video.promote() }
+        return video
+    }
+
+    private func rememberVideo(_ video: GalleryPreparedVideo, key: String) {
+        completedVideos = completedVideos.filter { $0.value.video != nil }
+        clock &+= 1
+        completedVideos[key] = WeakVideo(video, access: clock)
+        while completedVideos.count > GalleryViewerPreferences.globalPrefetchItemBudget {
+            guard let oldest = completedVideos.min(by: { $0.value.access < $1.value.access })?.key else { break }
+            completedVideos.removeValue(forKey: oldest)
+        }
+    }
+
+    /// Share in-flight work while bounding speculative leases and keeping independent consumers.
     func video(for asset: GalleryMediaItem, foreground: Bool) async throws -> GalleryPreparedVideo {
+        let assetKey = Self.key(for: asset)
+        if let ready = preparedVideo(for: asset, foreground: foreground) { return ready }
         let expectedVaultGeneration = vaultGeneration
         let expectedPhotosGeneration = photosGeneration
         let expectedSourceGeneration = hiddenSourceGenerations[asset.localIdentifier]
-        let key = Self.key(for: asset) + ":video"
+        let key = assetKey + ":video"
         let consumer = UUID()
         let task: Task<GalleryPreparedVideo, Error>
-        if var existing = pendingVideos[key] {
+        // Join a live task or start a new one so cancelled work cannot poison the next foreground request.
+        if var existing = pendingVideos[key], !existing.task.isCancelled {
             existing.consumers.insert(consumer)
             existing.foreground = existing.foreground || foreground
-            if foreground { generationGate.promote(key: key) }
+            if foreground {
+                generationGate.promote(key: key)
+                releaseVaultVideoReservation(key: key)
+            }
             pendingVideos[key] = existing
             task = existing.task
         } else {
-            task = Task(priority: foreground ? .userInitiated : .utility) { @MainActor in
+            task = Task(priority: foreground ? .userInitiated : .utility) { @MainActor [self] in
                 try await generationGate.acquire(key: key, foreground: pendingVideos[key]?.foreground ?? foreground)
                 defer { generationGate.release() }
                 try Task.checkCancellation()
-                return try await GalleryVaultMediaRequest.video(asset)
+                var reservationID: UUID?
+                // Reserve only a safe amount of temporary plaintext before decrypting a speculative video.
+                if let record = asset.vaultRecord, pendingVideos[key]?.foreground != true {
+                    guard vaultVideoReservation == nil else { throw GalleryMediaError.prefetchVideoSlotUnavailable }
+                    guard let resource = GalleryVaultResourceSelection.displayResource(for: record)
+                    else { throw GalleryMediaError.missingMedia }
+                    let id = UUID()
+                    vaultVideoReservation = (key, id)
+                    reservationID = id
+                    do {
+                        let (bytes, available) = try await GalleryVaultStorage.shared.speculativeResourceSpace(
+                            recordID: record.id, resourceID: resource.id)
+                        try Task.checkCancellation()
+                        guard GalleryVaultVideoBudget.permits(encryptedBytes: bytes, availableBytes: available)
+                            || pendingVideos[key]?.foreground == true else {
+                            throw GalleryMediaError.prefetchBudgetExceeded
+                        }
+                    } catch {
+                        releaseVaultVideoReservation(key: key, id: id)
+                        throw error
+                    }
+                }
+                // Transfer the reservation to the resulting lease so cleanup controls when the slot is reusable.
+                var videoProduced = false
+                do {
+                    let video = try await GalleryVaultMediaRequest.video(asset)
+                    videoProduced = true
+                    if pendingVideos[key]?.foreground == true { video.promote() }
+                    if let reservationID, vaultVideoReservation?.id == reservationID {
+                        video.onPrefetchRelease = { [weak self] in
+                            self?.releaseVaultVideoReservation(key: key, id: reservationID)
+                        }
+                    }
+                    try Task.checkCancellation()
+                    return video
+                } catch {
+                    // Keep the slot until a failed temporary-file cleanup can be retried.
+                    if !videoProduced, let reservationID, GalleryVaultStorage.shared.cleanupWarning == nil {
+                        releaseVaultVideoReservation(key: key, id: reservationID)
+                    }
+                    throw error
+                }
             }
             pendingVideos[key] = PendingVideo(task: task, consumers: [consumer], foreground: foreground)
         }
@@ -659,6 +891,7 @@ private final class GallerySceneCache {
                   hiddenSourceGenerations[asset.localIdentifier] == expectedSourceGeneration else {
                 throw CancellationError()
             }
+            rememberVideo(result, key: assetKey)
             return result
         } onCancel: {
             Task { @MainActor in self.releaseVideo(key: key, consumer: consumer) }
@@ -675,7 +908,9 @@ private final class GallerySceneCache {
         }
     }
 
+    /// Release reservations no longer wanted by this window and rebalance the shared cache.
     func updatePrefetchDemand(owner: UUID, orderedKeys: [String]) {
+        let previousOwnerCount = demands.count
         if orderedKeys.isEmpty { demands.removeValue(forKey: owner) }
         else { demands[owner] = orderedKeys }
         for key in Array(retainedPrefetch.keys) where !orderedKeys.contains(key) {
@@ -685,6 +920,9 @@ private final class GallerySceneCache {
             else { retainedPrefetch[key] = value }
         }
         trimPrefetchRetentions()
+        if max(1, demands.count) != max(1, previousOwnerCount) {
+            NotificationCenter.default.post(name: Self.prefetchOwnersDidChange, object: nil)
+        }
     }
 
     var prefetchOwnerCount: Int { max(1, demands.count) }
@@ -700,6 +938,8 @@ private final class GallerySceneCache {
 
     func retainPrefetched(_ media: GalleryPrefetchedMedia, key: String, owner: UUID) -> Bool {
         guard demands[owner]?.contains(key) == true else { return false }
+        // A promoted vault lease must not outlive its foreground viewer as speculation.
+        if case .video(let video) = media, video.isVault && video.isForeground { return false }
         let ownerCount = max(1, demands.count)
         let itemShare = max(1, GalleryViewerPreferences.globalPrefetchItemBudget / ownerCount)
         let pixelShare = max(1, GalleryViewerPreferences.globalPrefetchPixelBudget / ownerCount)
@@ -728,7 +968,10 @@ private final class GallerySceneCache {
     func takePrefetched(key: String, owner: UUID) -> GalleryPrefetchedMedia? {
         guard var value = retainedPrefetch[key], value.owners.remove(owner) != nil else { return nil }
         let result = value.media
-        if value.owners.isEmpty { retainedPrefetch.removeValue(forKey: key) }
+        if case .video(let video) = result, video.isVault {
+            video.promote()
+            retainedPrefetch.removeValue(forKey: key)
+        } else if value.owners.isEmpty { retainedPrefetch.removeValue(forKey: key) }
         else { retainedPrefetch[key] = value }
         return result
     }
@@ -801,11 +1044,9 @@ private final class GallerySceneCache {
         }
     }
 
-    func image(for asset: GalleryMediaItem, spatial: Bool, foreground: Bool = true, pixelBudget: Int? = nil) async throws -> GalleryPreparedImage {
+    func preparedImage(for asset: GalleryMediaItem, spatial: Bool) -> GalleryPreparedImage? {
+        guard asset.vaultRecord == nil || GalleryVaultStorage.shared.isUnlocked else { return nil }
         let assetKey = Self.key(for: asset)
-        let expectedVaultGeneration = vaultGeneration
-        let expectedPhotosGeneration = photosGeneration
-        let expectedSourceGeneration = hiddenSourceGenerations[asset.localIdentifier]
         let key = assetKey + (spatial ? ":scene" : ":original")
         clock &+= 1
         if var entry = entries[key] ?? entries[assetKey + ":scene"] {
@@ -813,9 +1054,19 @@ private final class GallerySceneCache {
             entries[entries[key] != nil ? key : assetKey + ":scene"] = entry
             return entry.image
         }
+        return nil
+    }
+
+    func image(for asset: GalleryMediaItem, spatial: Bool, foreground: Bool = true, pixelBudget: Int? = nil) async throws -> GalleryPreparedImage {
+        let assetKey = Self.key(for: asset)
+        let expectedVaultGeneration = vaultGeneration
+        let expectedPhotosGeneration = photosGeneration
+        let expectedSourceGeneration = hiddenSourceGenerations[asset.localIdentifier]
+        let key = assetKey + (spatial ? ":scene" : ":original")
+        if let ready = preparedImage(for: asset, spatial: spatial) { return ready }
         let consumer = UUID()
         let task: Task<GalleryPreparedImage, Error>
-        if var existing = pending[key] {
+        if var existing = pending[key], !existing.task.isCancelled {
             existing.consumers.insert(consumer)
             existing.foreground = existing.foreground || foreground
             if foreground { generationGate.promote(key: key) }
@@ -1175,10 +1426,11 @@ private nonisolated enum GalleryRetryBudget {
 }
 
 private nonisolated enum GalleryMediaError: LocalizedError {
-    case invalidImage, missingMedia, prefetchBudgetExceeded
+    case invalidImage, missingMedia, prefetchBudgetExceeded, prefetchVideoSlotUnavailable
     var errorDescription: String? {
         switch self {
         case .prefetchBudgetExceeded: return "This photo exceeds the lookahead memory budget."
+        case .prefetchVideoSlotUnavailable: return "A private video is already being prepared."
         case .invalidImage: return "This photo could not be opened."
         case .missingMedia: return "Photos could not load this item. Check your connection if it is stored in iCloud."
         }
@@ -1305,6 +1557,11 @@ private extension GalleryMediaRequest where Value == AVAsset {
 private final class GalleryPreparedVideo {
     let asset: AVAsset
     private let plaintextURL: URL?
+    var onPrefetchRelease: (@MainActor () -> Void)?
+    var isSpatialVideo = false
+    var aspectRatio: Double?
+    private(set) var isForeground = false
+    var isVault: Bool { plaintextURL != nil }
 
     init(asset: AVAsset, plaintextURL: URL? = nil) {
         self.asset = asset
@@ -1313,8 +1570,19 @@ private final class GalleryPreparedVideo {
 
     deinit {
         if let plaintextURL {
-            Task { @MainActor in GalleryVaultStorage.shared.releasePlaintext(plaintextURL) }
+            let release = onPrefetchRelease
+            Task { @MainActor in
+                if GalleryVaultStorage.shared.releasePlaintext(plaintextURL) { release?() }
+            }
+        } else if let onPrefetchRelease {
+            Task { @MainActor in onPrefetchRelease() }
         }
+    }
+
+    func promote() {
+        isForeground = true
+        onPrefetchRelease?()
+        onPrefetchRelease = nil
     }
 }
 
@@ -1340,10 +1608,25 @@ private enum GalleryVaultMediaRequest {
         }
     }
 
+    // Warm orientation and stereo metadata once so playback can attach without another fetch.
+    private static func prepareVideo(_ video: GalleryPreparedVideo, spatialHint: Bool) async throws -> GalleryPreparedVideo {
+        var spatial = spatialHint
+        if !spatial {
+            let tracks = try? await video.asset.loadTracks(withMediaCharacteristic: .containsStereoMultiviewVideo)
+            spatial = !(tracks?.isEmpty ?? true)
+        }
+        let aspectRatio = await GalleryViewerMedia.videoAspectRatio(video.asset)
+        try Task.checkCancellation()
+        video.isSpatialVideo = spatial
+        video.aspectRatio = aspectRatio
+        return video
+    }
+
     static func video(_ item: GalleryMediaItem) async throws -> GalleryPreparedVideo {
         switch item {
         case .photos(let asset):
-            return GalleryPreparedVideo(asset: try await GalleryMediaRequest<AVAsset>.video(asset))
+            let video = GalleryPreparedVideo(asset: try await GalleryMediaRequest<AVAsset>.video(asset))
+            return try await prepareVideo(video, spatialHint: item.mediaSubtypes.contains(.spatialMedia))
         case .vault(let record):
             guard GalleryVaultStorage.shared.isUnlocked,
                   let resource = GalleryVaultResourceSelection.displayResource(for: record) else {
@@ -1353,7 +1636,8 @@ private enum GalleryVaultMediaRequest {
             do {
                 try Task.checkCancellation()
                 guard GalleryVaultStorage.shared.isUnlocked else { throw CancellationError() }
-                return GalleryPreparedVideo(asset: AVURLAsset(url: url), plaintextURL: url)
+                let video = GalleryPreparedVideo(asset: AVURLAsset(url: url), plaintextURL: url)
+                return try await prepareVideo(video, spatialHint: item.mediaSubtypes.contains(.spatialMedia))
             } catch {
                 GalleryVaultStorage.shared.releasePlaintext(url)
                 throw error

@@ -5,6 +5,7 @@ import SwiftUI
 struct GalleryViewerBacking: View {
     var aspectRatio: Double?
     var yawDegrees: Double = 0
+    var pitchDegrees: Double = 0
     var showsMatte = true
 
     var body: some View {
@@ -19,6 +20,7 @@ struct GalleryViewerBacking: View {
             }
         }
         .rotation3DEffect(.degrees(yawDegrees), axis: (x: 0, y: 1, z: 0))
+        .rotation3DEffect(.degrees(pitchDegrees), axis: (x: 1, y: 0, z: 0))
         .accessibilityHidden(true)
     }
 }

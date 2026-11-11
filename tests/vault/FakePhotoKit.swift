@@ -224,7 +224,7 @@ nonisolated final class GalleryVaultResourceWriter: @unchecked Sendable {
     func append(_ data: Data) throws { if FakePhotos.resourceSource[id] == FakePhotos.failCopyID { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }; bytes.append(data) }
     func finish() throws {}
 }
-nonisolated final class GalleryVaultStagingItem {
+nonisolated final class GalleryVaultStagingItem: @unchecked Sendable {
     let id: UUID; var writers: [UUID: GalleryVaultResourceWriter] = [:]
     init(_ id: UUID) { self.id = id }
     func writer(resourceID: UUID) throws -> GalleryVaultResourceWriter { let w = GalleryVaultResourceWriter(resourceID); writers[resourceID] = w; return w }
@@ -284,6 +284,11 @@ nonisolated final class GalleryVaultStagingItem {
                 case .putBack:
                     record.albums.removeAll { $0.id == GalleryVaultRecycleBin.id }
                     durable[record.id] = record
+                case .move(_, let sourceID, let destination):
+                    guard !GalleryVaultRecycleBin.contains(record) else { throw GalleryVaultTransferError.invalidVaultDestination }
+                    if let sourceID, !record.albums.contains(where: { $0.id == sourceID }) { throw GalleryVaultTransferError.invalidVaultDestination }
+                    record.albums = Self.destinationAlbums(record.albums, destination: destination, sourceAlbumID: sourceID)
+                    durable[record.id] = record
                 case .delete:
                     guard GalleryVaultRecycleBin.contains(record) else { throw GalleryVaultTransferError.notInRecycleBin }
                     durable.removeValue(forKey: record.id)
@@ -295,6 +300,10 @@ nonisolated final class GalleryVaultStagingItem {
             }
         }
     }
+    func finishTransferBatch() async -> Set<UUID> { endBatch(); return Set(durable.keys) }
+    func createItemForTransfer(id: UUID) async throws -> GalleryVaultStagingItem { try createItem(id: id) }
+    func commitTransfer(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem, sourceAlbums: [GalleryVaultAlbum]? = nil) async throws { try commit(record, from: item, sourceAlbums: sourceAlbums) }
+    func updateTransfer(_ record: GalleryVaultRecord, sourceAlbums: [GalleryVaultAlbum]? = nil) async throws { try update(record); if let sourceAlbums { sourceParents[record.id] = sourceAlbums } }
     func createItem(id: UUID) throws -> GalleryVaultStagingItem { guard isUnlocked else { throw GalleryVaultTransferError.locked }; return GalleryVaultStagingItem(id) }
     func commit(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem, sourceAlbums: [GalleryVaultAlbum]? = nil) throws { guard isUnlocked else { throw GalleryVaultTransferError.locked }; if failCommitSource == record.sourceIdentifier { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }; for (id,w) in item.writers { blobs[id] = w.bytes }; durable[record.id] = record; sourceParents[record.id] = sourceAlbums }
     nonisolated static func destinationAlbums(_ original: [GalleryVaultAlbum], destination: GalleryVaultAlbum, sourceAlbumID: String?) -> [GalleryVaultAlbum] {
@@ -324,4 +333,15 @@ nonisolated final class GalleryVaultStagingItem {
     func verifyCommitted(id: UUID) async throws -> GalleryVaultRecord { guard isUnlocked, let r = durable[id] else { throw GalleryVaultTransferError.locked }; if failVerifyIDs.contains(id) { throw FakeError.injected }; return r }
     func decryptResource(recordID: UUID, resourceID: UUID) async throws -> URL { guard let data = blobs[resourceID] else { throw GalleryVaultTransferError.missingResources }; let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try data.write(to: url); return url }
     func releasePlaintext(_ url: URL) { try? FileManager.default.removeItem(at: url) }
+}
+
+// Transfer tests observe history separately; its persistence contract has its own harness.
+@MainActor final class GalleryMoveHistory {
+    static let shared = GalleryMoveHistory()
+    func recordSuccessfulVaultMove(to albumID: String) {}
+}
+
+// The transfer harness does not render indexes; preserve the service publication contract.
+nonisolated struct GalleryVaultIndex: Sendable {
+    static func fromPhotoLibrary(records: [GalleryVaultRecord]) -> GalleryVaultIndex { GalleryVaultIndex() }
 }

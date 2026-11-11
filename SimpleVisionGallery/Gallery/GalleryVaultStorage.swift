@@ -405,6 +405,16 @@ final class GalleryVaultStorage: ObservableObject {
             changed = false
         }
     }
+    // Private metadata in detached writes is erased by the session's lock barrier.
+    private nonisolated final class TransferWriteState: @unchecked Sendable {
+        var record: GalleryVaultRecord?
+        var sourceAlbums: [GalleryVaultAlbum]?
+        init(record: GalleryVaultRecord, sourceAlbums: [GalleryVaultAlbum]? = nil) {
+            self.record = record
+            self.sourceAlbums = sourceAlbums
+        }
+        func clear() { record = nil; sourceAlbums = nil }
+    }
     private nonisolated struct MutationBatch: Sendable {
         let outcomes: [MutationOutcome]
         let recordsByID: [UUID: GalleryVaultRecord]
@@ -418,6 +428,7 @@ final class GalleryVaultStorage: ObservableObject {
     private nonisolated static let manifestAAD = Data("SVGManifest1".utf8)
     private var idsBySource: [String: UUID] = [:]
     private var batchDepth = 0
+    private var transferBatchChangedIDs = Set<UUID>()
     private var recordsChanged = false
     private var session: GalleryVaultSession?
     private var generation = UUID()
@@ -527,6 +538,7 @@ final class GalleryVaultStorage: ObservableObject {
         preloadManifest()
         idsBySource.removeAll(keepingCapacity: false)
         batchDepth = 0
+        transferBatchChangedIDs.removeAll()
         recordsChanged = false
         mutationRevision = 0
         NotificationCenter.default.post(name: .galleryVaultWillLock, object: nil)
@@ -542,6 +554,74 @@ final class GalleryVaultStorage: ObservableObject {
         try Self.prepareDirectory(directory)
         try Self.syncDirectory(staging)
         return GalleryVaultStagingItem(id: id, directory: directory, session: session)
+    }
+
+    /// Create and sync the staging directory off the UI actor under the current vault session.
+    func createItemForTransfer(id: UUID) async throws -> GalleryVaultStagingItem {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        let expectedGeneration = generation
+        let directory = staging.appendingPathComponent(id.uuidString, isDirectory: true)
+        let destination = itemURL(id)
+        let stagingDirectory = staging
+        let item = try await Task.detached(priority: .userInitiated) {
+            try session.withKey { _ in
+                guard !FileManager.default.fileExists(atPath: directory.path),
+                      !FileManager.default.fileExists(atPath: destination.path) else {
+                    throw GalleryVaultStorageError.duplicateItem
+                }
+                try Self.prepareDirectory(directory)
+                try Self.syncDirectory(stagingDirectory)
+                return GalleryVaultStagingItem(id: id, directory: directory, session: session)
+            }
+        }.value
+        guard generation == expectedGeneration, isUnlocked, self.session === session else {
+            await Task.detached { item.discard() }.value
+            throw GalleryVaultStorageError.locked
+        }
+        return item
+    }
+
+    /// Seal and atomically publish a verified staging item off the UI actor while retaining a revocable session.
+    func commitTransfer(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem,
+                        sourceAlbums: [GalleryVaultAlbum]? = nil) async throws {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        guard record.id == item.id, item.belongs(to: session), record.state == .copiedAwaitingDeletion,
+              !record.resources.isEmpty, Set(record.resources.map(\.id)).count == record.resources.count,
+              item.verifiedResources() == Set(record.resources.map(\.id)) else {
+            throw GalleryVaultStorageError.incompleteItem
+        }
+        let expectedGeneration = generation
+        let itemDirectory = item.directory
+        let destination = itemURL(record.id)
+        let parent = items
+        let state = TransferWriteState(record: record, sourceAlbums: sourceAlbums)
+        try session.attachMutationState { state.clear() }
+        defer { session.detachMutationState() }
+        // Complete the encrypted journal and rename under the lease before indexing the record.
+        let outcome: (Date?, Error?) = try await Task.detached(priority: .userInitiated) {
+            try session.withKey { key in
+                guard let record = state.record else { throw GalleryVaultStorageError.locked }
+                guard !FileManager.default.fileExists(atPath: destination.path) else { throw GalleryVaultStorageError.duplicateItem }
+                if let sourceAlbums = state.sourceAlbums { try Self.writeSourceAlbums(sourceAlbums, in: itemDirectory, id: record.id, key: key) }
+                try Self.writeRecord(record, in: itemDirectory, key: key)
+                try Self.syncDirectory(itemDirectory)
+                guard rename(itemDirectory.path, destination.path) == 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+                let date = try? Self.recordDate(destination)
+                do { try Self.syncDirectory(parent); return (date, nil) }
+                catch { return (date, error) }
+            }
+        }.value
+        guard generation == expectedGeneration, isUnlocked, self.session === session else { throw GalleryVaultStorageError.locked }
+        // A renamed copy stays indexed even when its final directory sync failed.
+        recordsByID[record.id] = record
+        idsBySource[record.sourceIdentifier] = record.id
+        recordDates[record.id] = outcome.0
+        transferBatchChangedIDs.insert(record.id)
+        manifestDirty = true
+        publishChangesIfNeeded()
+        if let error = outcome.1 { throw error }
     }
 
     func commit(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem, sourceAlbums: [GalleryVaultAlbum]? = nil) throws {
@@ -672,12 +752,10 @@ final class GalleryVaultStorage: ObservableObject {
 
     func setDestination(_ destination: GalleryVaultAlbum, sourceAlbumID: String?, for record: GalleryVaultRecord) async throws -> GalleryVaultRecord {
         let original = try await sourceAlbums(for: record)
-        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
         // Preserve the source version separately from the chosen restore memberships.
-        try Self.writeSourceAlbums(original, in: itemURL(record.id), id: record.id, session: session)
         var updated = record
         updated.albums = Self.destinationAlbums(original, destination: destination, sourceAlbumID: sourceAlbumID)
-        try update(updated)
+        try await updateTransfer(updated, sourceAlbums: original)
         return updated
     }
 
@@ -685,6 +763,35 @@ final class GalleryVaultStorage: ObservableObject {
         var albums = original.filter { $0.id != sourceAlbumID && $0.id != destination.id }
         albums.append(destination)
         return albums
+    }
+
+    /// Persist transfer journal updates off the UI actor and publish them only for the same unlocked session.
+    func updateTransfer(_ record: GalleryVaultRecord, sourceAlbums: [GalleryVaultAlbum]? = nil) async throws {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        guard let previous = recordsByID[record.id] else { throw GalleryVaultStorageError.corruptRecord }
+        let expectedGeneration = generation
+        let directory = itemURL(record.id)
+        let state = TransferWriteState(record: record, sourceAlbums: sourceAlbums)
+        try session.attachMutationState { state.clear() }
+        defer { session.detachMutationState() }
+        // Write and sync the encrypted journal under a revocable lease before updating the index.
+        let date = try await Task.detached(priority: .userInitiated) {
+            try session.withKey { key in
+                guard let record = state.record else { throw GalleryVaultStorageError.locked }
+                if let sourceAlbums = state.sourceAlbums { try Self.writeSourceAlbums(sourceAlbums, in: directory, id: record.id, key: key) }
+                try Self.writeRecord(record, in: directory, key: key)
+                try Self.syncDirectory(directory)
+                return try? Self.recordDate(directory)
+            }
+        }.value
+        guard generation == expectedGeneration, isUnlocked, self.session === session else { throw GalleryVaultStorageError.locked }
+        if previous.sourceIdentifier != record.sourceIdentifier { idsBySource.removeValue(forKey: previous.sourceIdentifier) }
+        recordsByID[record.id] = record
+        idsBySource[record.sourceIdentifier] = record.id
+        recordDates[record.id] = date
+        transferBatchChangedIDs.insert(record.id)
+        manifestDirty = true
+        publishChangesIfNeeded()
     }
 
     func update(_ record: GalleryVaultRecord) throws {
@@ -696,6 +803,7 @@ final class GalleryVaultStorage: ObservableObject {
         recordsByID[record.id] = record
         idsBySource[record.sourceIdentifier] = record.id
         recordDates[record.id] = try? Self.recordDate(itemURL(record.id))
+        if batchDepth > 0 { transferBatchChangedIDs.insert(record.id) }
         manifestDirty = true
         publishChangesIfNeeded()
     }
@@ -708,6 +816,7 @@ final class GalleryVaultStorage: ObservableObject {
         try Self.syncDirectory(items)
         if let old = recordsByID.removeValue(forKey: id) { idsBySource.removeValue(forKey: old.sourceIdentifier) }
         recordDates.removeValue(forKey: id)
+        if batchDepth > 0 { transferBatchChangedIDs.insert(id) }
         manifestDirty = true
         publishChangesIfNeeded()
     }
@@ -759,6 +868,20 @@ final class GalleryVaultStorage: ObservableObject {
                                 do { try Self.syncDirectory(directory) } catch { durabilityWarning = GalleryVaultMutationWarning.directorySyncUnconfirmed }
                                 itemChanged = true
                             }
+                        case .move(_, let sourceID, let destination):
+                            guard !GalleryVaultRecycleBin.contains(record),
+                                  destination.id != GalleryVaultRecycleBin.id,
+                                  !GalleryRecycleBin.isRecycleBinTitle(destination.title) else {
+                                throw GalleryVaultTransferError.invalidVaultDestination
+                            }
+                            if let sourceID, !record.albums.contains(where: { $0.id == sourceID }) {
+                                throw NSError(domain: "GalleryVaultMove", code: 1,
+                                    userInfo: [NSLocalizedDescriptionKey: "This item is no longer in the source album."])
+                            }
+                            record.albums = Self.destinationAlbums(record.albums, destination: destination, sourceAlbumID: sourceID)
+                            try Self.writeRecord(record, in: directory, key: key)
+                            do { try Self.syncDirectory(directory) } catch { durabilityWarning = GalleryVaultMutationWarning.directorySyncUnconfirmed }
+                            itemChanged = true
                         case .delete:
                             guard GalleryVaultRecycleBin.contains(record) else {
                                 throw GalleryVaultTransferError.notInRecycleBin
@@ -854,7 +977,44 @@ final class GalleryVaultStorage: ObservableObject {
         idsBySource[sourceIdentifier].flatMap { recordsByID[$0] }
     }
 
-    func beginBatch() { batchDepth += 1 }
+    func beginBatch() {
+        if batchDepth == 0 { transferBatchChangedIDs.removeAll() }
+        batchDepth += 1
+    }
+
+    /// Sort and seal the completed transfer snapshot off the UI actor before publishing it.
+    func finishTransferBatch() async -> Set<UUID> {
+        guard batchDepth == 1, recordsChanged, let session, isUnlocked else {
+            endBatch()
+            return []
+        }
+        let expectedGeneration = generation
+        let state = MutationBatchState(mutations: [], recordsByID: recordsByID,
+            idsBySource: idsBySource, recordDates: recordDates)
+        do { try session.attachMutationState { state.clear() } }
+        catch { endBatch(); return [] }
+        // Sort and encrypt the snapshot under the session so no plaintext batch survives lock.
+        await Task.detached(priority: .userInitiated) {
+            try? session.withKey { key in
+                state.sortedRecords = Self.sortedRecords(Array(state.recordsByID.values))
+                let entries = state.recordsByID.values.compactMap { record in
+                    state.recordDates[record.id].map { ManifestEntry(record: record, date: $0) }
+                }
+                if let plain = try? JSONEncoder().encode(entries) {
+                    state.manifestCiphertext = try? AES.GCM.seal(plain, using: key, authenticating: Self.manifestAAD).combined
+                }
+            }
+        }.value
+        guard generation == expectedGeneration, isUnlocked, self.session === session else { return [] }
+        session.detachMutationState()
+        batchDepth -= 1
+        records = state.sortedRecords
+        recordsChanged = false
+        let changed = transferBatchChangedIDs
+        transferBatchChangedIDs.removeAll()
+        if let bytes = state.manifestCiphertext { saveManifestCiphertext(bytes) }
+        return changed
+    }
     func endBatch() {
         guard batchDepth > 0 else { return }
         batchDepth -= 1
@@ -938,6 +1098,26 @@ final class GalleryVaultStorage: ObservableObject {
             .appendingPathComponent(recordID.uuidString + "-" + resourceID.uuidString + ".enc")
     }
 
+    /// The encrypted file is an upper bound for the temporary decrypted lease.
+    func speculativeResourceSpace(recordID: UUID, resourceID: UUID) async throws -> (Int64, Int64) {
+        guard isUnlocked, recordsByID[recordID]?.resources.contains(where: { $0.id == resourceID }) == true else {
+            throw GalleryVaultStorageError.locked
+        }
+        let expectedGeneration = generation
+        let input = itemURL(recordID).appendingPathComponent(resourceID.uuidString + ".bin")
+        let result = try await Task.detached(priority: .utility) {
+            let attributes = try FileManager.default.attributesOfItem(atPath: input.path)
+            guard let bytes = (attributes[.size] as? NSNumber)?.int64Value,
+                  let available = try input.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                    .volumeAvailableCapacityForImportantUsage else {
+                throw GalleryVaultStorageError.incompleteItem
+            }
+            return (bytes, available)
+        }.value
+        guard isUnlocked, generation == expectedGeneration else { throw GalleryVaultStorageError.locked }
+        return result
+    }
+
     func decryptResource(recordID: UUID, resourceID: UUID) async throws -> URL {
         guard let session, isUnlocked, let resource = recordsByID[recordID]?.resources.first(where: { $0.id == resourceID }) else {
             throw GalleryVaultStorageError.locked
@@ -970,7 +1150,7 @@ final class GalleryVaultStorage: ObservableObject {
         let expectedGeneration = generation
         let directory = itemURL(id)
         let itemParent = items
-        let record = try await Task.detached {
+        let (record, date) = try await Task.detached {
             let record = try Self.readRecord(in: directory, id: id, session: session)
             guard !record.resources.isEmpty, Set(record.resources.map(\.id)).count == record.resources.count else {
                 throw GalleryVaultStorageError.incompleteItem
@@ -986,14 +1166,15 @@ final class GalleryVaultStorage: ObservableObject {
             try Self.syncDirectory(directory)
             try Self.syncDirectory(itemParent)
             try session.withKey { _ in () }
-            return record
+            return (record, try? Self.recordDate(directory))
         }.value
         guard generation == expectedGeneration, isUnlocked else { throw GalleryVaultStorageError.locked }
         if let old = recordsByID[id], old.sourceIdentifier != record.sourceIdentifier {
             idsBySource.removeValue(forKey: old.sourceIdentifier)
         }
         if recordsByID[id] != record {
-            recordDates[id] = try? Self.recordDate(directory)
+            recordDates[id] = date
+            transferBatchChangedIDs.insert(id)
             manifestDirty = true
         }
         recordsByID[id] = record
@@ -1002,11 +1183,17 @@ final class GalleryVaultStorage: ObservableObject {
         return record
     }
 
-    func releasePlaintext(_ url: URL) {
-        guard url.deletingLastPathComponent().standardizedFileURL == plaintext.standardizedFileURL else { return }
-        do { try FileManager.default.removeItem(at: url) }
+    @discardableResult
+    func releasePlaintext(_ url: URL) -> Bool {
+        guard url.deletingLastPathComponent().standardizedFileURL == plaintext.standardizedFileURL else { return false }
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        }
         catch {
-            if !Self.isMissingFile(error) { cleanupWarning = Self.cleanupMessage }
+            if Self.isMissingFile(error) { return true }
+            cleanupWarning = Self.cleanupMessage
+            return false
         }
     }
 
@@ -1056,19 +1243,20 @@ final class GalleryVaultStorage: ObservableObject {
     }
 
     private nonisolated static func writeSourceAlbums(_ albums: [GalleryVaultAlbum], in directory: URL, id: UUID, session: GalleryVaultSession) throws {
+        try session.withKey { key in try writeSourceAlbums(albums, in: directory, id: id, key: key) }
+    }
+
+    private nonisolated static func writeSourceAlbums(_ albums: [GalleryVaultAlbum], in directory: URL, id: UUID, key: SymmetricKey) throws {
         let aad = Data((id.uuidString + ".source-albums").utf8)
-        let bytes = try session.withKey { key in
-            try AES.GCM.seal(JSONEncoder().encode(albums), using: key, authenticating: aad).combined
+        guard let bytes = try AES.GCM.seal(JSONEncoder().encode(albums), using: key, authenticating: aad).combined else {
+            throw GalleryVaultStorageError.corruptRecord
         }
-        guard let bytes else { throw GalleryVaultStorageError.corruptRecord }
         let url = directory.appendingPathComponent("source-albums.enc")
         try bytes.write(to: url, options: [.atomic, .completeFileProtection])
         try syncFile(url)
         let stored = try Data(contentsOf: url)
-        let verified = try session.withKey { key in
-            try JSONDecoder().decode([GalleryVaultAlbum].self,
-                from: AES.GCM.open(AES.GCM.SealedBox(combined: stored), using: key, authenticating: aad))
-        }
+        let verified = try JSONDecoder().decode([GalleryVaultAlbum].self,
+            from: AES.GCM.open(AES.GCM.SealedBox(combined: stored), using: key, authenticating: aad))
         guard verified == albums else { throw GalleryVaultStorageError.corruptRecord }
         try syncDirectory(directory)
     }

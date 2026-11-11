@@ -69,6 +69,10 @@ struct GalleryViewerWindowRoot: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.pushWindow) private var pushWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @AppStorage(GalleryViewerPreferences.pairedYawKey)
+    private var pairedYaw = GalleryViewerPreferences.defaultPairedYaw
+    @AppStorage(GalleryViewerPreferences.pairedPitchKey)
+    private var pairedPitch = GalleryViewerPreferences.defaultPairedPitch
     @State private var moreSessionID: UUID?
     @State private var morePopoverCovered = false
     @State private var moveTarget: GalleryViewerMoveTarget?
@@ -133,7 +137,8 @@ struct GalleryViewerWindowRoot: View {
                                 width: paneWidth,
                                 minimumMediaHeight: minimumMediaHeight,
                                 backingYaw: value.sessionIDs.count == 2
-                                    ? (sessionID == value.sessionIDs.first ? 10 : -10) : 0,
+                                    ? (sessionID == value.sessionIDs.first ? pairedYaw : -pairedYaw) : 0,
+                                backingPitch: paired ? pairedPitch : 0,
                                 ornamentAnchor: value.sessionIDs.count == 2
                                     ? UnitPoint3D(x: sessionID == value.sessionIDs.first ? 0.25 : 0.75, y: 1, z: 0.5)
                                     : .bottom,
@@ -300,6 +305,7 @@ private struct GalleryViewerPane: View {
     let width: CGFloat
     let minimumMediaHeight: CGFloat
     let backingYaw: Double
+    let backingPitch: Double
     let ornamentAnchor: UnitPoint3D
     let canArrange: Bool
     let arrange: () -> Void
@@ -377,7 +383,7 @@ private struct GalleryViewerPane: View {
                     .frame(width: width, height: geometry.size.height)
                     .background {
                         GalleryViewerBacking(aspectRatio: media.player == nil ? media.aspectRatio : nil,
-                            yawDegrees: backingYaw, showsMatte: media.imageEntity == nil)
+                            yawDegrees: backingYaw, pitchDegrees: backingPitch, showsMatte: media.imageEntity == nil)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .contentShape(Rectangle())
@@ -409,7 +415,7 @@ private struct GalleryViewerPane: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("gallery-viewer-delete-pending-count")
                     }
-                    if deleteQueue.photosUnresponsive || store.pendingPhotosSessionID == session.id {
+                    if deleteQueue.photosUnresponsive {
                         Text("Photos hasn’t responded yet. The operation remains pending.")
                             .font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("gallery-viewer-photos-pending")
@@ -531,11 +537,10 @@ private struct GalleryViewerPane: View {
                     .disabled(session.count < 2)
                     if let asset = session.currentAsset {
                         Button("Move to Private Vault", systemImage: "lock") {
-                            guard !store.isPerformingOperation, !vault.isBusy else { return }
                             moreSessionID = nil
-                            vaultTransfer = .items([asset])
+                            vaultTransfer = .queuedItem(asset, destination: nil,
+                                sourceAlbumID: session.sourceAlbumID, sessionID: session.id)
                         }
-                        .disabled(store.isPerformingOperation || vault.isBusy)
                     }
                     if let record = session.currentItem?.vaultRecord {
                         if GalleryVaultRecycleBin.contains(record) {
@@ -617,7 +622,8 @@ private struct GalleryViewerPane: View {
                 .tint(.white).foregroundStyle(.white)
         } else if let player = media.player, media.error == nil {
             if media.isSpatialVideo {
-                GallerySpatialVideoView(player: player, initialYawDegrees: Float(backingYaw))
+                GallerySpatialVideoView(player: player, initialYawDegrees: Float(backingYaw),
+                    initialPitchDegrees: Float(backingPitch))
             } else {
                 GalleryNativeVideoPlayer(player: player)
             }
@@ -625,7 +631,8 @@ private struct GalleryViewerPane: View {
             Image(uiImage: image).resizable().scaledToFit()
                 .frame(width: width, height: height)
         } else if let entity = media.imageEntity {
-            GalleryRealityImage(entity: entity, initialYawDegrees: Float(backingYaw))
+            GalleryRealityImage(entity: entity, initialYawDegrees: Float(backingYaw),
+                initialPitchDegrees: Float(backingPitch))
         } else {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle").font(.largeTitle)
@@ -703,7 +710,7 @@ private struct GalleryViewerPane: View {
                             sourceAlbumID: session.sourceAlbumID)
                     }
                 } label: { Label("Move", systemImage: "arrowshape.turn.up.right") }
-                .disabled(session.currentItem == nil || store.isPerformingOperation || (isVaultItem && vault.isBusy))
+                .disabled(session.currentItem == nil)
                 .accessibilityIdentifier("gallery-viewer-move")
             }
 
@@ -826,6 +833,10 @@ private struct GalleryViewerMoveSheet: View {
             .filter { !GalleryRecycleBin.isRecycleBin($0) }
     }
 
+    private var recentVaultDestinations: [GalleryVaultAlbum] {
+        GalleryMoveHistory.shared.recentVaultAlbums(from: vaultDestinations, excluding: sourceAlbumID)
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -838,31 +849,37 @@ private struct GalleryViewerMoveSheet: View {
                             chooseVaultAlbum(vaultDestinations.first { $0.title == name }
                                 ?? GalleryVaultAlbum(id: "vault-album:" + UUID().uuidString, title: name, position: nil))
                         } else {
-                            performMove { try await store.move(sessionID, toNewAlbumNamed: name, expectedAssetID: assetID) }
+                            queueMove(.moveToPhotos(destinationID: nil, newName: name))
                         }
                     }
                     .accessibilityIdentifier("gallery-viewer-create-vault-album")
-                    .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPerformingOperation
-                        || (showingVaultDestinations && vault.isBusy)
-                        || (showingVaultDestinations && GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines))))
+                    .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)))
                 }
                 if !showingVaultDestinations, query.isEmpty, !recentDestinations.isEmpty {
                     Section("Recent destinations") {
                         ForEach(recentDestinations) { album in
                             Button(album.title) {
-                                performMove { try await store.move(sessionID, to: album, expectedAssetID: assetID) }
+                                queueMove(.moveToPhotos(destinationID: album.id, newName: nil))
                             }
-                            .disabled(store.isPerformingOperation)
+                        }
+                    }
+                }
+                if showingVaultDestinations, query.isEmpty, !recentVaultDestinations.isEmpty {
+                    Section("Recent destinations") {
+                        ForEach(recentVaultDestinations, id: \.id) { album in
+                            Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
                         }
                     }
                 }
                 Section("Move to album") {
                     if showingVaultDestinations {
                         if vault.isUnlocked {
-                            ForEach(vaultDestinations.filter { query.isEmpty || $0.title.localizedStandardContains(query) }, id: \.id) { album in
+                            ForEach(vaultDestinations.filter { album in
+                                album.id != sourceAlbumID && (query.isEmpty ? !recentVaultDestinations.contains(where: { $0.id == album.id }) : album.title.localizedStandardContains(query))
+                            }, id: \.id) { album in
                                 Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
                                     .accessibilityIdentifier("gallery-viewer-move-vault-destination-" + album.id)
-                                    .disabled(vault.isBusy)
                             }
                             if vaultDestinations.isEmpty { Text("Create a Private Vault album above.") }
                         } else {
@@ -870,19 +887,16 @@ private struct GalleryViewerMoveSheet: View {
                         }
                     } else { ForEach(destinations) { album in
                         Button(album.title) {
-                            performMove { try await store.move(sessionID, to: album, expectedAssetID: assetID) }
+                            queueMove(.moveToPhotos(destinationID: album.id, newName: nil))
                         }
-                        .disabled(store.isPerformingOperation)
                     }
                 }
                 }
                 if !showingVaultDestinations { Section("Current album") {
                     Button("Remove from Album", systemImage: "minus.circle") {
-                        performMove {
-                            try await store.removeFromSourceAlbum(sessionID: sessionID, expectedAssetID: assetID)
-                        }
+                        queueMove(.removeFromAlbum)
                     }
-                    .disabled(!canRemoveFromSource || store.isPerformingOperation)
+                    .disabled(!canRemoveFromSource)
                     .accessibilityIdentifier("gallery-viewer-remove-from-album")
                 }
                 }
@@ -893,22 +907,11 @@ private struct GalleryViewerMoveSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
-            .overlay {
-                if store.isPerformingOperation {
-                    VStack(spacing: 12) {
-                        ProgressView("Moving…")
-                        if store.pendingPhotosSessionID == sessionID {
-                            Text("Photos hasn’t responded yet. This operation is still pending.")
-                                .accessibilityIdentifier("gallery-viewer-photos-pending")
-                        }
-                    }.padding(24).glassBackgroundEffect()
-                }
-            }
         }
         .frame(width: 500, height: 550)
         .task { await store.refreshAlbums() }
-        .task(id: vault.isUnlocked && !vault.isBusy) {
-            guard vault.isUnlocked, !vault.isBusy else { return }
+        .task(id: vault.isUnlocked) {
+            guard vault.isUnlocked else { return }
             let destinations = await vault.albumDestinations()
             guard vault.isUnlocked, !Task.isCancelled else { return }
             vaultDestinations = destinations
@@ -919,22 +922,24 @@ private struct GalleryViewerMoveSheet: View {
     }
 
     private func chooseVaultAlbum(_ album: GalleryVaultAlbum) {
-        if let vaultRecordID {
-            guard vault.isUnlocked else { return }
-            performMove { try await vault.move(recordID: vaultRecordID, from: sourceAlbumID, to: album) }
+        guard vault.isUnlocked else { return }
+        if vaultRecordID != nil {
+            queueMove(.moveToVault(id: album.id, epoch: vault.authEpoch, sourceAlbumID: sourceAlbumID), vaultDestination: album)
             return
         }
-        guard vault.isUnlocked, let session = store.session(sessionID),
+        guard let session = store.session(sessionID),
               let asset = session.currentAsset, asset.localIdentifier == assetID else { return }
-        moveToVault(.items([asset], destination: album, sourceAlbumID: session.sourceAlbumID))
+        moveToVault(.queuedItem(asset, destination: album, sourceAlbumID: sourceAlbumID, sessionID: sessionID))
         dismiss()
     }
 
-    private func performMove(_ action: @escaping @MainActor () async throws -> Void) {
-        Task {
-            do { try await action(); dismiss() }
-            catch let failure { self.error = failure.localizedDescription }
+    private func queueMove(_ action: GalleryDeleteAction, vaultDestination: GalleryVaultAlbum? = nil) {
+        guard let item = store.session(sessionID)?.currentItem, item.localIdentifier == assetID else {
+            error = "This item is no longer available."
+            return
         }
+        GalleryDeleteQueue.shared.enqueueMove(item: item, sourceAlbumID: sourceAlbumID, sessionID: sessionID, action: action, vaultDestination: vaultDestination)
+        dismiss()
     }
 
     private var canRemoveFromSource: Bool {
@@ -966,25 +971,32 @@ private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
 struct GalleryRealityImage: View {
     let entity: Entity
     var initialYawDegrees: Float = 0
+    var initialPitchDegrees: Float = 0
 
     var body: some View {
         GeometryReader3D { geometry in
             RealityView { content in
-                // Set the inward angle once when this surface is attached.
-                // Billboarding would erase the parallax when the viewer moves.
+                // Keep orientation fixed between explicit calibration changes.
                 entity.components.remove(BillboardComponent.self)
-                entity.orientation = simd_quatf(angle: initialYawDegrees * .pi / 180, axis: [0, 1, 0])
+                applyOrientation()
                 content.add(entity)
                 fit(content: content, geometry: geometry)
             } update: { content in
                 fit(content: content, geometry: geometry)
             }
             .id(entity.id)
+            .onChange(of: initialYawDegrees) { _, _ in applyOrientation() }
+            .onChange(of: initialPitchDegrees) { _, _ in applyOrientation() }
         }
         // A surrounding 2D GeometryReader proposes zero depth. Retain the
         // native media volume so its surface stays in front of the backing.
         .frame(depth: 540)
         .onDisappear { entity.removeFromParent() }
+    }
+
+    private func applyOrientation() {
+        entity.orientation = GalleryViewerPreferences.pairedOrientation(
+            yawDegrees: initialYawDegrees, pitchDegrees: initialPitchDegrees)
     }
 
     private func fit(content: RealityViewContent, geometry: GeometryProxy3D) {

@@ -36,10 +36,11 @@ nonisolated enum GalleryVaultMutation: Sendable {
     case recycle(UUID)
     case putBack(UUID)
     case delete(UUID)
+    case move(UUID, sourceAlbumID: String?, destination: GalleryVaultAlbum)
 
     var id: UUID {
         switch self {
-        case .recycle(let id), .putBack(let id), .delete(let id): id
+        case .recycle(let id), .putBack(let id), .delete(let id), .move(let id, _, _): id
         }
     }
 }
@@ -71,11 +72,13 @@ nonisolated struct GalleryVaultMutationResult: Sendable {
 @MainActor
 final class GalleryVaultService: ObservableObject {
     static let shared = GalleryVaultService()
+    private var queuedPhotosWaitChanged: (@MainActor (Bool) -> Void)?
     @Published private(set) var isUnlocked = false
     @Published private(set) var authEpoch = UUID()
     @Published private(set) var records: [GalleryVaultRecord] = []
     private(set) var isPublishingQueuedMutations = false
     private(set) var publishingMutationIDs = Set<UUID>()
+    private(set) var publishingVaultIndex: GalleryVaultIndex?
     var publishingMutationRecords: [GalleryVaultRecord] {
         guard isUnlocked else { return [] }
         return publishingMutationIDs.compactMap { storage.record(id: $0) }
@@ -190,12 +193,27 @@ final class GalleryVaultService: ObservableObject {
         try await move(count: assets.count, sourceAlbumID: sourceAlbumID, destination: destination) { assets[$0] }
     }
 
+    /// Finish and publish the transfer batch even on failure so committed encrypted copies remain recoverable.
     private func move(count: Int, sourceAlbumID: String?, destination: GalleryVaultAlbum? = nil, assetAt: (Int) -> PHAsset) async throws -> GalleryVaultTransferOutcome {
         if let destination { try validateDestination(destination) }
         try beginOperation()
         let epoch = authEpoch
         storage.beginBatch()
-        defer { storage.endBatch(); publishIfCurrent(epoch); endOperation() }
+        defer { endOperation() }
+        let result: Result<GalleryVaultTransferOutcome, Error>
+        do {
+            result = .success(try await moveInBatch(count: count, sourceAlbumID: sourceAlbumID,
+                destination: destination, epoch: epoch, assetAt: assetAt))
+        } catch { result = .failure(error) }
+        let changedIDs = await storage.finishTransferBatch()
+        if changedIDs.isEmpty { publishIfCurrent(epoch) }
+        else { await publishQueuedIfCurrent(epoch, mutationIDs: changedIDs) }
+        return try result.get()
+    }
+
+    /// Copy verified resources before asking Photos to delete originals, preserving recoverable partial progress.
+    private func moveInBatch(count: Int, sourceAlbumID: String?, destination: GalleryVaultAlbum?,
+                             epoch: UUID, assetAt: (Int) -> PHAsset) async throws -> GalleryVaultTransferOutcome {
         var candidates: [GalleryVaultRecord] = []
         var copied = 0
         var reused = 0
@@ -236,24 +254,26 @@ final class GalleryVaultService: ObservableObject {
                     if let destination {
                         record.albums = GalleryVaultStorage.destinationAlbums(record.albums, destination: destination, sourceAlbumID: sourceAlbumID)
                     }
-                    let item = try storage.createItem(id: record.id)
+                    let item = try await storage.createItemForTransfer(id: record.id)
                     do {
                         for (resource, descriptor) in zip(prepared.resources, prepared.record.resources) {
                             guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.cancelled }
-                            let writer = try item.writer(resourceID: descriptor.id)
+                            let writer = try await Task.detached(priority: .userInitiated) {
+                                try item.writer(resourceID: descriptor.id)
+                            }.value
                             let stream = GalleryVaultPhotoStream()
                             activeStream = stream
                             try await stream.run(resource: resource, consume: { try writer.append($0) }, finish: { try writer.finish() })
                             activeStream = nil
                         }
                         guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.cancelled }
-                        try storage.commit(record, from: item, sourceAlbums: sourceAlbums)
+                        try await storage.commitTransfer(record, from: item, sourceAlbums: sourceAlbums)
                         // A successful commit already verified the bytes; the source is never touched on a thrown commit.
                         candidates.append(record)
                         copied += 1
                     } catch {
                         activeStream = nil
-                        item.discard()
+                        await Task.detached { item.discard() }.value
                         throw error
                     }
                 }
@@ -273,18 +293,33 @@ final class GalleryVaultService: ObservableObject {
         }
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         let result = try await deleteConfirmed(candidates, epoch: epoch)
+        if let destination, result.deleted > 0, isCurrent(epoch) {
+            GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: destination.id)
+        }
         let detail = [stopMessage, result.message].compactMap { $0 }.joined(separator: " ")
         return .init(copied: copied, deleted: result.deleted, message: detail.isEmpty ? nil : detail,
             reused: reused, notMoved: count - result.deleted, skipped: skipped, editsDiscarded: result.editsDiscarded)
     }
 
     @discardableResult
+    /// Finish pending transfers and publish committed changes even when a later item fails.
     func retryPendingDeletion() async throws -> GalleryVaultTransferOutcome {
         try beginOperation()
         let epoch = authEpoch
         let pending = storage.records.filter { $0.state == .copiedAwaitingDeletion }
         storage.beginBatch()
-        defer { storage.endBatch(); publishIfCurrent(epoch); endOperation() }
+        defer { endOperation() }
+        let outcome: Result<GalleryVaultTransferOutcome, Error>
+        do { outcome = .success(try await retryPendingDeletionInBatch(pending, epoch: epoch)) }
+        catch { outcome = .failure(error) }
+        let changedIDs = await storage.finishTransferBatch()
+        if changedIDs.isEmpty { publishIfCurrent(epoch) }
+        else { await publishQueuedIfCurrent(epoch, mutationIDs: changedIDs) }
+        return try outcome.get()
+    }
+
+    /// Reverify pending copies before Photos deletion while keeping the completed prefix recoverable.
+    private func retryPendingDeletionInBatch(_ pending: [GalleryVaultRecord], epoch: UUID) async throws -> GalleryVaultTransferOutcome {
         var verified: [GalleryVaultRecord] = []
         var skipped: [GalleryVaultSkipReason: Int] = [:]
         var stopped: String?
@@ -338,14 +373,16 @@ final class GalleryVaultService: ObservableObject {
         let deletedIDs = current.map { $0.1.sourceIdentifier }
         for var record in alreadyAbsent {
             record.state = .privateItem
-            try storage.update(record)
+            try await storage.updateTransfer(record)
         }
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
         if !current.isEmpty {
             progress = .init(phase: "Moving from Photos", processed: 0, total: current.count, detail: nil)
             // A single Photos transaction means a batch receives a single system delete confirmation.
-            do { try await GalleryVaultPhotoLibrary.delete(current) }
+            queuedPhotosWaitChanged?(true)
+            do { try await GalleryVaultPhotoLibrary.delete(current); queuedPhotosWaitChanged?(false) }
             catch {
+                queuedPhotosWaitChanged?(false)
                 return (alreadyAbsent.count, "Photos did not delete the originals. Verified vault copies were kept; you can retry. \(error.localizedDescription)", 0)
             }
             guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
@@ -354,7 +391,7 @@ final class GalleryVaultService: ObservableObject {
             let deletedSet = Set(deletedIDs)
             for var record in candidates where deletedSet.contains(record.sourceIdentifier) {
                 record.state = .privateItem
-                try storage.update(record)
+                try await storage.updateTransfer(record)
             }
         }
         if !alreadyAbsent.isEmpty {
@@ -453,6 +490,7 @@ final class GalleryVaultService: ObservableObject {
         updated.albums = GalleryVaultStorage.destinationAlbums(record.albums,
             destination: destination, sourceAlbumID: sourceAlbumID)
         try storage.update(updated)
+        GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: destination.id)
     }
 
     // Serialize queued mutations and publish only while their captured authorization remains valid.
@@ -469,7 +507,7 @@ final class GalleryVaultService: ObservableObject {
         let revision = storage.mutationRevision
         let results = await storage.applyMutations(mutations)
         if storage.mutationRevision != revision {
-            publishIfCurrent(epoch, queuedMutationIDs: Set(results.filter { $0.error == nil }.map(\.id)))
+            await publishQueuedIfCurrent(epoch, mutationIDs: Set(results.filter { $0.error == nil }.map(\.id)))
         }
         return results
     }
@@ -478,6 +516,15 @@ final class GalleryVaultService: ObservableObject {
         let result = await applyQueuedMutations([mutation], epoch: epoch)[0]
         if let error = result.error { throw error }
         if let warning = result.warning { self.error = warning.localizedDescription }
+    }
+
+    func moveQueuedToVault(asset: PHAsset, destination: GalleryVaultAlbum?, sourceAlbumID: String?, epoch: UUID,
+                           onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async throws -> GalleryVaultTransferOutcome {
+        await waitForIdle(epoch: epoch)
+        guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+        queuedPhotosWaitChanged = onPhotosWaitChanged
+        defer { queuedPhotosWaitChanged = nil; onPhotosWaitChanged(false) }
+        return try await moveToVault(assets: [asset], destination: destination, sourceAlbumID: sourceAlbumID)
     }
 
     private func waitForIdle(epoch: UUID) async {
@@ -497,11 +544,23 @@ final class GalleryVaultService: ObservableObject {
               !GalleryRecycleBin.isRecycleBinTitle(destination.title) else { throw GalleryVaultTransferError.invalidVaultDestination }
     }
 
+    /// Publish both successful and partial restores through the shared off-main batch preparation.
     func restore(recordIDs: [UUID], omittingUnavailableAlbums: Bool = false) async throws {
         try beginOperation()
         let epoch = authEpoch
         storage.beginBatch()
-        defer { storage.endBatch(); publishIfCurrent(epoch); endOperation() }
+        defer { endOperation() }
+        let result: Result<Void, Error>
+        do { try await restoreInBatch(recordIDs: recordIDs, epoch: epoch, omittingUnavailableAlbums: omittingUnavailableAlbums); result = .success(()) }
+        catch { result = .failure(error) }
+        let changedIDs = await storage.finishTransferBatch()
+        if changedIDs.isEmpty { publishIfCurrent(epoch) }
+        else { await publishQueuedIfCurrent(epoch, mutationIDs: changedIDs) }
+        try result.get()
+    }
+
+    /// Restore verified resources in order, preserving a journal for interrupted or failed imports.
+    private func restoreInBatch(recordIDs: [UUID], epoch: UUID, omittingUnavailableAlbums: Bool) async throws {
         for (index, id) in recordIDs.enumerated() {
             guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
             guard !wantsCancel else { throw GalleryVaultTransferError.cancelled }
@@ -880,11 +939,28 @@ final class GalleryVaultService: ObservableObject {
         wakeOperationWaiters()
     }
     private func isCurrent(_ epoch: UUID) -> Bool { isUnlocked && authEpoch == epoch }
-    private func publishIfCurrent(_ epoch: UUID, queuedMutationIDs: Set<UUID>? = nil) {
+    /// Prepare one shared value before publication; a stale generation must never reveal data after lock.
+    private func publishQueuedIfCurrent(_ epoch: UUID, mutationIDs: Set<UUID>) async {
+        while isCurrent(epoch) {
+            let revision = storage.mutationRevision
+            let snapshot = storage.records
+            let index = await Task.detached(priority: .userInitiated) {
+                GalleryVaultIndex.fromPhotoLibrary(records: snapshot)
+            }.value
+            guard isCurrent(epoch) else { return }
+            guard storage.mutationRevision == revision else { continue }
+            publishIfCurrent(epoch, queuedMutationIDs: mutationIDs, preparedIndex: index)
+            return
+        }
+    }
+
+    private func publishIfCurrent(_ epoch: UUID, queuedMutationIDs: Set<UUID>? = nil,
+                                  preparedIndex: GalleryVaultIndex? = nil) {
         guard isCurrent(epoch), queuedMutationIDs != nil || records != storage.records else { return }
         isPublishingQueuedMutations = queuedMutationIDs != nil
         publishingMutationIDs = queuedMutationIDs ?? []
-        defer { isPublishingQueuedMutations = false; publishingMutationIDs.removeAll() }
+        publishingVaultIndex = preparedIndex
+        defer { isPublishingQueuedMutations = false; publishingMutationIDs.removeAll(); publishingVaultIndex = nil }
         records = storage.records
     }
 

@@ -22,6 +22,29 @@ import CoreLocation
     @MainActor static func main() async throws {
         let service = GalleryVaultService.shared
         do {
+            let items = try await start(["queued"])
+            var waits: [Bool] = []
+            var beganAfterCopy = false
+            let result = try await service.moveQueuedToVault(asset: items[0], destination: nil, sourceAlbumID: "album", epoch: service.authEpoch) { waiting in
+                waits.append(waiting)
+                if waiting { beganAfterCopy = !GalleryVaultStorage.shared.durable.isEmpty && FakePhotos.deleteCalls.isEmpty }
+            }
+            precondition(result.deleted == 1 && waits == [true, false, false] && beganAfterCopy,
+                "watchdog must start after encrypted copy and bracket the Photos delete")
+            precondition(Set(service.records.first!.albums.map(\.id)) == Set(["album", "other"]),
+                "no-destination move must keep all source memberships")
+            print("PASS queued transfer preserves parent albums and brackets Photos wait")
+        }
+        do {
+            let items = try await start(["reject"])
+            FakePhotos.failDelete = true
+            var waits: [Bool] = []
+            let result = try await service.moveQueuedToVault(asset: items[0], destination: nil, sourceAlbumID: nil, epoch: service.authEpoch) { waits.append($0) }
+            precondition(result.deleted == 0 && FakePhotos.assets["reject"] != nil && waits == [true, false, false],
+                "Photos failure must clear the watchdog and keep the original")
+            print("PASS queued transfer clears watchdog on Photos rejection")
+        }
+        do {
             let items = try await start(["a", "b", "c", "d"])
             FakePhotos.failCopyID = "c"
             let result = try await service.moveToVault(assets: items)
