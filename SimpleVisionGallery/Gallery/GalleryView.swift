@@ -112,9 +112,9 @@ struct GalleryView: View {
         }
         .alert(item: $deletionReview) { review in
             Alert(
-                title: Text("Delete \(review.totalCount) item\(review.totalCount == 1 ? "" : "s") from Photos?"),
+                title: Text("Delete \(review.totalCount) item\(review.totalCount == 1 ? "" : "s")?"),
                 message: Text(deletionConfirmationMessage(for: review)),
-                primaryButton: .destructive(Text("Continue to Photos")) {
+                primaryButton: .destructive(Text(review.candidates.isEmpty ? "Delete Permanently" : "Continue to Photos")) {
                     Task {
                         await manager.deleteSelectionFromLibrary(review: review)
                     }
@@ -143,6 +143,7 @@ struct GalleryView: View {
         .onChange(of: vault.isUnlocked) { _, unlocked in
             if !unlocked {
                 sharing.tearDown()
+                deletionReview = nil
                 vaultMessage = nil
                 vaultAlbumRetryIDs = []
                 pendingVaultMove = nil
@@ -360,7 +361,7 @@ struct GalleryView: View {
                 GalleryHoverIcon(symbol: "trash", title: "Empty Recycle Bin", identifier: "gallery-empty-recycle-bin") {
                     Task { deletionReview = await manager.prepareEntireRecycleBinDeletionReview() }
                 }
-                .disabled(album.assetCount == 0 || manager.isPerformingOperation)
+                .disabled(!manager.canEmptyRecycleBin || manager.isPerformingOperation)
             }
             overflowMenu(compact: compact)
         }
@@ -443,7 +444,7 @@ struct GalleryView: View {
                     .buttonStyle(LensLabSecondaryButtonStyle())
                     .galleryHoverLabel("Empty Recycle Bin")
                     .accessibilityIdentifier("gallery-empty-recycle-bin")
-                    .disabled(album.assetCount == 0 || manager.isPerformingOperation)
+                    .disabled(!manager.canEmptyRecycleBin || manager.isPerformingOperation)
                 }
                 if manager.hasPhotoAccess && !compact {
                     if manager.selectedAlbum != nil {
@@ -728,7 +729,7 @@ struct GalleryView: View {
                     Task { deletionReview = await manager.recycleSelection() }
                 } label: {
                     Label(
-                        manager.isRecycleBin(album: album) ? "Delete from Photos" : "Move to Recycle Bin",
+                        manager.isRecycleBin(album: album) ? "Delete Permanently" : "Move to Recycle Bin",
                         systemImage: "trash"
                     )
                 }
@@ -1151,11 +1152,18 @@ struct GalleryView: View {
     }
 
     private func deletionConfirmationMessage(for review: GalleryDeletionPlan) -> String {
-        "Gallery will ask Photos to delete exactly "
-            + "\(review.totalCount) selected item\(review.totalCount == 1 ? "" : "s") "
-            + "(\(review.mediaBreakdown)) from the full Photos library. No unselected item is included. "
-            + "With iCloud Photos, the deletion syncs to your other devices. Photos normally moves deleted "
-            + "items to Recently Deleted and will show its own final confirmation."
+        var parts: [String] = []
+        if !review.vaultCandidates.isEmpty {
+            parts.append("\(review.vaultCandidates.count) Private Vault item\(review.vaultCandidates.count == 1 ? "" : "s") will be permanently deleted and cannot be recovered.")
+        }
+        if !review.candidates.isEmpty {
+            parts.append("Photos will ask to delete \(review.candidates.count) item\(review.candidates.count == 1 ? "" : "s") from the full library. iCloud Photos may sync the deletion to other devices. Photos normally moves deleted items to Recently Deleted.")
+            if !review.vaultCandidates.isEmpty {
+                parts.append("If you cancel the Photos confirmation, the vault items will not be deleted.")
+            }
+        }
+        parts.append("No other items are included.")
+        return parts.joined(separator: " ")
     }
 }
 
@@ -1671,6 +1679,13 @@ struct GalleryMoveSheet: View {
         return GalleryAlbumSearch.filter(recent, query: albumFilter)
     }
 
+    private var recentVaultDestinations: [GalleryVaultAlbum] {
+        guard vault.isUnlocked else { return [] }
+        return GalleryMoveHistory.shared.recentVaultAlbums(from: vaultDestinations,
+            excluding: manager.selectedAlbum?.id)
+            .filter { albumFilter.isEmpty || $0.title.localizedStandardContains(albumFilter) }
+    }
+
     private var destinationAlbums: [GalleryAlbum] {
         let recentIDs = Set(recentDestinations.map(\.id))
         let available = manager.browsableAlbums.filter {
@@ -1776,6 +1791,16 @@ struct GalleryMoveSheet: View {
                 }
             }
 
+            if vaultAlbums, !recentVaultDestinations.isEmpty {
+                LensLabSection(title: "Recent Destinations", subtitle: "Your three latest successful moves.") {
+                    ForEach(recentVaultDestinations, id: \.id) { album in
+                        Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
+                            .buttonStyle(LensLabSecondaryButtonStyle())
+                            .accessibilityIdentifier("gallery-recent-vault-destination-" + album.id)
+                    }
+                }
+            }
+
             LensLabSection(
                 title: "New Album", subtitle: "Create a destination album and move the selected media there."
             ) {
@@ -1805,7 +1830,10 @@ struct GalleryMoveSheet: View {
 
             LensLabSection(title: "Existing Albums", subtitle: "Filter by album name, then choose a destination.") {
                 if vaultAlbums && vault.isUnlocked {
-                    ForEach(vaultDestinations.filter { albumFilter.isEmpty || $0.title.localizedStandardContains(albumFilter) }, id: \.id) { album in
+                    ForEach(vaultDestinations.filter { album in
+                        (albumFilter.isEmpty || album.title.localizedStandardContains(albumFilter))
+                            && !recentVaultDestinations.contains(where: { $0.id == album.id })
+                    }, id: \.id) { album in
                         Button { chooseVaultAlbum(album) } label: {
                             Label(album.title, systemImage: "lock.fill")
                         }

@@ -136,20 +136,37 @@ nonisolated struct GalleryDeletionCandidate: Hashable, Sendable {
     let mediaKind: GalleryDeletionMediaKind
 }
 
+nonisolated struct GalleryVaultDeletionCandidate: Hashable, Sendable {
+    let id: UUID
+    let mediaKind: GalleryDeletionMediaKind
+}
+
 nonisolated struct GalleryDeletionPlan: Identifiable, Equatable, Sendable {
     let id: UUID
     let candidates: [GalleryDeletionCandidate]
+    let vaultCandidates: [GalleryVaultDeletionCandidate]
+    let vaultEpoch: UUID?
+    let sourceAlbumID: String?
+    let photosBinID: String?
 
-    init?(candidates: [GalleryDeletionCandidate], id: UUID = UUID()) {
-        guard !candidates.isEmpty,
+    init?(candidates: [GalleryDeletionCandidate], vaultCandidates: [GalleryVaultDeletionCandidate] = [],
+          vaultEpoch: UUID? = nil, sourceAlbumID: String? = nil, photosBinID: String? = nil,
+          id: UUID = UUID()) {
+        guard !candidates.isEmpty || !vaultCandidates.isEmpty,
             candidates.allSatisfy({ !$0.localIdentifier.isEmpty }),
-            Set(candidates.map(\.localIdentifier)).count == candidates.count
+            Set(candidates.map(\.localIdentifier)).count == candidates.count,
+            Set(vaultCandidates.map(\.id)).count == vaultCandidates.count,
+            vaultCandidates.isEmpty || vaultEpoch != nil
         else {
             return nil
         }
 
         self.id = id
         self.candidates = candidates
+        self.vaultCandidates = vaultCandidates
+        self.vaultEpoch = vaultEpoch
+        self.sourceAlbumID = sourceAlbumID
+        self.photosBinID = photosBinID
     }
 
     var localIdentifiers: [String] {
@@ -157,19 +174,19 @@ nonisolated struct GalleryDeletionPlan: Identifiable, Equatable, Sendable {
     }
 
     var totalCount: Int {
-        candidates.count
+        candidates.count + vaultCandidates.count
     }
 
     var photoCount: Int {
-        candidates.count { $0.mediaKind == .photo }
+        candidates.count { $0.mediaKind == .photo } + vaultCandidates.count { $0.mediaKind == .photo }
     }
 
     var videoCount: Int {
-        candidates.count { $0.mediaKind == .video }
+        candidates.count { $0.mediaKind == .video } + vaultCandidates.count { $0.mediaKind == .video }
     }
 
     var otherCount: Int {
-        candidates.count { $0.mediaKind == .other }
+        candidates.count { $0.mediaKind == .other } + vaultCandidates.count { $0.mediaKind == .other }
     }
 
     var mediaBreakdown: String {
@@ -2082,27 +2099,41 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         return nil
     }
 
-    /// Empty Bin applies to the whole bin, even when its grid is searched or filtered.
+    /// Empty Bin includes every visible-store item, independent of grid filters.
+    var canEmptyRecycleBin: Bool {
+        guard let album = selectedAlbum, isRecycleBin(album: album) else { return false }
+        return album.assetCount > 0 || (GalleryVaultService.shared.isUnlocked && !vaultIndex.recycleBin.isEmpty)
+    }
+
     func prepareEntireRecycleBinDeletionReview() async -> GalleryDeletionPlan? {
         do {
-            guard let selectedAlbum, isRecycleBin(album: selectedAlbum),
-                  let collection = selectedAlbum.collection else {
+            guard let selectedAlbum, isRecycleBin(album: selectedAlbum) else {
                 throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
             }
-            try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
+            let vault = GalleryVaultService.shared
+            let epoch = vault.isUnlocked ? vault.authEpoch : nil
+            let vaultCandidates = epoch == nil ? [] : vaultIndex.recycleBin
+                .filter { $0.state == .privateItem }
+                .map(Self.deletionCandidate(for:))
             let selectionGeneration = albumSelectionGeneration
-            let fetch = PHAsset.fetchAssets(in: collection, options: nil)
+            let collection = selectedAlbum.collection ?? (selectedAlbum.virtualScope == .recycleBin ? GalleryRecycleBin.existingCollection() : nil)
             var candidates: [GalleryDeletionCandidate] = []
-            candidates.reserveCapacity(fetch.count)
-            for i in 0..<fetch.count {
-                candidates.append(Self.deletionCandidate(for: fetch.object(at: i)))
-                if i.isMultiple(of: 512) { await Task.yield() }
+            if let collection {
+                try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
+                let fetch = PHAsset.fetchAssets(in: collection, options: nil)
+                candidates.reserveCapacity(fetch.count)
+                for i in 0..<fetch.count {
+                    candidates.append(Self.deletionCandidate(for: fetch.object(at: i)))
+                    if i.isMultiple(of: 512) { await Task.yield() }
+                }
             }
             guard self.selectedAlbum?.id == selectedAlbum.id,
-                  albumSelectionGeneration == selectionGeneration else {
+                  albumSelectionGeneration == selectionGeneration,
+                  epoch == nil || (vault.isUnlocked && vault.authEpoch == epoch) else {
                 throw GalleryOperationError.deletionReviewExpired
             }
-            guard let plan = GalleryDeletionPlan(candidates: candidates) else { return nil }
+            guard let plan = GalleryDeletionPlan(candidates: candidates, vaultCandidates: vaultCandidates,
+                                                 vaultEpoch: epoch, sourceAlbumID: selectedAlbum.id, photosBinID: collection?.localIdentifier) else { return nil }
             deletionReviewAuthority.issue(plan)
             return plan
         } catch {
@@ -2117,13 +2148,20 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             guard let selectedAlbum, isRecycleBin(album: selectedAlbum) else {
                 throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
             }
-            try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
-            let assets = try selectedAssets()
-            guard assets.count == selectedIndexes.count else {
-                throw GalleryOperationError.invalidDeletionSnapshot
+            let items = try selectedMediaItems()
+            let assets = items.compactMap { item -> PHAsset? in
+                if case .photos(let asset) = item { return asset }; return nil
             }
-            let candidates = assets.map(Self.deletionCandidate(for:))
-            guard let plan = GalleryDeletionPlan(candidates: candidates) else {
+            let records = items.compactMap { item -> GalleryVaultRecord? in
+                if case .vault(let record) = item { return record }; return nil
+            }
+            if !assets.isEmpty { try requireCurrentFullPhotoAccessForDeletion(afterMutation: false) }
+            let vault = GalleryVaultService.shared
+            guard records.isEmpty || vault.isUnlocked else { throw GalleryVaultTransferError.locked }
+            guard let plan = GalleryDeletionPlan(candidates: assets.map(Self.deletionCandidate(for:)),
+                vaultCandidates: records.map(Self.deletionCandidate(for:)),
+                vaultEpoch: records.isEmpty ? nil : vault.authEpoch, sourceAlbumID: selectedAlbum.id,
+                photosBinID: (selectedAlbum.collection ?? GalleryRecycleBin.existingCollection())?.localIdentifier) else {
                 throw GalleryOperationError.invalidDeletionSnapshot
             }
             deletionReviewAuthority.issue(plan)
@@ -2140,35 +2178,67 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             guard deletionReviewAuthority.consume(review) else {
                 throw GalleryOperationError.deletionReviewExpired
             }
-            try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
-
-            guard let sourceAlbum = selectedAlbum,
-                  let currentSource = PHAssetCollection.fetchAssetCollections(
-                    withLocalIdentifiers: [sourceAlbum.id], options: nil
-                  ).firstObject,
-                  GalleryRecycleBin.isRecycleBinTitle(currentSource.localizedTitle) else {
+            guard let sourceAlbum = selectedAlbum, isRecycleBin(album: sourceAlbum),
+                  sourceAlbum.id == review.sourceAlbumID else {
                 throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
             }
-
-            let assets = fetchAssets(withLocalIdentifiers: review.localIdentifiers)
-            let liveCandidates = assets.map(Self.deletionCandidate(for:))
-            guard review.matchesLiveCandidates(liveCandidates) else {
-                throw GalleryOperationError.deletionSelectionChanged(
-                    expected: review.totalCount,
-                    found: liveCandidates.count
-                )
+            let vault = GalleryVaultService.shared
+            if let epoch = review.vaultEpoch {
+                guard vault.isUnlocked, vault.authEpoch == epoch else { throw GalleryVaultTransferError.locked }
+                let currentIDs = Set(vault.records.filter { $0.state == .privateItem && GalleryVaultRecycleBin.contains($0) }.map(\.id))
+                guard review.vaultCandidates.allSatisfy({ currentIDs.contains($0.id) }) else {
+                    throw GalleryOperationError.invalidDeletionSnapshot
+                }
             }
-            let binMembership = PHAsset.fetchAssets(in: currentSource, options: nil)
-            guard assets.allSatisfy({ binMembership.index(of: $0) != NSNotFound }) else {
-                throw GalleryOperationError.deletionSelectionChanged(
-                    expected: review.totalCount,
-                    found: assets.filter { binMembership.index(of: $0) != NSNotFound }.count
-                )
-            }
+            let assets: [PHAsset]
+            var sourceID: String? = nil
+            if !review.candidates.isEmpty {
+                try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
+                guard let photosBinID = review.photosBinID,
+                      let currentSource = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [photosBinID], options: nil).firstObject,
+                      GalleryRecycleBin.isRecycleBinTitle(currentSource.localizedTitle) else {
+                    throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
+                }
+                sourceID = currentSource.localIdentifier
+                assets = fetchAssets(withLocalIdentifiers: review.localIdentifiers)
+                let liveCandidates = assets.map(Self.deletionCandidate(for:))
+                guard review.matchesLiveCandidates(liveCandidates) else {
+                    throw GalleryOperationError.deletionSelectionChanged(expected: review.candidates.count, found: liveCandidates.count)
+                }
+                let binMembership = PHAsset.fetchAssets(in: currentSource, options: nil)
+                guard assets.allSatisfy({ binMembership.index(of: $0) != NSNotFound }) else {
+                    throw GalleryOperationError.invalidDeletionSnapshot
+                }
+            } else { assets = [] }
 
-            GalleryDeleteQueue.shared.enqueuePhotos(
-                assets, sourceAlbumID: currentSource.localIdentifier, permanently: true
-            )
+            let vaultIDs = review.vaultCandidates.map(\.id)
+            guard vaultIDs.allSatisfy({ !GalleryDeleteQueue.shared.isPending("vault:\($0.uuidString)") }) else {
+                throw GalleryOperationError.invalidDeletionSnapshot
+            }
+            let epoch = review.vaultEpoch
+            let deleteVault: @MainActor () -> Void = { [weak self] in
+                guard !vaultIDs.isEmpty else { return }
+                guard let epoch, vault.isUnlocked, vault.authEpoch == epoch else {
+                    self?.showToast(.error, "Private Vault locked. Remaining items were not deleted.")
+                    return
+                }
+                guard vaultIDs.allSatisfy({ !GalleryDeleteQueue.shared.isPending("vault:\($0.uuidString)") }) else {
+                    self?.showToast(.error, "Some vault items are changing. Try emptying the bin again.")
+                    return
+                }
+                for id in vaultIDs { GalleryDeleteQueue.shared.enqueuePermanentVaultDelete(recordID: id) }
+            }
+            if assets.isEmpty {
+                deleteVault()
+            } else {
+                let accepted = GalleryDeleteQueue.shared.enqueuePhotos(assets, sourceAlbumID: sourceID, permanently: true) { [weak self] success in
+                    if success { deleteVault() }
+                    else if !vaultIDs.isEmpty {
+                        self?.showToast(.error, "Photos deletion did not complete. Vault items were kept.")
+                    }
+                }
+                guard accepted else { throw GalleryOperationError.invalidDeletionSnapshot }
+            }
         } catch {
             handleOperationError(error, fallback: "Delete failed")
         }
@@ -2411,6 +2481,15 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             assets.append(asset)
         }
         return assets
+    }
+
+    private static func deletionCandidate(for record: GalleryVaultRecord) -> GalleryVaultDeletionCandidate {
+        let kind: GalleryDeletionMediaKind = switch PHAssetMediaType(rawValue: record.mediaType) {
+        case .image: .photo
+        case .video: .video
+        default: .other
+        }
+        return GalleryVaultDeletionCandidate(id: record.id, mediaKind: kind)
     }
 
     private static func deletionCandidate(for asset: PHAsset) -> GalleryDeletionCandidate {
