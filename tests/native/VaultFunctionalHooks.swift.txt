@@ -1,0 +1,16 @@
+extension GalleryVaultStorage {
+    func proofResourceHashes() throws -> [String: String] {
+        var result: [String: String] = [:]
+        for record in records {
+            for resource in record.resources {
+                let data = try Data(contentsOf: itemURL(record.id).appendingPathComponent(resource.id.uuidString + ".bin"))
+                result[record.id.uuidString + ":" + resource.id.uuidString] = SHA256.hash(data: data)
+                    .map { String(format: "%02x", $0) }.joined()
+            }
+        }
+        return result
+    }
+    func proofDamageRecord(_ id: UUID) throws {
+        try Data([0]).write(to: itemURL(id).appendingPathComponent("record.enc"), options: .atomic)
+    }
+}

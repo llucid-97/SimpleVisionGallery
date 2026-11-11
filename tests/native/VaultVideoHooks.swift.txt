@@ -1,0 +1,31 @@
+// Fixture-only generated video; written through the production encrypted resource writer.
+extension GalleryVaultStorage {
+    func proofSeedGeneratedVideo(_ bytes: Data) throws -> GalleryVaultRecord {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        let id = UUID(), resourceID = UUID()
+        let album = GalleryVaultAlbum(id: "vault-album:core-video", title: "Generated Video", position: nil)
+        let resource = GalleryVaultResource(id: resourceID, type: 2, filename: "generated-video.mp4", uniformTypeIdentifier: "public.mpeg-4")
+        let record = GalleryVaultRecord(id: id, sourceIdentifier: "core-generated-video", filename: "generated-video.mp4", mediaType: 2, mediaSubtypes: 0, pixelWidth: 64, pixelHeight: 48, duration: 1, creationDate: nil, modificationDate: nil, latitude: nil, longitude: nil, isFavorite: false, albums: [album], resources: [resource], state: .privateItem, restoredIdentifier: nil)
+        let item = try createItem(id: id)
+        let writer = try item.writer(resourceID: resourceID)
+        try writer.append(bytes); try writer.finish()
+        try Self.writeRecord(record, in: item.directory, session: session)
+        try Self.syncDirectory(item.directory)
+        let destination = itemURL(id)
+        guard rename(item.directory.path, destination.path) == 0 else { throw GalleryVaultStorageError.incompleteItem }
+        try Self.syncDirectory(items)
+        recordsByID[id] = record; idsBySource[record.sourceIdentifier] = id
+        recordDates[id] = try Self.recordDate(destination)
+        records = Self.sortedRecords(Array(recordsByID.values))
+        return record
+    }
+    func proofStoredTransferCounts() -> (pending:Int, privateItems:Int) {
+        let values=recordsByID.values
+        return (values.filter { $0.state == .copiedAwaitingDeletion }.count,
+                values.filter { $0.state == .privateItem }.count)
+    }
+    func proofPlaintextLeaseCount() throws -> Int {
+        if !FileManager.default.fileExists(atPath: plaintext.path) { return 0 }
+        return try FileManager.default.contentsOfDirectory(at: plaintext, includingPropertiesForKeys: nil).count
+    }
+}

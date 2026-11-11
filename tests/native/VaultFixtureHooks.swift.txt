@@ -1,0 +1,89 @@
+// Generated-data fixture hook. Records and the cache remain sealed with the real vault key.
+extension GalleryVaultStorage {
+    func proofSeedRecords(_ count: Int, offset: Int = 0, previewData: Data? = nil) throws {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        if offset == 0 {
+            beginBatch()
+            defer { endBatch() }
+            for old in recordsByID.values where old.sourceIdentifier.hasPrefix("generated-measurement-") || old.sourceIdentifier == "core-generated-video" {
+                try remove(id: old.id)
+            }
+        }
+        let album = GalleryVaultAlbum(id: "vault-album:generated-measurement", title: "Generated Measurement Vault", position: nil)
+        let encoder = JSONEncoder()
+        let progress = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("seed-progress.txt")
+        let seedStart = Date()
+        for index in offset..<(offset + count) {
+            if (index - offset) % 100 == 0 {
+                try? Data("\(index - offset)/\(count) elapsed=\(Int(Date().timeIntervalSince(seedStart)))s".utf8).write(to: progress, options: .atomic)
+            }
+            guard let id = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index + 1)) else {
+                throw GalleryVaultStorageError.corruptRecord
+            }
+            var record = GalleryVaultRecord(id: id, sourceIdentifier: "generated-measurement-\(index)",
+                filename: "generated-measurement-\(index).jpg", mediaType: 1, mediaSubtypes: 0,
+                pixelWidth: 48, pixelHeight: 32, duration: 0, creationDate: nil, modificationDate: nil,
+                latitude: nil, longitude: nil, isFavorite: false, albums: [album], resources: [],
+                state: .privateItem, restoredIdentifier: nil)
+            let directory = itemURL(id)
+            if index - offset < 32, let previewData {
+                let resourceID = UUID()
+                record.resources = [GalleryVaultResource(id: resourceID, type: 1, filename: record.filename,
+                    uniformTypeIdentifier: "public.jpeg")]
+                let item = try createItem(id: id)
+                let writer = try item.writer(resourceID: resourceID)
+                try writer.append(previewData)
+                try writer.finish()
+                try Self.writeRecord(record, in: item.directory, session: session)
+                try Self.syncDirectory(item.directory)
+                guard rename(item.directory.path, directory.path) == 0 else {
+                    throw GalleryVaultStorageError.incompleteItem
+                }
+                try Self.syncDirectory(items)
+            } else {
+                try Self.prepareDirectory(directory)
+                let bytes = try session.withKey { key in
+                    try AES.GCM.seal(encoder.encode(record), using: key, authenticating: Data(id.uuidString.utf8)).combined
+                }
+                guard let bytes else { throw GalleryVaultStorageError.corruptRecord }
+                try bytes.write(to: directory.appendingPathComponent("record.enc"), options: [.atomic, .completeFileProtection])
+            }
+            let date = try Self.recordDate(directory)
+            recordsByID[id] = record
+            idsBySource[record.sourceIdentifier] = id
+            recordDates[id] = date
+        }
+        let entries = recordsByID.values.compactMap { record in
+            recordDates[record.id].map { ManifestEntry(record: record, date: $0) }
+        }
+        let manifest = try session.withKey { key in
+            try AES.GCM.seal(encoder.encode(entries), using: key, authenticating: Self.manifestAAD).combined
+        }
+        guard let manifest else { throw GalleryVaultStorageError.corruptRecord }
+        try manifest.write(to: root.appendingPathComponent("manifest.enc"), options: [.atomic, .completeFileProtection])
+        manifestDirty = false
+        records = Self.sortedRecords(Array(recordsByID.values))
+    }
+}
+
+// Test-only deterministic key protects generated fixtures; this does not prove authentication.
+extension GalleryVaultStorage {
+    func proofUnlockGeneratedRecords() async throws {
+        guard !isUnlocked else { return }
+        let newSession = GalleryVaultSession(key: SymmetricKey(data: Data(repeating: 0xB4, count: 32)))
+        try Self.prepareDirectory(root)
+        try Self.prepareDirectory(items)
+        try Self.prepareDirectory(staging)
+        session = newSession
+        let directory = items
+        let scan = try await Task.detached {
+            try Self.readRecords(in: directory, cached: nil, session: newSession)
+        }.value
+        recordsByID = Dictionary(uniqueKeysWithValues: scan.records.map { ($0.id, $0) })
+        idsBySource = Dictionary(uniqueKeysWithValues: scan.records.map { ($0.sourceIdentifier, $0.id) })
+        recordDates = scan.dates
+        records = Self.sortedRecords(scan.records)
+        unreadableRecordCount = scan.unreadable
+        isUnlocked = true
+    }
+}
