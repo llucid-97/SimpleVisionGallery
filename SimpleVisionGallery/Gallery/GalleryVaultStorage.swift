@@ -803,6 +803,7 @@ final class GalleryVaultStorage: ObservableObject {
         recordsByID[record.id] = record
         idsBySource[record.sourceIdentifier] = record.id
         recordDates[record.id] = try? Self.recordDate(itemURL(record.id))
+        if batchDepth > 0 { transferBatchChangedIDs.insert(record.id) }
         manifestDirty = true
         publishChangesIfNeeded()
     }
@@ -815,6 +816,7 @@ final class GalleryVaultStorage: ObservableObject {
         try Self.syncDirectory(items)
         if let old = recordsByID.removeValue(forKey: id) { idsBySource.removeValue(forKey: old.sourceIdentifier) }
         recordDates.removeValue(forKey: id)
+        if batchDepth > 0 { transferBatchChangedIDs.insert(id) }
         manifestDirty = true
         publishChangesIfNeeded()
     }

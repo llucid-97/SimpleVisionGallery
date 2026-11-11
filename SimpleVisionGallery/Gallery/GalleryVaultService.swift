@@ -307,7 +307,17 @@ final class GalleryVaultService: ObservableObject {
         let epoch = authEpoch
         let pending = storage.records.filter { $0.state == .copiedAwaitingDeletion }
         storage.beginBatch()
-        defer { storage.endBatch(); publishIfCurrent(epoch); endOperation() }
+        defer { endOperation() }
+        let outcome: Result<GalleryVaultTransferOutcome, Error>
+        do { outcome = .success(try await retryPendingDeletionInBatch(pending, epoch: epoch)) }
+        catch { outcome = .failure(error) }
+        let changedIDs = await storage.finishTransferBatch()
+        if changedIDs.isEmpty { publishIfCurrent(epoch) }
+        else { await publishQueuedIfCurrent(epoch, mutationIDs: changedIDs) }
+        return try outcome.get()
+    }
+
+    private func retryPendingDeletionInBatch(_ pending: [GalleryVaultRecord], epoch: UUID) async throws -> GalleryVaultTransferOutcome {
         var verified: [GalleryVaultRecord] = []
         var skipped: [GalleryVaultSkipReason: Int] = [:]
         var stopped: String?
@@ -536,7 +546,17 @@ final class GalleryVaultService: ObservableObject {
         try beginOperation()
         let epoch = authEpoch
         storage.beginBatch()
-        defer { storage.endBatch(); publishIfCurrent(epoch); endOperation() }
+        defer { endOperation() }
+        let result: Result<Void, Error>
+        do { try await restoreInBatch(recordIDs: recordIDs, epoch: epoch, omittingUnavailableAlbums: omittingUnavailableAlbums); result = .success(()) }
+        catch { result = .failure(error) }
+        let changedIDs = await storage.finishTransferBatch()
+        if changedIDs.isEmpty { publishIfCurrent(epoch) }
+        else { await publishQueuedIfCurrent(epoch, mutationIDs: changedIDs) }
+        try result.get()
+    }
+
+    private func restoreInBatch(recordIDs: [UUID], epoch: UUID, omittingUnavailableAlbums: Bool) async throws {
         for (index, id) in recordIDs.enumerated() {
             guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
             guard !wantsCancel else { throw GalleryVaultTransferError.cancelled }
