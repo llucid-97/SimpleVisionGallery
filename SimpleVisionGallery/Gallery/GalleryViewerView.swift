@@ -854,7 +854,7 @@ private struct GalleryViewerMoveSheet: View {
                     }
                     .accessibilityIdentifier("gallery-viewer-create-vault-album")
                     .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || (showingVaultDestinations && GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines))))
+                        || GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)))
                 }
                 if !showingVaultDestinations, query.isEmpty, !recentDestinations.isEmpty {
                     Section("Recent destinations") {

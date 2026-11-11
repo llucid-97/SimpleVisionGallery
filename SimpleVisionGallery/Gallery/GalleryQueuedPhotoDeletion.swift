@@ -281,7 +281,7 @@ nonisolated enum GalleryQueuedPhotoMove {
                     preparationError = PhotoMoveError.destinationUnavailable; return
                 }
                 destinationChange = change; resultDestination = destinationID
-            } else if let createName, !createName.isEmpty {
+            } else if let createName, !createName.isEmpty, !GalleryRecycleBin.isRecycleBinTitle(createName) {
                 let change = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: createName)
                 destinationChange = change; resultDestination = change.placeholderForCreatedAssetCollection.localIdentifier
             } else if request.action == .removeFromAlbum, source != nil { destinationChange = nil }

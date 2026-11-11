@@ -1824,7 +1824,7 @@ struct GalleryMoveSheet: View {
                     .disabled(
                         newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || manager.isPerformingOperation
-                            || (vaultAlbums && GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines))))
+                            || GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)))
                 }
             }
 

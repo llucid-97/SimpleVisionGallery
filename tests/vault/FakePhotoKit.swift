@@ -334,3 +334,9 @@ nonisolated final class GalleryVaultStagingItem: @unchecked Sendable {
     func decryptResource(recordID: UUID, resourceID: UUID) async throws -> URL { guard let data = blobs[resourceID] else { throw GalleryVaultTransferError.missingResources }; let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try data.write(to: url); return url }
     func releasePlaintext(_ url: URL) { try? FileManager.default.removeItem(at: url) }
 }
+
+// Transfer tests observe history separately; its persistence contract has its own harness.
+@MainActor final class GalleryMoveHistory {
+    static let shared = GalleryMoveHistory()
+    func recordSuccessfulVaultMove(to albumID: String) {}
+}

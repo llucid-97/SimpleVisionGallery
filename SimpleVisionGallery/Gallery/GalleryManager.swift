@@ -1988,6 +1988,10 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             showToast(.warning, "Name the new album first.")
             return
         }
+        guard !GalleryRecycleBin.isRecycleBinTitle(trimmedName) else {
+            showToast(.warning, "Recycle Bin is reserved. Choose another album name.")
+            return
+        }
         guard let sourceAlbum = selectedAlbum else { return }
 
         do {
