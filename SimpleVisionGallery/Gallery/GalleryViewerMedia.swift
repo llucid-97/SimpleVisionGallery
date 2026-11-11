@@ -103,6 +103,11 @@ final class GalleryViewerMedia {
     }
 
     func load(item asset: GalleryMediaItem, spatialEnabled: Bool) async {
+        guard !Task.isCancelled else { return }
+        guard asset.vaultRecord == nil || GalleryVaultStorage.shared.isUnlocked else {
+            cancel()
+            return
+        }
         let requestedKey = GallerySceneCache.key(for: asset)
         if currentKey != requestedKey { aspectRatio = nil }
         if let oldKey = currentKey, desiredPrefetchAssets.contains(where: { GallerySceneCache.key(for: $0) == oldKey }) {
@@ -138,6 +143,33 @@ final class GalleryViewerMedia {
         isLoading = true
         error = nil
         status = nil
+        // A completed reservation is already safe to present on this actor.
+        // Avoid a second task hop, which can miss a display frame under load.
+        if asset.mediaType == .video, case .video(let video) = warmed {
+            promoted?.cancel()
+            presentVideo(video, token: token)
+            isLoading = false
+            startPrefetchIfNeeded()
+            return
+        }
+        if asset.mediaType != .video {
+            let ready: GalleryPreparedImage?
+            if case .image(let image) = warmed, !spatialEnabled || image.attemptedSpatial {
+                ready = image
+            } else if preparedKey == requestedKey, let image = prepared,
+                      !spatialEnabled || image.attemptedSpatial {
+                ready = image
+            } else {
+                ready = nil
+            }
+            if let ready {
+                promoted?.cancel()
+                presentImage(ready, key: requestedKey, spatialEnabled: spatialEnabled)
+                isLoading = false
+                startPrefetchIfNeeded()
+                return
+            }
+        }
         let task = Task { @MainActor [weak self] in
             guard let self else { promoted?.cancel(); return }
             defer { promoted?.cancel() }
@@ -146,9 +178,7 @@ final class GalleryViewerMedia {
                     self.prepared = nil
                     self.preparedKey = nil
                     let video: GalleryPreparedVideo
-                    if case .video(let retained) = warmed {
-                        video = retained
-                    } else if let promoted {
+                    if let promoted {
                         do {
                             guard case .video(let warmed) = try await GalleryMediaRequest.value(of: promoted) else {
                                 throw GalleryMediaError.missingMedia
@@ -159,58 +189,13 @@ final class GalleryViewerMedia {
                     } else {
                         video = try await GallerySceneCache.shared.video(for: asset, foreground: true)
                     }
-                    video.promote()
-                    let avAsset = video.asset
-                    var spatialVideo = asset.mediaSubtypes.contains(.spatialMedia)
-                    if !spatialVideo {
-                        let stereoTracks = try? await avAsset.loadTracks(withMediaCharacteristic: .containsStereoMultiviewVideo)
-                        spatialVideo = !(stereoTracks?.isEmpty ?? true)
-                    }
-                    let videoAspectRatio = await Self.videoAspectRatio(avAsset)
                     try Task.checkCancellation()
                     guard self.generation == token else { return }
-                    self.currentVideo = video
-                    self.aspectRatio = videoAspectRatio
-                    self.isSpatialVideo = spatialVideo
-                    #if targetEnvironment(simulator)
-                    if spatialVideo { self.status = "Showing a 2D preview in Simulator. Spatial video needs Apple Vision Pro." }
-                    #endif
-                    let item = AVPlayerItem(asset: avAsset)
-                    self.player = AVPlayer(playerItem: item)
-                    self.player?.actionAtItemEnd = self.videoLooping ? .none : .pause
-                    self.playerEndObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
-                        forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
-                    ) { [weak self, weak item] _ in
-                        Task { @MainActor [weak self, weak item] in
-                            guard let self, let item, self.generation == token,
-                                  self.videoLooping, self.isSceneActive, !self.isPresentationCovered,
-                                  let player = self.player, player.currentItem === item,
-                                  player.rate > 0 else { return }
-                            // With .none, reaching the end does not pause the player.
-                            // A manual/background pause before this callback wins.
-                            // Play before the seek completes so no delayed completion
-                            // can restart a player the user pauses during the seek.
-                            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-                            player.play()
-                        }
-                    })
-                    self.playerObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-                        guard item.status == .failed else { return }
-                        let message = item.error?.localizedDescription ?? "This video could not be played."
-                        Task { @MainActor [weak self] in
-                            guard let self, self.generation == token else { return }
-                            self.error = message
-                        }
-                    }
-                    if self.isSceneActive && !self.isPresentationCovered { self.player?.play() }
-                    else { self.resumePlaybackWhenActive = true }
+                    self.presentVideo(video, token: token)
                 } else {
                     let key = GallerySceneCache.key(for: asset)
                     let image: GalleryPreparedImage
-                    if case .image(let retained) = warmed,
-                       !spatialEnabled || retained.attemptedSpatial {
-                        image = retained
-                    } else if let promoted {
+                    if let promoted {
                         do {
                             guard case .image(let retained) = try await GalleryMediaRequest.value(of: promoted) else {
                                 throw GalleryMediaError.missingMedia
@@ -228,21 +213,7 @@ final class GalleryViewerMedia {
                     }
                     try Task.checkCancellation()
                     guard self.generation == token else { return }
-                    self.prepared = image
-                    self.preparedKey = key
-                    self.menuPreviewState.set(image.menuPreview, for: requestedKey)
-                    self.aspectRatio = image.aspectRatio
-                    self.spatialAvailable = image.supportsSpatial
-                    self.status = spatialEnabled ? image.status : nil
-                    if var component = image.component {
-                        component.desiredViewingMode = spatialEnabled ? image.spatialMode : .mono
-                        let entity = Entity()
-                        entity.components.set(component)
-                        self.imageEntity = entity
-                        self.isShowingSpatial = spatialEnabled && image.spatialMode != .mono
-                    } else {
-                        self.fallbackImage = image.fallback
-                    }
+                    self.presentImage(image, key: key, spatialEnabled: spatialEnabled)
                 }
             } catch is CancellationError {
                 // A swipe or a closed window superseded this request.
@@ -263,7 +234,69 @@ final class GalleryViewerMedia {
         }
     }
 
-    private static func videoAspectRatio(_ asset: AVAsset) async -> Double? {
+    private func presentVideo(_ video: GalleryPreparedVideo, token: UUID) {
+        video.promote()
+        self.prepared = nil
+        self.preparedKey = nil
+        let avAsset = video.asset
+        let spatialVideo = video.isSpatialVideo
+        let videoAspectRatio = video.aspectRatio
+        self.currentVideo = video
+        self.aspectRatio = videoAspectRatio
+        self.isSpatialVideo = spatialVideo
+        #if targetEnvironment(simulator)
+        if spatialVideo { self.status = "Showing a 2D preview in Simulator. Spatial video needs Apple Vision Pro." }
+        #endif
+        let item = AVPlayerItem(asset: avAsset)
+        self.player = AVPlayer(playerItem: item)
+        self.player?.actionAtItemEnd = self.videoLooping ? .none : .pause
+        self.playerEndObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
+        ) { [weak self, weak item] _ in
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, self.generation == token,
+                      self.videoLooping, self.isSceneActive, !self.isPresentationCovered,
+                      let player = self.player, player.currentItem === item,
+                      player.rate > 0 else { return }
+                // With .none, reaching the end does not pause the player.
+                // A manual/background pause before this callback wins.
+                // Play before the seek completes so no delayed completion
+                // can restart a player the user pauses during the seek.
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                player.play()
+            }
+        })
+        self.playerObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            let message = item.error?.localizedDescription ?? "This video could not be played."
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == token else { return }
+                self.error = message
+            }
+        }
+        if self.isSceneActive && !self.isPresentationCovered { self.player?.play() }
+        else { self.resumePlaybackWhenActive = true }
+    }
+
+    private func presentImage(_ image: GalleryPreparedImage, key: String, spatialEnabled: Bool) {
+        self.prepared = image
+        self.preparedKey = key
+        self.menuPreviewState.set(image.menuPreview, for: key)
+        self.aspectRatio = image.aspectRatio
+        self.spatialAvailable = image.supportsSpatial
+        self.status = spatialEnabled ? image.status : nil
+        if var component = image.component {
+            component.desiredViewingMode = spatialEnabled ? image.spatialMode : .mono
+            let entity = Entity()
+            entity.components.set(component)
+            self.imageEntity = entity
+            self.isShowingSpatial = spatialEnabled && image.spatialMode != .mono
+        } else {
+            self.fallbackImage = image.fallback
+        }
+    }
+
+    fileprivate static func videoAspectRatio(_ asset: AVAsset) async -> Double? {
         // Metadata failure must not prevent playback. The window can fall back to
         // PhotoKit dimensions until an oriented presentation ratio is available.
         guard let track = try? await asset.loadTracks(withMediaType: .video).first,
@@ -1461,6 +1494,8 @@ private final class GalleryPreparedVideo {
     let asset: AVAsset
     private let plaintextURL: URL?
     var onPrefetchRelease: (@MainActor () -> Void)?
+    var isSpatialVideo = false
+    var aspectRatio: Double?
     private(set) var isForeground = false
     var isVault: Bool { plaintextURL != nil }
 
@@ -1509,10 +1544,24 @@ private enum GalleryVaultMediaRequest {
         }
     }
 
+    private static func prepareVideo(_ video: GalleryPreparedVideo, spatialHint: Bool) async throws -> GalleryPreparedVideo {
+        var spatial = spatialHint
+        if !spatial {
+            let tracks = try? await video.asset.loadTracks(withMediaCharacteristic: .containsStereoMultiviewVideo)
+            spatial = !(tracks?.isEmpty ?? true)
+        }
+        let aspectRatio = await GalleryViewerMedia.videoAspectRatio(video.asset)
+        try Task.checkCancellation()
+        video.isSpatialVideo = spatial
+        video.aspectRatio = aspectRatio
+        return video
+    }
+
     static func video(_ item: GalleryMediaItem) async throws -> GalleryPreparedVideo {
         switch item {
         case .photos(let asset):
-            return GalleryPreparedVideo(asset: try await GalleryMediaRequest<AVAsset>.video(asset))
+            let video = GalleryPreparedVideo(asset: try await GalleryMediaRequest<AVAsset>.video(asset))
+            return try await prepareVideo(video, spatialHint: item.mediaSubtypes.contains(.spatialMedia))
         case .vault(let record):
             guard GalleryVaultStorage.shared.isUnlocked,
                   let resource = GalleryVaultResourceSelection.displayResource(for: record) else {
@@ -1522,7 +1571,8 @@ private enum GalleryVaultMediaRequest {
             do {
                 try Task.checkCancellation()
                 guard GalleryVaultStorage.shared.isUnlocked else { throw CancellationError() }
-                return GalleryPreparedVideo(asset: AVURLAsset(url: url), plaintextURL: url)
+                let video = GalleryPreparedVideo(asset: AVURLAsset(url: url), plaintextURL: url)
+                return try await prepareVideo(video, spatialHint: item.mediaSubtypes.contains(.spatialMedia))
             } catch {
                 GalleryVaultStorage.shared.releasePlaintext(url)
                 throw error
