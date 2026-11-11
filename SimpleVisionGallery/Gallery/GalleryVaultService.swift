@@ -915,7 +915,7 @@ final class GalleryVaultService: ObservableObject {
         wakeOperationWaiters()
     }
     private func isCurrent(_ epoch: UUID) -> Bool { isUnlocked && authEpoch == epoch }
-    // Prepare one shared value before publication; a stale generation must never reveal data after lock.
+    /// Prepare one shared value before publication; a stale generation must never reveal data after lock.
     private func publishQueuedIfCurrent(_ epoch: UUID, mutationIDs: Set<UUID>) async {
         while isCurrent(epoch) {
             let revision = storage.mutationRevision

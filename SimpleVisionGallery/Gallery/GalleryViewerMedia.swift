@@ -775,7 +775,7 @@ private final class GallerySceneCache {
         NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)
     }
 
-    // Borrow completed media without extending the lifetime of another window's private lease.
+    /// Borrow completed media without extending the lifetime of another window's private lease.
     func preparedVideo(for asset: GalleryMediaItem, foreground: Bool) -> GalleryPreparedVideo? {
         let assetKey = Self.key(for: asset)
         if var retained = retainedPrefetch[assetKey], case .video(let video) = retained.media,
