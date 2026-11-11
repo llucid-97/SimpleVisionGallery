@@ -27,6 +27,7 @@ if os.environ.get('GALLERY_VIDEO_PROOF') == '1':
 if os.environ.get('GALLERY_SKIP_PHOTOS') == '1':
     timing=timing.replace('            state.seedPhotos(); try await wait("seed_photos", timeout: 120, until: { state.status == "PhotosSeeded-1000" })\n            try await measurePhotos()\n','')
 source_queue=(root/'SimpleVisionGallery/Gallery/GalleryDeleteQueue.swift').read_text()
+# Inject the optional generated transfer proof only when its separate prompt is requested.
 if os.environ.get('GALLERY_TRANSFER_PROOF') == '1':
     assert 'func enqueueMove(item:' in source_queue
     transfer="""        state.unlock(); try await wait("unlock_transfer", until:{ state.status == "Unlocked" })
@@ -75,6 +76,7 @@ if os.environ.get('GALLERY_TRANSFER_PROOF') == '1':
         rows.append(["case":"photos-to-vault","enqueue_ms":(transferReturned-actionStarted)*1000,"advanced_immediately":advanced,"exact_target_moved":true,"frame":transferProbe.result])
 """
     timing=timing.replace('        // GENERATED_TRANSFER_PROOF',transfer)
+# Adapt the fixture to the current queue API so the measured call uses production handoff.
 if 'func enqueueMove(item:' in source_queue:
     before="""        let task = Task { try await state.vault.move(recordID: current.id, from: source, to: destination) }
         let afterSubmit = CACurrentMediaTime()

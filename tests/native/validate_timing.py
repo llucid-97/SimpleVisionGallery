@@ -3,6 +3,7 @@ import json, re, sys
 from pathlib import Path
 
 def validate(path):
+    """Check retained readiness and immediate queue handoff while reporting frame gaps separately."""
     payload = json.loads(Path(path).read_text())
     if not payload.get('passed'):
         raise ValueError('Native fixture did not pass')

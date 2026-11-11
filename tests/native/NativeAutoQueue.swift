@@ -1,6 +1,7 @@
 // Target audience: agents. Real queue, filesystem, PhotoKit and attached viewer scenes; synthetic key and delay only.
 import Foundation
 
+/// Drives the generated queue matrix through real native viewer sessions.
 @MainActor final class NativeAutoQueue {
     static let shared = NativeAutoQueue()
     static let kind = "core-contracts-functional-v1"
@@ -15,9 +16,11 @@ import Foundation
         }
         if !predicate() { throw NSError(domain: "GeneratedQueueProof", code: 1) }
     }
+    /// Runs setup, mixed mutations and lock recovery in sequence so each phase has the expected state.
     func run() async {
         guard !ran else { return }; ran = true
         var passed = false
+        // Abort dependent phases on failure and retain the proof status for the runner.
         do {
             state.unlock(); try await wait("unlock_fixture", until: { state.status == "Unlocked" })
             state.seedVault(1000); try await wait("seed_vault", until: { state.status == "VaultSeeded-1000" })

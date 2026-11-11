@@ -1,5 +1,7 @@
 // Fixture-only generated video; written through the production encrypted resource writer.
+/// Adds generated-video storage helpers so lease cleanup can be verified without real media.
 extension GalleryVaultStorage {
+    /// Writes one generated video through encrypted storage so prefetch uses a real lease.
     func proofSeedGeneratedVideo(_ bytes: Data) throws -> GalleryVaultRecord {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
         let id = UUID(), resourceID = UUID()

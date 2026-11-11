@@ -9,6 +9,7 @@ import QuartzCore
     weak var value: GalleryViewerMedia?
     init(_ value: GalleryViewerMedia) { self.value=value }
 }
+/// Records preparation milestones so a retained hit can be separated from rendering delay.
 @MainActor final class CoreTrace {
     static let shared = CoreTrace()
     var delayVaultVideo = false
@@ -33,6 +34,7 @@ import QuartzCore
     func loadEnd(key: String, success: Bool, owner: ObjectIdentifier) { finishes[key] = (CACurrentMediaTime(),success) }
 }
 
+/// Runs generated native timing cases and records their frame and readiness evidence.
 @MainActor final class NativeAutoTimings {
     static let shared = NativeAutoTimings()
     static let kind = "core-contracts-generated-v1"
@@ -49,8 +51,10 @@ import QuartzCore
         while !predicate() && ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(10)) }
         if !predicate() { throw NSError(domain: "CoreContractGenerated", code: 1, userInfo: ["step":step]) }
     }
+    /// Runs the vault and Photos sizes in order so each timing row has an initialized fixture.
     func run() async {
         guard !ran else { return }; ran = true
+        // Stop on the first failed phase and preserve its fixed step name in the result.
         do {
             state.unlock(); try await wait("unlock", until: { state.status == "Unlocked" })
             state.seedVault(1000); try await wait("seed_1000", until: { state.status == "VaultSeeded-1000" })
@@ -62,6 +66,7 @@ import QuartzCore
             write(passed: true, failedStep: "")
         } catch { write(passed: false, failedStep: (error as NSError).userInfo["step"] as? String ?? "system") }
     }
+    /// Measures navigation and Move at one vault size, separating handoff from frame latency.
     private func measure(_ label: String, open: () -> Void) async throws {
         readySessions.removeAll(); open()
         try await wait("open_"+label, until: { state.status == "ViewerOpen-"+label })
@@ -112,6 +117,7 @@ import QuartzCore
         NotificationCenter.default.post(name: Notification.Name("measurement-close-viewers"), object:nil)
         try await Task.sleep(for:.milliseconds(300))
     }
+    /// Measures the same warm-navigation path for generated PhotoKit assets.
     private func measurePhotos() async throws {
         readySessions.removeAll(); state.openPhotosViewer()
         try await wait("open_photos", until: { state.status == "ViewerOpen-photos-1000" })
@@ -142,6 +148,7 @@ import QuartzCore
         // GENERATED_TRANSFER_PROOF
         NotificationCenter.default.post(name: Notification.Name("measurement-close-viewers"), object:nil)
     }
+    /// Checks generated video preparation and lock cleanup so plaintext leases do not survive lock.
     private func measureVaultVideo() async throws {
         guard let url = Bundle.main.url(forResource: "generated-contract-video", withExtension: "mp4") else {
             throw NSError(domain:"CoreContractGenerated",code:7,userInfo:["step":"video_fixture_missing"])

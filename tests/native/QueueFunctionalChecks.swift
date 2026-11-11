@@ -10,6 +10,7 @@ private func requireQueueProof(_ value: Bool, _ step: String) throws {
     if !value { throw QueueProofFailure.check(step) }
 }
 
+/// Checks exact generated IDs and window state across queued mutations, failures and lock.
 @MainActor final class QueueFunctionalChecks: ObservableObject {
     static let shared = QueueFunctionalChecks()
     @Published var status = "NotStarted"
@@ -55,9 +56,12 @@ private func requireQueueProof(_ value: Bool, _ step: String) throws {
         writeReport()
     }
 
+    /// Creates two attached viewers after generated Photos have entered the visible snapshot.
     func prepareWindows() {
         status = "PreparingWindows"
+        // Wait for the generated library and attach both windows before queue assertions.
         Task {
+            // Fail setup immediately if the generated library or either session is unavailable.
             do {
                 await state.manager.openLibrarySection(.photos)
                 let seedDeadline = ContinuousClock.now + .seconds(30)
@@ -85,9 +89,12 @@ private func requireQueueProof(_ value: Bool, _ step: String) throws {
         }
     }
 
+    /// Exercises shared prefetch and mixed queued mutations against frozen generated IDs.
     func run() {
         status = "RunningMixed20"
+        // Run the stateful matrix in one task so later assertions observe the preceding commits.
         Task {
+            // Keep failures tied to their fixed proof step while exercising the complete mutation sequence.
             do {
                 guard sessions.count == 2, let first = state.store.session(sessions[0]),
                       let second = state.store.session(sessions[1]) else {
@@ -170,6 +177,7 @@ private func requireQueueProof(_ value: Bool, _ step: String) throws {
                 try check(vaultTargets.count == 10, "ten_real_vault_targets")
                 var photoTargets: [String] = []
                 let shuffledNext = second.nextItem?.localIdentifier
+                // Interleave stores to verify the queue preserves every captured target across windows.
                 for (offset, vaultID) in vaultTargets.enumerated() {
                     guard let item = first.currentItem, let asset = item.photosAsset else {
                         throw QueueProofFailure.check("photo_target_visible")
@@ -377,7 +385,9 @@ private func requireQueueProof(_ value: Bool, _ step: String) throws {
         }
     }
 
+    /// Checks the committed prefix after lock so interrupted items are neither lost nor over-deleted.
     func verifyAfterUnlock() {
+        // Compare the persisted batch with the frozen targets after the new unlock.
         do {
             let newlyBinned = Set(state.vault.records.filter(GalleryVaultRecycleBin.contains).map(\.id))
                 .subtracting(binnedBeforeLock)

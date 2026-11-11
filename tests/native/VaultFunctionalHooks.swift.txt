@@ -1,4 +1,6 @@
+/// Exposes generated storage checks so mutation tests can verify bytes and injected damage.
 extension GalleryVaultStorage {
+    /// Hashes encrypted resources to detect changes caused by metadata-only queue actions.
     func proofResourceHashes() throws -> [String: String] {
         var result: [String: String] = [:]
         for record in records {

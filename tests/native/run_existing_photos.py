@@ -11,6 +11,7 @@ permission_log=None
 def run(args, timeout=120, **kw): return subprocess.run(args,check=True,text=True,capture_output=True,timeout=timeout,**kw)
 def stop(sig, frame): raise SystemExit(128+sig)
 signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGINT, stop)
+# Own the simulator only for this bounded run so cleanup happens after failures.
 try:
  run(['python3',str(here/'prepare.py')])
  with (here/'photos-native-build.log').open('w') as log:
@@ -23,6 +24,7 @@ try:
  run(['xcrun','simctl','install',sim,str(derived/'Build/Products/Debug-xrsimulator/SimpleVisionGallery.app')])
  started=time.time();run(['xcrun','simctl','launch',sim,bundle])
  container=Path(run(['xcrun','simctl','get_app_container',sim,bundle,'data']).stdout.strip()); docs=container/'Documents'; result=docs/'auto-result.json'; marker=docs/'auto-build.txt'; last=None; last_seed=None; deadline=time.monotonic()+360
+ # Watch fixed fixture progress until a result or deadline is reached.
  while time.monotonic()<deadline:
   seed=docs/'seed-progress.txt'
   if seed.exists() and seed.stat().st_mtime >= started:

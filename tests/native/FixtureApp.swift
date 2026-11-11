@@ -6,6 +6,7 @@ import UIKit
 import LocalAuthentication
 import QuartzCore
 
+/// Hosts generated fixture windows so native viewer transitions can be exercised without real media.
 @main struct SimpleVisionGalleryApp: App {
     init() {
         try? Data("core-contracts-generated-v1".utf8).write(to: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("auto-build.txt"), options: .atomic)
@@ -25,6 +26,7 @@ import QuartzCore
     }
 }
 
+/// Samples frame gaps and publication time so responsiveness can be measured during real viewer work.
 @MainActor final class DeleteFrameProbe: NSObject, ObservableObject {
     static let shared = DeleteFrameProbe()
     @Published private(set) var result = "idle"
@@ -47,6 +49,7 @@ import QuartzCore
         displayLink.add(to: .main, forMode: .common)
     }
     func arm(_ label: String) { armedLabel = label; result = "armed-" + label }
+    /// Starts a fresh measurement at the action boundary so earlier frames do not skew results.
     func beginIfArmed() {
         guard armedLabel != nil else { return }
         started = CACurrentMediaTime()
@@ -74,6 +77,7 @@ import QuartzCore
         work()
         maximumStorePublish = max(maximumStorePublish, CACurrentMediaTime() - started)
     }
+    /// Records the first frame and later gaps after an action, including a settling interval.
     @objc private func nextFrame(_ displayLink: CADisplayLink) {
         guard armedLabel != nil, started > 0 else { return }
         let now = CACurrentMediaTime()
@@ -103,6 +107,7 @@ import QuartzCore
     }
 }
 
+/// Owns generated library and viewer state so every native proof uses the same isolated fixture.
 @MainActor final class MeasurementState: ObservableObject {
     static let shared = MeasurementState()
     @Published var status = "Ready" { didSet { measurementStep(status) } }
@@ -124,6 +129,7 @@ import QuartzCore
         }
     }
 
+    /// Seeds encrypted generated records and refreshes the manager to exercise large vaults.
     func seedVault(_ count: Int, offset: Int = 0) {
         status = "SeedingVault-\(count)"
         Task {
@@ -136,8 +142,10 @@ import QuartzCore
         }
     }
 
+    /// Opens a vault playlist, optionally in two sessions, to measure real viewer updates.
     func openVaultViewer(caseLabel: String, duplicate: Bool = false) {
         status = "OpeningVault-\(caseLabel)"
+        // Run setup asynchronously so album loading finishes before the session attaches.
         Task {
             await manager.loadAlbums()
             guard let album = manager.albums.first(where: { $0.id == GeneratedFixture.albumID }) else {
@@ -157,13 +165,16 @@ import QuartzCore
         }
     }
 
+    /// Creates generated PhotoKit assets in a dedicated album for native library tests.
     func seedPhotos(_ count: Int = 1000) {
         status = "PhotosAuth"
+        // Wait for Photos authorization before creating any generated assets.
         Task {
             await manager.requestAuthorization()
             guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
                 status = "PhotosPermissionMissing"; return
             }
+            // Keep album creation and asset seeding together so failures leave a clear fixture status.
             do {
                 if photoCollectionID == nil {
                     var albumID: String?
@@ -184,6 +195,7 @@ import QuartzCore
                 }
                 var placeholders: [PHObjectPlaceholder] = []
                 status = "SeedingPhotos"
+                // Add the generated assets and album membership in one PhotoKit transaction.
                 try await PHPhotoLibrary.shared().performChanges {
                     for _ in 0..<count {
                         let request = PHAssetCreationRequest.forAsset()
@@ -199,8 +211,10 @@ import QuartzCore
         }
     }
 
+    /// Opens the generated Photos album so timing and mutations use actual viewer sessions.
     func openPhotosViewer() {
         status = "OpeningPhotos"
+        // Resolve the generated album before opening a viewer session.
         Task {
             await manager.loadAlbums()
             guard let album = manager.albums.first(where: { $0.title == GeneratedFixture.photosTitle }) else {
@@ -236,12 +250,14 @@ private enum GeneratedFixture {
 
 private extension Notification.Name { static let measurementOpenViewer = Notification.Name("measurement-open-viewer") }
 
+/// Exposes fixture setup and progress so the native runner can drive generated-data cases.
 struct MeasurementPanel: View {
     @StateObject private var state = MeasurementState.shared
     @ObservedObject private var probe = DeleteFrameProbe.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
+    /// Exposes fixture controls and status so setup can be observed during native runs.
     var body: some View {
         VStack(spacing: 12) {
             Text(state.status).accessibilityIdentifier("measurement-status")
@@ -265,9 +281,11 @@ struct MeasurementPanel: View {
     }
 }
 
+/// Hosts the production viewer window so media readiness includes native attachment.
 struct MeasurementViewer: View {
     let value: GalleryViewerWindowValue?
     @Environment(\.dismissWindow) private var dismissWindow
+    /// Mounts the real viewer and close control so session lifecycle is exercised.
     var body: some View {
         VStack {
             Button("Close generated viewer") { dismissWindow(id: GalleryViewerWindows.sceneID) }
