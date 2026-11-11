@@ -291,7 +291,6 @@ final class GalleryViewerMedia {
         requestedPrefetchAssets = assets
         requestedExcludingCurrent = excludingCurrent
         requestedPreserving = preserving
-        let previousKeys = desiredPrefetchAssets.map(GallerySceneCache.key(for:))
         var seen: Set<String> = []
         lastPrefetchOwnerCount = GallerySceneCache.shared.prefetchOwnerCount
         let itemShare = max(1, GalleryViewerPreferences.globalPrefetchItemBudget / lastPrefetchOwnerCount)
@@ -306,13 +305,9 @@ final class GalleryViewerMedia {
         prefetched.formIntersection(wanted)
         GallerySceneCache.shared.updatePrefetchDemand(owner: prefetchOwnerID,
             orderedKeys: preservedKey.map { [$0] + orderedKeys } ?? orderedKeys)
-        prefetchFailures.formIntersection(wanted)
-        prefetchVideoSlotFailures.formIntersection(wanted)
-        // A changed playlist is a fresh chance after a transient fetch failure.
-        if previousKeys != orderedKeys {
-            prefetchFailures.removeAll()
-            prefetchVideoSlotFailures.removeAll()
-        }
+        // Each external demand refresh is one new chance after a transient failure.
+        prefetchFailures.removeAll()
+        prefetchVideoSlotFailures.removeAll()
         if let prefetchKey, !wanted.contains(prefetchKey) { cancelPrefetchWork() }
         if wanted.isEmpty { cancelPrefetchWork() }
         startPrefetchIfNeeded()
@@ -469,6 +464,8 @@ final class GalleryViewerMedia {
         guard active != isSceneActive else { return }
         isSceneActive = active
         if active {
+            prefetchFailures.removeAll()
+            prefetchVideoSlotFailures.removeAll()
             if !isPresentationCovered {
                 if resumePlaybackWhenActive { player?.play() }
                 resumePlaybackWhenActive = false
