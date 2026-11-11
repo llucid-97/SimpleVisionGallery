@@ -69,6 +69,10 @@ struct GalleryViewerWindowRoot: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.pushWindow) private var pushWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @AppStorage(GalleryViewerPreferences.pairedYawKey)
+    private var pairedYaw = GalleryViewerPreferences.defaultPairedYaw
+    @AppStorage(GalleryViewerPreferences.pairedPitchKey)
+    private var pairedPitch = GalleryViewerPreferences.defaultPairedPitch
     @State private var moreSessionID: UUID?
     @State private var morePopoverCovered = false
     @State private var moveTarget: GalleryViewerMoveTarget?
@@ -133,7 +137,8 @@ struct GalleryViewerWindowRoot: View {
                                 width: paneWidth,
                                 minimumMediaHeight: minimumMediaHeight,
                                 backingYaw: value.sessionIDs.count == 2
-                                    ? (sessionID == value.sessionIDs.first ? 10 : -10) : 0,
+                                    ? (sessionID == value.sessionIDs.first ? pairedYaw : -pairedYaw) : 0,
+                                backingPitch: paired ? pairedPitch : 0,
                                 ornamentAnchor: value.sessionIDs.count == 2
                                     ? UnitPoint3D(x: sessionID == value.sessionIDs.first ? 0.25 : 0.75, y: 1, z: 0.5)
                                     : .bottom,
@@ -300,6 +305,7 @@ private struct GalleryViewerPane: View {
     let width: CGFloat
     let minimumMediaHeight: CGFloat
     let backingYaw: Double
+    let backingPitch: Double
     let ornamentAnchor: UnitPoint3D
     let canArrange: Bool
     let arrange: () -> Void
@@ -377,7 +383,7 @@ private struct GalleryViewerPane: View {
                     .frame(width: width, height: geometry.size.height)
                     .background {
                         GalleryViewerBacking(aspectRatio: media.player == nil ? media.aspectRatio : nil,
-                            yawDegrees: backingYaw, showsMatte: media.imageEntity == nil)
+                            yawDegrees: backingYaw, pitchDegrees: backingPitch, showsMatte: media.imageEntity == nil)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .contentShape(Rectangle())
@@ -617,7 +623,8 @@ private struct GalleryViewerPane: View {
                 .tint(.white).foregroundStyle(.white)
         } else if let player = media.player, media.error == nil {
             if media.isSpatialVideo {
-                GallerySpatialVideoView(player: player, initialYawDegrees: Float(backingYaw))
+                GallerySpatialVideoView(player: player, initialYawDegrees: Float(backingYaw),
+                    initialPitchDegrees: Float(backingPitch))
             } else {
                 GalleryNativeVideoPlayer(player: player)
             }
@@ -625,7 +632,8 @@ private struct GalleryViewerPane: View {
             Image(uiImage: image).resizable().scaledToFit()
                 .frame(width: width, height: height)
         } else if let entity = media.imageEntity {
-            GalleryRealityImage(entity: entity, initialYawDegrees: Float(backingYaw))
+            GalleryRealityImage(entity: entity, initialYawDegrees: Float(backingYaw),
+                initialPitchDegrees: Float(backingPitch))
         } else {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle").font(.largeTitle)
@@ -966,25 +974,32 @@ private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
 struct GalleryRealityImage: View {
     let entity: Entity
     var initialYawDegrees: Float = 0
+    var initialPitchDegrees: Float = 0
 
     var body: some View {
         GeometryReader3D { geometry in
             RealityView { content in
-                // Set the inward angle once when this surface is attached.
-                // Billboarding would erase the parallax when the viewer moves.
+                // Keep orientation fixed between explicit calibration changes.
                 entity.components.remove(BillboardComponent.self)
-                entity.orientation = simd_quatf(angle: initialYawDegrees * .pi / 180, axis: [0, 1, 0])
+                applyOrientation()
                 content.add(entity)
                 fit(content: content, geometry: geometry)
             } update: { content in
                 fit(content: content, geometry: geometry)
             }
             .id(entity.id)
+            .onChange(of: initialYawDegrees) { _, _ in applyOrientation() }
+            .onChange(of: initialPitchDegrees) { _, _ in applyOrientation() }
         }
         // A surrounding 2D GeometryReader proposes zero depth. Retain the
         // native media volume so its surface stays in front of the backing.
         .frame(depth: 540)
         .onDisappear { entity.removeFromParent() }
+    }
+
+    private func applyOrientation() {
+        entity.orientation = GalleryViewerPreferences.pairedOrientation(
+            yawDegrees: initialYawDegrees, pitchDegrees: initialPitchDegrees)
     }
 
     private func fit(content: RealityViewContent, geometry: GeometryProxy3D) {
