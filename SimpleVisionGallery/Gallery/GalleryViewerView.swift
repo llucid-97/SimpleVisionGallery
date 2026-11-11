@@ -415,7 +415,7 @@ private struct GalleryViewerPane: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("gallery-viewer-delete-pending-count")
                     }
-                    if deleteQueue.photosUnresponsive || store.pendingPhotosSessionID == session.id {
+                    if deleteQueue.photosUnresponsive {
                         Text("Photos hasn’t responded yet. The operation remains pending.")
                             .font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("gallery-viewer-photos-pending")
