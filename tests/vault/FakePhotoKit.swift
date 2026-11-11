@@ -284,6 +284,11 @@ nonisolated final class GalleryVaultStagingItem {
                 case .putBack:
                     record.albums.removeAll { $0.id == GalleryVaultRecycleBin.id }
                     durable[record.id] = record
+                case .move(_, let sourceID, let destination):
+                    guard !GalleryVaultRecycleBin.contains(record) else { throw GalleryVaultTransferError.invalidVaultDestination }
+                    if let sourceID, !record.albums.contains(where: { $0.id == sourceID }) { throw GalleryVaultTransferError.invalidVaultDestination }
+                    record.albums = Self.destinationAlbums(record.albums, destination: destination, sourceAlbumID: sourceID)
+                    durable[record.id] = record
                 case .delete:
                     guard GalleryVaultRecycleBin.contains(record) else { throw GalleryVaultTransferError.notInRecycleBin }
                     durable.removeValue(forKey: record.id)

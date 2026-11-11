@@ -561,11 +561,18 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
             case .vault:
                 let album = playlist.snapshot.album
                 let inBin = album.virtualScope == .recycleBin || GalleryRecycleBin.isRecycleBinTitle(album.title)
-                keepRemoved = succeeded && request.action.keepsVaultItemHidden(inRecycleBin: inBin)
+                if case .moveToVault(_, _, let sourceID) = request.action {
+                    keepRemoved = succeeded && (album.id == sourceID || (sourceID == nil && album.virtualScope == .unfiled))
+                } else { keepRemoved = succeeded && request.action.keepsVaultItemHidden(inRecycleBin: inBin) }
             case .photos(_, let sourceID):
                 let album = playlist.snapshot.album
-                keepRemoved = succeeded && (request.action == .permanent || album.id == sourceID
-                    || album.virtualScope == .photos || album.virtualScope == .unfiled)
+                switch request.action {
+                case .moveToPhotos, .removeFromAlbum:
+                    keepRemoved = succeeded && (album.id == sourceID || (sourceID == nil && album.virtualScope == .unfiled))
+                default:
+                    keepRemoved = succeeded && (request.action == .permanent || album.id == sourceID
+                        || album.virtualScope == .photos || album.virtualScope == .unfiled)
+                }
             }
             if !keepRemoved && !pending.confirmed {
                 playlist.index.restore(IndexSet(integer: pending.position))
@@ -593,6 +600,29 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         Self.gateLog.info("queue_release duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1000), privacy: .public)")
         GalleryVirtualLibraryIndex.shared.invalidate()
         return result
+    }
+
+    /// Execute the captured Photos target without consulting the now-advanced viewer cursor.
+    func performQueuedPhotoMove(_ request: GalleryDeleteRequest) async -> Error? {
+        await acquireMutation()
+        let result: Result<GalleryQueuedPhotoMove.Result, Error>
+        do {
+            let value = try await Task.detached(priority: .userInitiated) {
+                try await GalleryQueuedPhotoMove.execute(request)
+            }.value
+            result = .success(value)
+        } catch { result = .failure(error) }
+        releaseMutation()
+        switch result {
+        case .failure(let error): return error
+        case .success(let value):
+            guard case .photos(let id, let sourceID) = request.target else { return nil }
+            GalleryVirtualLibraryIndex.shared.applyLocalMembershipDelta(assetIDs: [id],
+                addedAlbumID: value.destinationID, removedAlbumID: sourceID)
+            if let destinationID = value.destinationID { GalleryMoveHistory.shared.recordSuccessfulMove(to: destinationID) }
+            Task { await refreshAlbums() }
+            return nil
+        }
     }
 
     /// Removes the current item from its real source album without deleting it

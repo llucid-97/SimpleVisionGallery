@@ -759,6 +759,20 @@ final class GalleryVaultStorage: ObservableObject {
                                 do { try Self.syncDirectory(directory) } catch { durabilityWarning = GalleryVaultMutationWarning.directorySyncUnconfirmed }
                                 itemChanged = true
                             }
+                        case .move(_, let sourceID, let destination):
+                            guard !GalleryVaultRecycleBin.contains(record),
+                                  destination.id != GalleryVaultRecycleBin.id,
+                                  !GalleryRecycleBin.isRecycleBinTitle(destination.title) else {
+                                throw GalleryVaultTransferError.invalidVaultDestination
+                            }
+                            if let sourceID, !record.albums.contains(where: { $0.id == sourceID }) {
+                                throw NSError(domain: "GalleryVaultMove", code: 1,
+                                    userInfo: [NSLocalizedDescriptionKey: "This item is no longer in the source album."])
+                            }
+                            record.albums = Self.destinationAlbums(record.albums, destination: destination, sourceAlbumID: sourceID)
+                            try Self.writeRecord(record, in: directory, key: key)
+                            do { try Self.syncDirectory(directory) } catch { durabilityWarning = GalleryVaultMutationWarning.directorySyncUnconfirmed }
+                            itemChanged = true
                         case .delete:
                             guard GalleryVaultRecycleBin.contains(record) else {
                                 throw GalleryVaultTransferError.notInRecycleBin

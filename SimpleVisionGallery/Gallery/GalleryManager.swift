@@ -1189,7 +1189,12 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
     private func requestAffectsCurrentGrid(_ request: GalleryDeleteRequest) -> Bool {
         guard let album = selectedAlbum, case .photos(_, let sourceAlbumID) = request.target else { return false }
         if request.action == .permanent { return true }
-        return album.id == sourceAlbumID || album.virtualScope == .photos || album.virtualScope == .unfiled
+        switch request.action {
+        case .moveToPhotos, .removeFromAlbum:
+            return album.id == sourceAlbumID || (sourceAlbumID == nil && album.virtualScope == .unfiled)
+        default:
+            return album.id == sourceAlbumID || album.virtualScope == .photos || album.virtualScope == .unfiled
+        }
     }
 
     var browsableAlbums: [GalleryAlbum] {

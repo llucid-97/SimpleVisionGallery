@@ -711,7 +711,7 @@ private struct GalleryViewerPane: View {
                             sourceAlbumID: session.sourceAlbumID)
                     }
                 } label: { Label("Move", systemImage: "arrowshape.turn.up.right") }
-                .disabled(session.currentItem == nil || store.isPerformingOperation || (isVaultItem && vault.isBusy))
+                .disabled(session.currentItem == nil)
                 .accessibilityIdentifier("gallery-viewer-move")
             }
 
@@ -834,6 +834,10 @@ private struct GalleryViewerMoveSheet: View {
             .filter { !GalleryRecycleBin.isRecycleBin($0) }
     }
 
+    private var recentVaultDestinations: [GalleryVaultAlbum] {
+        GalleryMoveHistory.shared.recentVaultAlbums(from: vaultDestinations, excluding: sourceAlbumID)
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -846,31 +850,37 @@ private struct GalleryViewerMoveSheet: View {
                             chooseVaultAlbum(vaultDestinations.first { $0.title == name }
                                 ?? GalleryVaultAlbum(id: "vault-album:" + UUID().uuidString, title: name, position: nil))
                         } else {
-                            performMove { try await store.move(sessionID, toNewAlbumNamed: name, expectedAssetID: assetID) }
+                            queueMove(.moveToPhotos(destinationID: nil, newName: name))
                         }
                     }
                     .accessibilityIdentifier("gallery-viewer-create-vault-album")
-                    .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPerformingOperation
-                        || (showingVaultDestinations && vault.isBusy)
+                    .disabled(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || (showingVaultDestinations && GalleryRecycleBin.isRecycleBinTitle(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines))))
                 }
                 if !showingVaultDestinations, query.isEmpty, !recentDestinations.isEmpty {
                     Section("Recent destinations") {
                         ForEach(recentDestinations) { album in
                             Button(album.title) {
-                                performMove { try await store.move(sessionID, to: album, expectedAssetID: assetID) }
+                                queueMove(.moveToPhotos(destinationID: album.id, newName: nil))
                             }
-                            .disabled(store.isPerformingOperation)
+                        }
+                    }
+                }
+                if showingVaultDestinations, query.isEmpty, !recentVaultDestinations.isEmpty {
+                    Section("Recent destinations") {
+                        ForEach(recentVaultDestinations, id: \.id) { album in
+                            Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
                         }
                     }
                 }
                 Section("Move to album") {
                     if showingVaultDestinations {
                         if vault.isUnlocked {
-                            ForEach(vaultDestinations.filter { query.isEmpty || $0.title.localizedStandardContains(query) }, id: \.id) { album in
+                            ForEach(vaultDestinations.filter { album in
+                                album.id != sourceAlbumID && (query.isEmpty ? !recentVaultDestinations.contains(where: { $0.id == album.id }) : album.title.localizedStandardContains(query))
+                            }, id: \.id) { album in
                                 Button { chooseVaultAlbum(album) } label: { Label(album.title, systemImage: "lock.fill") }
                                     .accessibilityIdentifier("gallery-viewer-move-vault-destination-" + album.id)
-                                    .disabled(vault.isBusy)
                             }
                             if vaultDestinations.isEmpty { Text("Create a Private Vault album above.") }
                         } else {
@@ -878,19 +888,16 @@ private struct GalleryViewerMoveSheet: View {
                         }
                     } else { ForEach(destinations) { album in
                         Button(album.title) {
-                            performMove { try await store.move(sessionID, to: album, expectedAssetID: assetID) }
+                            queueMove(.moveToPhotos(destinationID: album.id, newName: nil))
                         }
-                        .disabled(store.isPerformingOperation)
                     }
                 }
                 }
                 if !showingVaultDestinations { Section("Current album") {
                     Button("Remove from Album", systemImage: "minus.circle") {
-                        performMove {
-                            try await store.removeFromSourceAlbum(sessionID: sessionID, expectedAssetID: assetID)
-                        }
+                        queueMove(.removeFromAlbum)
                     }
-                    .disabled(!canRemoveFromSource || store.isPerformingOperation)
+                    .disabled(!canRemoveFromSource)
                     .accessibilityIdentifier("gallery-viewer-remove-from-album")
                 }
                 }
@@ -901,22 +908,11 @@ private struct GalleryViewerMoveSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
-            .overlay {
-                if store.isPerformingOperation {
-                    VStack(spacing: 12) {
-                        ProgressView("Moving…")
-                        if store.pendingPhotosSessionID == sessionID {
-                            Text("Photos hasn’t responded yet. This operation is still pending.")
-                                .accessibilityIdentifier("gallery-viewer-photos-pending")
-                        }
-                    }.padding(24).glassBackgroundEffect()
-                }
-            }
         }
         .frame(width: 500, height: 550)
         .task { await store.refreshAlbums() }
-        .task(id: vault.isUnlocked && !vault.isBusy) {
-            guard vault.isUnlocked, !vault.isBusy else { return }
+        .task(id: vault.isUnlocked) {
+            guard vault.isUnlocked else { return }
             let destinations = await vault.albumDestinations()
             guard vault.isUnlocked, !Task.isCancelled else { return }
             vaultDestinations = destinations
@@ -927,22 +923,24 @@ private struct GalleryViewerMoveSheet: View {
     }
 
     private func chooseVaultAlbum(_ album: GalleryVaultAlbum) {
-        if let vaultRecordID {
-            guard vault.isUnlocked else { return }
-            performMove { try await vault.move(recordID: vaultRecordID, from: sourceAlbumID, to: album) }
+        guard vault.isUnlocked else { return }
+        if vaultRecordID != nil {
+            queueMove(.moveToVault(id: album.id, epoch: vault.authEpoch, sourceAlbumID: sourceAlbumID), vaultDestination: album)
             return
         }
-        guard vault.isUnlocked, let session = store.session(sessionID),
+        guard let session = store.session(sessionID),
               let asset = session.currentAsset, asset.localIdentifier == assetID else { return }
-        moveToVault(.items([asset], destination: album, sourceAlbumID: session.sourceAlbumID))
+        moveToVault(.queuedItem(asset, destination: album, sourceAlbumID: sourceAlbumID, sessionID: sessionID))
         dismiss()
     }
 
-    private func performMove(_ action: @escaping @MainActor () async throws -> Void) {
-        Task {
-            do { try await action(); dismiss() }
-            catch let failure { self.error = failure.localizedDescription }
+    private func queueMove(_ action: GalleryDeleteAction, vaultDestination: GalleryVaultAlbum? = nil) {
+        guard let item = store.session(sessionID)?.currentItem, item.localIdentifier == assetID else {
+            error = "This item is no longer available."
+            return
         }
+        GalleryDeleteQueue.shared.enqueueMove(item: item, sourceAlbumID: sourceAlbumID, sessionID: sessionID, action: action, vaultDestination: vaultDestination)
+        dismiss()
     }
 
     private var canRemoveFromSource: Bool {

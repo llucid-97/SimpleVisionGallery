@@ -71,7 +71,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                         guard binChange != nil else { return false }
                         guard case .photos(_, let sourceID) = request.target, let sourceID else { return true }
                         return sourceChanges[sourceID] != nil
-                    case .putBack: return false
+                    case .putBack, .moveToPhotos, .moveToVault, .removeFromAlbum: return false
                     case .permanent: return true
                     }
                 }
@@ -91,7 +91,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                         if case .photos(_, let sourceID) = request.target, let sourceID {
                             removals[sourceID, default: []].append(asset)
                         }
-                    case .putBack: continue
+                    case .putBack, .moveToPhotos, .moveToVault, .removeFromAlbum: continue
                     case .permanent:
                         // Exact asset membership is checked again inside this change block.
                         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
@@ -152,7 +152,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
         switch request.action {
         case .recycle:
             guard status == .authorized || status == .limited else { throw PhotoDeleteError.accessRequired }
-        case .putBack: throw PhotoDeleteError.unsupportedTarget
+        case .putBack, .moveToPhotos, .moveToVault, .removeFromAlbum: throw PhotoDeleteError.unsupportedTarget
         case .permanent:
             guard status == .authorized else { throw PhotoDeleteError.fullAccessRequired }
         }
@@ -169,7 +169,7 @@ nonisolated enum GalleryQueuedPhotoDeletion {
                 }
                 return (asset, source)
             }
-        case .putBack: throw PhotoDeleteError.unsupportedTarget
+        case .putBack, .moveToPhotos, .moveToVault, .removeFromAlbum: throw PhotoDeleteError.unsupportedTarget
         case .permanent:
             guard let bin, GalleryRecycleBin.isRecycleBinTitle(bin.localizedTitle),
                   lookup.contains(asset, in: bin) else { throw PhotoDeleteError.notInBin }
@@ -236,6 +236,73 @@ private nonisolated enum PhotoDeleteError: LocalizedError, Sendable {
         case .assetNotDeletable: "Photos does not allow permanently deleting this item."
         case .changeUnavailable: "Photos could not prepare the requested change."
         case .deletePostcondition: "Photos reported deletion, but the item is still available."
+        }
+    }
+}
+
+nonisolated enum GalleryQueuedPhotoMove {
+    struct Result: Sendable { let destinationID: String? }
+
+    static func execute(_ request: GalleryDeleteRequest) async throws -> Result {
+        guard case .photos(let id, let sourceID) = request.target else { throw PhotoMoveError.unavailable }
+        let destinationID: String?
+        let createName: String?
+        switch request.action {
+        case .moveToPhotos(let target, let name): destinationID = target; createName = name
+        case .removeFromAlbum: destinationID = nil; createName = nil
+        default: throw PhotoMoveError.unavailable
+        }
+        var staged = false
+        var resultDestination: String?
+        var preparationError: Error?
+        try await PHPhotoLibrary.shared().performChanges {
+            guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else {
+                preparationError = PhotoMoveError.unavailable; return
+            }
+            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            guard status == .authorized || status == .limited else { preparationError = PhotoMoveError.unavailable; return }
+            let source: PHAssetCollection?
+            if let sourceID {
+                guard let found = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [sourceID], options: nil).firstObject,
+                      found.canPerform(.removeContent),
+                      PHAsset.fetchAssets(in: found, options: nil).index(of: asset) != NSNotFound else {
+                    preparationError = PhotoMoveError.sourceUnavailable; return
+                }
+                source = found
+            } else { source = nil }
+            let sourceChange = source.flatMap { PHAssetCollectionChangeRequest(for: $0) }
+            guard source == nil || sourceChange != nil else { preparationError = PhotoMoveError.sourceUnavailable; return }
+            let destinationChange: PHAssetCollectionChangeRequest?
+            if let destinationID {
+                guard destinationID != sourceID,
+                      let target = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [destinationID], options: nil).firstObject,
+                      target.canPerform(.addContent), !GalleryRecycleBin.isRecycleBinTitle(target.localizedTitle),
+                      let change = PHAssetCollectionChangeRequest(for: target) else {
+                    preparationError = PhotoMoveError.destinationUnavailable; return
+                }
+                destinationChange = change; resultDestination = destinationID
+            } else if let createName, !createName.isEmpty {
+                let change = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: createName)
+                destinationChange = change; resultDestination = change.placeholderForCreatedAssetCollection.localIdentifier
+            } else if request.action == .removeFromAlbum, source != nil { destinationChange = nil }
+            else { preparationError = PhotoMoveError.destinationUnavailable; return }
+            destinationChange?.addAssets([asset] as NSArray)
+            sourceChange?.removeAssets([asset] as NSArray)
+            staged = true
+        }
+        if let preparationError { throw preparationError }
+        guard staged else { throw PhotoMoveError.unavailable }
+        return .init(destinationID: resultDestination)
+    }
+
+    private enum PhotoMoveError: LocalizedError {
+        case unavailable, sourceUnavailable, destinationUnavailable
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: "Photos could not move this item. Please try again."
+            case .sourceUnavailable: "This item is no longer in the source album."
+            case .destinationUnavailable: "Photos can no longer use that destination album."
+            }
         }
     }
 }

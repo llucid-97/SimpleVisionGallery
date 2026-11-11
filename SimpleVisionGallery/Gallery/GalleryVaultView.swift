@@ -7,11 +7,23 @@ struct GalleryVaultTransferRequest: Identifiable {
     let title: String
     let destinationTitle: String?
     let transfer: @MainActor () async throws -> GalleryVaultTransferOutcome
+    var enqueueOnConfirmation: (@MainActor () -> Void)? = nil
 
     static func items(_ assets: [PHAsset], destination: GalleryVaultAlbum? = nil, sourceAlbumID: String? = nil) -> Self {
         Self(title: "\(assets.count) item\(assets.count == 1 ? "" : "s")", destinationTitle: destination?.title) {
             try await GalleryVaultService.shared.moveToVault(assets: assets, destination: destination, sourceAlbumID: sourceAlbumID)
         }
+    }
+
+    static func queuedItem(_ asset: PHAsset, destination: GalleryVaultAlbum, sourceAlbumID: String?, sessionID: UUID) -> Self {
+        let epoch = GalleryVaultService.shared.authEpoch
+        var request = Self.items([asset], destination: destination, sourceAlbumID: sourceAlbumID)
+        request.enqueueOnConfirmation = {
+            guard GalleryVaultService.shared.isUnlocked, GalleryVaultService.shared.authEpoch == epoch else { return }
+            GalleryDeleteQueue.shared.enqueueMove(item: .photos(asset), sourceAlbumID: sourceAlbumID, sessionID: sessionID,
+                action: .moveToVault(id: destination.id, epoch: epoch, sourceAlbumID: sourceAlbumID), vaultDestination: destination)
+        }
+        return request
     }
 
     static func album(_ title: String, fetch: PHFetchResult<PHAsset>, id: String) -> Self {
@@ -32,6 +44,7 @@ struct GalleryVaultConfirmation: ViewModifier {
             presenting: request
         ) { target in
             Button("Move to Private Vault", role: .destructive) {
+                if let enqueue = target.enqueueOnConfirmation { enqueue(); request = nil; return }
                 showingVault = true
                 resultMessage = nil
                 Task { @MainActor in

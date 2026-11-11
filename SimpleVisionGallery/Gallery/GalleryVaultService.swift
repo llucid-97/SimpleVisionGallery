@@ -36,10 +36,11 @@ nonisolated enum GalleryVaultMutation: Sendable {
     case recycle(UUID)
     case putBack(UUID)
     case delete(UUID)
+    case move(UUID, sourceAlbumID: String?, destination: GalleryVaultAlbum)
 
     var id: UUID {
         switch self {
-        case .recycle(let id), .putBack(let id), .delete(let id): id
+        case .recycle(let id), .putBack(let id), .delete(let id), .move(let id, _, _): id
         }
     }
 }
@@ -482,6 +483,12 @@ final class GalleryVaultService: ObservableObject {
         let result = await applyQueuedMutations([mutation], epoch: epoch)[0]
         if let error = result.error { throw error }
         if let warning = result.warning { self.error = warning.localizedDescription }
+    }
+
+    func moveQueuedToVault(asset: PHAsset, destination: GalleryVaultAlbum, sourceAlbumID: String?, epoch: UUID) async throws -> GalleryVaultTransferOutcome {
+        await waitForIdle(epoch: epoch)
+        guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+        return try await moveToVault(assets: [asset], destination: destination, sourceAlbumID: sourceAlbumID)
     }
 
     private func waitForIdle(epoch: UUID) async {
