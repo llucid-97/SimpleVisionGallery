@@ -1,0 +1,8 @@
+<!-- Target audience: developers and release agents -->
+# Gallery core regression checks
+
+Run `python3 tests/run_core_checks.py` through the shared compute queue from the repository root. It discovers each `check_*.py`, fails on the first error, and reports the number of checks run. It requires Python 3, Xcode's Swift compiler and the macOS CryptoKit runtime.
+
+These checks exercise production queue, media, history, storage and transaction code with controlled doubles and generated data. The storage test writes generated encrypted media to a temporary directory; file-protection APIs are substituted on macOS. The loading tests extract production method bodies into isolated Swift probes, so source refactors may require updating their extraction points. They do not prove visionOS file protection, real PhotoKit permission and transaction behavior, frame timing, or headset rendering. Run the generated native Simulator transition tests and native build separately, and report their evidence and any gaps. Spatial-scene appearance and dual-view comfort require a headset check by the owner.
+
+The PhotoKit-double check asserts exact asset IDs and album memberships, transaction failure, and the reserved Recycle Bin destination. The history check covers migration and store-specific identity; the deletion-plan check covers frozen IDs, epoch, cancel and one-shot authority. The loading checks cover retry after explicit refresh/reactivation, multi-window demand changes, warm media reuse, video metadata and protected speculative-lease limits/cleanup. The transfer host check covers encrypted data integrity, off-main storage work, lock interruption and a post-rename sync error.
