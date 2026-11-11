@@ -2114,7 +2114,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         return album.assetCount > 0 || (GalleryVaultService.shared.isUnlocked && !vaultIndex.recycleBin.isEmpty)
     }
 
+    /// Freeze both stores before confirmation so later bin additions cannot be included.
     func prepareEntireRecycleBinDeletionReview() async -> GalleryDeletionPlan? {
+        // Reject a changed album or vault epoch rather than issue a stale deletion plan.
         do {
             guard let selectedAlbum, isRecycleBin(album: selectedAlbum) else {
                 throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
@@ -2152,7 +2154,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }
     }
 
+    /// Capture the selected Photos and vault IDs under the current vault epoch for confirmation.
     func prepareDeletionReview() -> GalleryDeletionPlan? {
+        // Keep the review scoped to the current selection and unlocked vault session.
         do {
             guard let selectedAlbum, isRecycleBin(album: selectedAlbum) else {
                 throw GalleryOperationError.permanentDeleteOnlyInRecycleBin
@@ -2182,7 +2186,9 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
         }
     }
 
+    /// Revalidate the frozen review and wait for Photos success before deleting its vault items.
     func deleteSelectionFromLibrary(review: GalleryDeletionPlan) async {
+        // Consume review authority once before starting either store's destructive action.
         do {
             guard deletionReviewAuthority.consume(review) else {
                 throw GalleryOperationError.deletionReviewExpired
@@ -2201,6 +2207,7 @@ final class GalleryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObse
             }
             let assets: [PHAsset]
             var sourceID: String? = nil
+            // Recheck the Photos bin and every captured membership before queueing permanent deletion.
             if !review.candidates.isEmpty {
                 try requireCurrentFullPhotoAccessForDeletion(afterMutation: false)
                 guard let photosBinID = review.photosBinID,

@@ -42,6 +42,7 @@ final class GalleryMoveHistory {
         defaults.set(destinations, forKey: Self.defaultsKey)
     }
 
+    /// Resolve saved Photos IDs against editable current albums to omit stale or reserved destinations.
     func recentAlbums(from albums: [GalleryAlbum], excluding albumID: String?) -> [GalleryAlbum] {
         var seen = Set<String>()
         let byID = Dictionary(albums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -56,7 +57,7 @@ final class GalleryMoveHistory {
         }
     }
 
-    // Call only with the currently unlocked vault's destinations; no names are persisted.
+    /// Resolve saved vault IDs only against unlocked destinations, keeping titles out of persistent history.
     func recentVaultAlbums(from albums: [GalleryVaultAlbum], excluding albumID: String?) -> [GalleryVaultAlbum] {
         var seen = Set<String>()
         let byID = Dictionary(albums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

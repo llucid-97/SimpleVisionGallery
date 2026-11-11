@@ -551,7 +551,7 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
         notify(playlist, orderChanged: true)
     }
 
-    // Reconcile each playlist after the backend finishes, restoring failed removals.
+    /// Reconcile each playlist after the backend finishes, restoring failed removals.
     func finishQueuedDelete(_ request: GalleryDeleteRequest, succeeded: Bool) {
         // Reconcile every affected playlist so failed items can return at their saved positions.
         for playlist in playlists.values {

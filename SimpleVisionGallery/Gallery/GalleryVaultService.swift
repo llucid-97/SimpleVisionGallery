@@ -192,6 +192,7 @@ final class GalleryVaultService: ObservableObject {
         try await move(count: assets.count, sourceAlbumID: sourceAlbumID, destination: destination) { assets[$0] }
     }
 
+    /// Finish and publish the transfer batch even on failure so committed encrypted copies remain recoverable.
     private func move(count: Int, sourceAlbumID: String?, destination: GalleryVaultAlbum? = nil, assetAt: (Int) -> PHAsset) async throws -> GalleryVaultTransferOutcome {
         if let destination { try validateDestination(destination) }
         try beginOperation()
@@ -208,6 +209,7 @@ final class GalleryVaultService: ObservableObject {
         return try result.get()
     }
 
+    /// Copy verified resources before asking Photos to delete originals, preserving recoverable partial progress.
     private func moveInBatch(count: Int, sourceAlbumID: String?, destination: GalleryVaultAlbum?,
                              epoch: UUID, assetAt: (Int) -> PHAsset) async throws -> GalleryVaultTransferOutcome {
         var candidates: [GalleryVaultRecord] = []

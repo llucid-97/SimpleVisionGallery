@@ -240,9 +240,11 @@ private nonisolated enum PhotoDeleteError: LocalizedError, Sendable {
     }
 }
 
+/// Resolve and change a captured Photos item in one transaction to preserve its source membership on failure.
 nonisolated enum GalleryQueuedPhotoMove {
     struct Result: Sendable { let destinationID: String? }
 
+    /// Revalidate the captured asset and destination at commit time so later UI navigation cannot retarget the move.
     static func execute(_ request: GalleryDeleteRequest) async throws -> Result {
         guard case .photos(let id, let sourceID) = request.target else { throw PhotoMoveError.unavailable }
         let destinationID: String?
@@ -255,6 +257,7 @@ nonisolated enum GalleryQueuedPhotoMove {
         var staged = false
         var resultDestination: String?
         var preparationError: Error?
+        // Validate and stage both album changes together so a stale source cannot lose the asset.
         try await PHPhotoLibrary.shared().performChanges {
             guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else {
                 preparationError = PhotoMoveError.unavailable; return
@@ -273,6 +276,7 @@ nonisolated enum GalleryQueuedPhotoMove {
             let sourceChange = source.flatMap { PHAssetCollectionChangeRequest(for: $0) }
             guard source == nil || sourceChange != nil else { preparationError = PhotoMoveError.sourceUnavailable; return }
             let destinationChange: PHAssetCollectionChangeRequest?
+            // Existing and newly created albums share the same source-removal transaction.
             if let destinationID {
                 guard destinationID != sourceID,
                       let target = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [destinationID], options: nil).firstObject,

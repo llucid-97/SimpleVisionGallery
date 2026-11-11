@@ -320,6 +320,7 @@ final class GalleryViewerMedia {
                  preserving: preserving.map(GalleryMediaItem.photos))
     }
 
+    /// Recompute this window's ordered demand so retained media follows its current share of the shared budget.
     func prefetch(items assets: [GalleryMediaItem], excludingCurrent: GalleryMediaItem? = nil, preserving: GalleryMediaItem? = nil) {
         requestedPrefetchAssets = assets
         requestedExcludingCurrent = excludingCurrent
@@ -362,11 +363,13 @@ final class GalleryViewerMedia {
         startPrefetchIfNeeded()
     }
 
+    /// Start one ordered preparation worker so one window does not flood the shared budget.
     private func startPrefetchIfNeeded() {
         guard isSceneActive, !isLoading, prefetchCoordinator == nil,
               !desiredPrefetchAssets.isEmpty else { return }
         let token = prefetchGeneration
         prefetchCoordinator = Task(priority: .utility) { @MainActor [weak self] in
+            // Keep processing wanted media until cancellation or the current demand is satisfied.
             while !Task.isCancelled {
                 guard let (key, task) = self?.nextPrefetchRequest() else { break }
                 do {
@@ -750,6 +753,7 @@ private final class GallerySceneCache {
         NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)
     }
 
+    /// Share in-flight video work and bound speculative vault leases while preserving independent window consumers.
     func video(for asset: GalleryMediaItem, foreground: Bool) async throws -> GalleryPreparedVideo {
         let assetKey = Self.key(for: asset)
         if var retained = retainedPrefetch[assetKey], case .video(let video) = retained.media,
@@ -771,6 +775,7 @@ private final class GallerySceneCache {
         let key = assetKey + ":video"
         let consumer = UUID()
         let task: Task<GalleryPreparedVideo, Error>
+        // Join a live task or start a new one so cancelled work cannot poison the next foreground request.
         if var existing = pendingVideos[key], !existing.task.isCancelled {
             existing.consumers.insert(consumer)
             existing.foreground = existing.foreground || foreground
@@ -786,6 +791,7 @@ private final class GallerySceneCache {
                 defer { generationGate.release() }
                 try Task.checkCancellation()
                 var reservationID: UUID?
+                // Reserve only a safe amount of temporary plaintext before decrypting a speculative video.
                 if let record = asset.vaultRecord, pendingVideos[key]?.foreground != true {
                     guard vaultVideoReservation == nil else { throw GalleryMediaError.prefetchVideoSlotUnavailable }
                     guard let resource = GalleryVaultResourceSelection.displayResource(for: record)
@@ -806,6 +812,7 @@ private final class GallerySceneCache {
                         throw error
                     }
                 }
+                // Transfer the reservation to the resulting lease so cleanup controls when the slot is reusable.
                 var videoProduced = false
                 do {
                     let video = try await GalleryVaultMediaRequest.video(asset)
@@ -853,6 +860,7 @@ private final class GallerySceneCache {
         }
     }
 
+    /// Release reservations no longer wanted by this window and rebalance the shared cache.
     func updatePrefetchDemand(owner: UUID, orderedKeys: [String]) {
         let previousOwnerCount = demands.count
         if orderedKeys.isEmpty { demands.removeValue(forKey: owner) }

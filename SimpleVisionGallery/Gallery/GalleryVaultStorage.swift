@@ -556,7 +556,7 @@ final class GalleryVaultStorage: ObservableObject {
         return GalleryVaultStagingItem(id: id, directory: directory, session: session)
     }
 
-    // Directory creation and durability work must not block a viewer frame.
+    /// Create and sync the staging directory off the UI actor under the current vault session.
     func createItemForTransfer(id: UUID) async throws -> GalleryVaultStagingItem {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
         let expectedGeneration = generation
@@ -581,6 +581,7 @@ final class GalleryVaultStorage: ObservableObject {
         return item
     }
 
+    /// Seal and atomically publish a verified staging item off the UI actor while retaining a revocable session.
     func commitTransfer(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem,
                         sourceAlbums: [GalleryVaultAlbum]? = nil) async throws {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
@@ -596,6 +597,7 @@ final class GalleryVaultStorage: ObservableObject {
         let state = TransferWriteState(record: record, sourceAlbums: sourceAlbums)
         try session.attachMutationState { state.clear() }
         defer { session.detachMutationState() }
+        // Complete the encrypted journal and rename under the lease before indexing the record.
         let outcome: (Date?, Error?) = try await Task.detached(priority: .userInitiated) {
             try session.withKey { key in
                 guard let record = state.record else { throw GalleryVaultStorageError.locked }
@@ -763,6 +765,7 @@ final class GalleryVaultStorage: ObservableObject {
         return albums
     }
 
+    /// Persist transfer journal updates off the UI actor and publish them only for the same unlocked session.
     func updateTransfer(_ record: GalleryVaultRecord, sourceAlbums: [GalleryVaultAlbum]? = nil) async throws {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
         guard let previous = recordsByID[record.id] else { throw GalleryVaultStorageError.corruptRecord }
@@ -771,6 +774,7 @@ final class GalleryVaultStorage: ObservableObject {
         let state = TransferWriteState(record: record, sourceAlbums: sourceAlbums)
         try session.attachMutationState { state.clear() }
         defer { session.detachMutationState() }
+        // Write and sync the encrypted journal under a revocable lease before updating the index.
         let date = try await Task.detached(priority: .userInitiated) {
             try session.withKey { key in
                 guard let record = state.record else { throw GalleryVaultStorageError.locked }
@@ -976,7 +980,7 @@ final class GalleryVaultStorage: ObservableObject {
         batchDepth += 1
     }
 
-    // Sort and seal the completed transfer snapshot off the main actor.
+    /// Sort and seal the completed transfer snapshot off the UI actor before publishing it.
     func finishTransferBatch() async -> Set<UUID> {
         guard batchDepth == 1, recordsChanged, let session, isUnlocked else {
             endBatch()
@@ -987,6 +991,7 @@ final class GalleryVaultStorage: ObservableObject {
             idsBySource: idsBySource, recordDates: recordDates)
         do { try session.attachMutationState { state.clear() } }
         catch { endBatch(); return [] }
+        // Sort and encrypt the snapshot under the session so no plaintext batch survives lock.
         await Task.detached(priority: .userInitiated) {
             try? session.withKey { key in
                 state.sortedRecords = Self.sortedRecords(Array(state.recordsByID.values))

@@ -15,6 +15,7 @@ struct GalleryVaultTransferRequest: Identifiable {
         }
     }
 
+    /// Capture the selected asset before confirmation and enqueue only after vault authentication succeeds.
     static func queuedItem(_ asset: PHAsset, destination: GalleryVaultAlbum?, sourceAlbumID: String?, sessionID: UUID) -> Self {
         let vault = GalleryVaultService.shared
         let capturedEpoch = vault.isUnlocked ? vault.authEpoch : nil

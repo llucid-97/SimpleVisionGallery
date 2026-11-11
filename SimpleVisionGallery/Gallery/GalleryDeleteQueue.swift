@@ -153,6 +153,7 @@ final class GalleryDeleteQueue: ObservableObject {
         enqueue(.init(target: .photos(asset.localIdentifier, sourceAlbumID: sourceAlbumID),
             action: .permanent, sessionID: sessionID), asset: asset)
     }
+    /// Freeze the target and vault epoch before staging so a later cursor change cannot retarget it.
     func enqueueMove(item: GalleryMediaItem, sourceAlbumID: String?, sessionID: UUID,
                      action: GalleryDeleteAction, vaultDestination: GalleryVaultAlbum? = nil) {
         switch item {
@@ -165,6 +166,7 @@ final class GalleryDeleteQueue: ObservableObject {
                           action: action, sessionID: sessionID), vaultDestination: vaultDestination)
         }
     }
+    /// Admit a confirmed batch atomically so its completion cannot start the vault phase after a partial enqueue.
     @discardableResult
     func enqueuePhotos(_ assets: [PHAsset], sourceAlbumID: String?, permanently: Bool,
                        completion: (@MainActor (Bool) -> Void)? = nil) -> Bool {
@@ -202,7 +204,7 @@ final class GalleryDeleteQueue: ObservableObject {
         }
     }
 
-    // Drain each store prefix before later requests so completion follows capture order.
+    /// Drain each store prefix before later requests so completion follows capture order.
     private func drain() async {
         var needsAlbumRefresh = false
         // Finalize the current prefix before accepting results from the next store.
@@ -211,6 +213,7 @@ final class GalleryDeleteQueue: ObservableObject {
             // Finish each contiguous store prefix before starting the next one.
             let failures = batch.first?.isVault == true
                 ? await executeVault(batch) : await executePhotos(batch)
+            // A lock can remove active vault requests while the worker is suspended.
             for request in batch where fifo.active.contains(where: { $0.id == request.id }) {
                 let error = failures[request.id]
                 GalleryViewerStore.shared.finishQueuedDelete(request, succeeded: error == nil)
@@ -242,7 +245,7 @@ final class GalleryDeleteQueue: ObservableObject {
         if needsAlbumRefresh { Task { await GalleryViewerStore.shared.refreshAlbums() } }
     }
 
-    // Keep the watchdog scoped to the Photos await so slow prompts remain visible.
+    /// Execute Photos requests in capture order and time only the Photos waits.
     private func executePhotos(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
         var failures: [UUID: Error] = [:]
@@ -254,6 +257,7 @@ final class GalleryDeleteQueue: ObservableObject {
                 onPhotosWaitChanged: setPhotosAwaiting)) { _, new in new }
             pendingDeletes.removeAll()
         }
+        // Flush contiguous deletes before each move to keep their captured order.
         for request in requests {
             switch request.action {
             case .recycle, .permanent, .putBack:
@@ -283,7 +287,7 @@ final class GalleryDeleteQueue: ObservableObject {
         return failures
     }
 
-    // Start the timer at the Photos call, never while encrypting or waiting for the gate.
+    /// Start the timer at the Photos call, never while encrypting or waiting for the gate.
     private func setPhotosAwaiting(_ waiting: Bool) {
         photosWatchdog?.cancel()
         photosWatchdog = nil
@@ -298,7 +302,7 @@ final class GalleryDeleteQueue: ObservableObject {
         }
     }
 
-    // Submit vault changes under their captured epochs and map outcomes back to requests.
+    /// Submit vault changes under captured epochs and map independent outcomes back to requests.
     private func executeVault(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
         var errors: [UUID: Error] = [:]
