@@ -438,7 +438,7 @@ struct GalleryVaultAlbumsToggle: View {
                 } catch { self.error = error.localizedDescription }
             }
         }))
-        .disabled(vault.isBusy)
+        .disabled(vault.isBusy && !vault.isUnlocked)
         .accessibilityIdentifier("gallery-move-vault-albums")
         if let error { Text(error).font(.caption).foregroundStyle(.red) }
     }
