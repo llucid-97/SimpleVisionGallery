@@ -952,6 +952,26 @@ final class GalleryVaultStorage: ObservableObject {
             .appendingPathComponent(recordID.uuidString + "-" + resourceID.uuidString + ".enc")
     }
 
+    /// The encrypted file is an upper bound for the temporary decrypted lease.
+    func speculativeResourceSpace(recordID: UUID, resourceID: UUID) async throws -> (Int64, Int64) {
+        guard isUnlocked, recordsByID[recordID]?.resources.contains(where: { $0.id == resourceID }) == true else {
+            throw GalleryVaultStorageError.locked
+        }
+        let expectedGeneration = generation
+        let input = itemURL(recordID).appendingPathComponent(resourceID.uuidString + ".bin")
+        let result = try await Task.detached(priority: .utility) {
+            let attributes = try FileManager.default.attributesOfItem(atPath: input.path)
+            guard let bytes = (attributes[.size] as? NSNumber)?.int64Value,
+                  let available = try input.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                    .volumeAvailableCapacityForImportantUsage else {
+                throw GalleryVaultStorageError.incompleteItem
+            }
+            return (bytes, available)
+        }.value
+        guard isUnlocked, generation == expectedGeneration else { throw GalleryVaultStorageError.locked }
+        return result
+    }
+
     func decryptResource(recordID: UUID, resourceID: UUID) async throws -> URL {
         guard let session, isUnlocked, let resource = recordsByID[recordID]?.resources.first(where: { $0.id == resourceID }) else {
             throw GalleryVaultStorageError.locked
@@ -1016,11 +1036,17 @@ final class GalleryVaultStorage: ObservableObject {
         return record
     }
 
-    func releasePlaintext(_ url: URL) {
-        guard url.deletingLastPathComponent().standardizedFileURL == plaintext.standardizedFileURL else { return }
-        do { try FileManager.default.removeItem(at: url) }
+    @discardableResult
+    func releasePlaintext(_ url: URL) -> Bool {
+        guard url.deletingLastPathComponent().standardizedFileURL == plaintext.standardizedFileURL else { return false }
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        }
         catch {
-            if !Self.isMissingFile(error) { cleanupWarning = Self.cleanupMessage }
+            if Self.isMissingFile(error) { return true }
+            cleanupWarning = Self.cleanupMessage
+            return false
         }
     }
 
