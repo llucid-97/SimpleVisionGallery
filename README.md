@@ -7,10 +7,10 @@ A standalone gallery for Apple Vision Pro. Open a supported photo and it becomes
 
 - Browse Photos albums, including large libraries, with paged media grids.
 - Swipe through the album in its current order.
-- Prepare upcoming items ahead of time; the spatial prefetch window defaults to five ahead, with two previous items kept ready.
+- Prepare upcoming items ahead of time; the spatial prefetch window defaults to five ahead, with two previous items kept ready. Preparation is shared and bounded across windows. One small vault video can use a protected speculative playback lease; larger videos or low disk space use foreground loading.
 - Show ordinary videos in 2D and spatial videos with their native depth.
 - Toggle a photo's spatial view, move items between albums, or send them to a recycle-bin album.
-- Rename albums, find them with typo-tolerant search, and reuse your three recent move destinations.
+- Rename albums, find them with typo-tolerant search, and reuse your three recent move destinations across Photos and vault albums.
 - Select all items or a range; removal goes to the recycle bin. Delete permanently from inside the bin.
 - Keep a persistent video-loop setting.
 - Browse in the Cinema layout and choose your accent colour in Gallery Settings.
@@ -55,7 +55,7 @@ Native PhotoKit, device authentication and filesystem checks are separate integr
 
 Private Vault stores encrypted originals on this device, separate from Apple's Hidden album. Move selected items or an album into the vault; after verifying the copies, Gallery asks Photos to remove the originals in one batch. One unlock lasts the app session. The vault locks when you lock it or the device locks; switching apps does not lock it. An open-lock icon in the top bar shows that private items are included in albums and slideshows, and lets you lock the vault. Both Move sheets have a Vault Albums toggle: unlock, choose a private destination or create one, then confirm the move. Other album memberships stay; the source album is left out. Restore to Photos imports new items and restores album membership. Missing albums are recreated by their saved name, reusing an editable album with that exact name when one exists. While locked, albums without Photos items are hidden, including empty albums. Unlock to show them and private photo covers. Vault albums containing only videos use a placeholder. Existing vaults build an encrypted index on their first unlock to speed up later unlocks.
 
-Vault items can move between private albums. Delete moves a private item into an encrypted vault Recycle Bin without touching Photos. It appears alongside Photos bin items only while the vault is unlocked. Put Back returns it to its recorded albums, or Unfiled if none remain. Delete Permanently is available inside the bin and requires confirmation. Restore to Photos leaves out the bin membership. Photos bin bulk actions affect Photos items only.
+Vault items can move between private albums. Delete moves a private item into an encrypted vault Recycle Bin without touching Photos. It appears alongside Photos bin items only while the vault is unlocked. Put Back returns it to its recorded albums, or Unfiled if none remain. Delete Permanently is available inside the bin and requires confirmation. Restore to Photos leaves out the bin membership. Empty Bin and selected permanent deletion include unlocked vault items as well as Photos items. Review freezes the exact targets. Photos asks for its own deletion approval; if it is cancelled or fails, the vault items are kept. Vault-only deletion needs no Photos import or Photos deletion prompt.
 
 Delete Album… offers two choices with counts. Delete Album Only keeps all media and removes that album's vault memberships; items outside the bin with no other album appear in Unfiled. Delete Album and Items sends Photos items to this app's Recycle Bin in the same transaction as album deletion. Items shared with other albums stay there. Vault items with no other membership move to the vault Recycle Bin; shared vault items keep their other memberships. Unlock is required to check vault memberships. An interrupted operation keeps an encrypted intent: a recorded Photos success finishes the vault step on unlock; an uncertain result requires Review Interrupted Album Deletion in Private Vault before further moves or restores. Cleanup errors leave readable vault items accessible and show the remaining work. Keep Album clears an interrupted request while the Photos album still exists, or for a vault-only album. An unreadable recovery note can be discarded without changing photos, vault files or memberships.
 
@@ -70,3 +70,7 @@ Version 1.0.10 is [live on the App Store](https://apps.apple.com/app/id682161301
 ## Origin
 
 Extracted from the working PhotoKit Gallery in [SimpleVisionTools](https://github.com/llucid-97/SimpleVisionTools) at `bbb285c70f53f0d852165cd59bf4829a69a59a49`. This repository contains the native gallery and its shared design helpers. There is no embedded Python runtime or unrelated toolbox code.
+
+Dual-view calibration is in Settings: set Inward yaw and Pitch in degrees, or Reset Angles to the original 10° inward yaw and 0° pitch. The saved angles apply to images, scenes and spatial videos. Tune scene comfort on the headset.
+
+Core behavior and release regression requirements are in [Core requirements](docs/core-requirements.md).
