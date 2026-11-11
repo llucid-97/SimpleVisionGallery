@@ -7,7 +7,7 @@ struct GalleryVaultTransferRequest: Identifiable {
     let title: String
     let destinationTitle: String?
     let transfer: @MainActor () async throws -> GalleryVaultTransferOutcome
-    var enqueueOnConfirmation: (@MainActor () -> Void)? = nil
+    var enqueueOnConfirmation: (@MainActor () async throws -> Void)? = nil
 
     static func items(_ assets: [PHAsset], destination: GalleryVaultAlbum? = nil, sourceAlbumID: String? = nil) -> Self {
         Self(title: "\(assets.count) item\(assets.count == 1 ? "" : "s")", destinationTitle: destination?.title) {
@@ -15,13 +15,20 @@ struct GalleryVaultTransferRequest: Identifiable {
         }
     }
 
-    static func queuedItem(_ asset: PHAsset, destination: GalleryVaultAlbum, sourceAlbumID: String?, sessionID: UUID) -> Self {
-        let epoch = GalleryVaultService.shared.authEpoch
+    static func queuedItem(_ asset: PHAsset, destination: GalleryVaultAlbum?, sourceAlbumID: String?, sessionID: UUID) -> Self {
+        let vault = GalleryVaultService.shared
+        let capturedEpoch = vault.isUnlocked ? vault.authEpoch : nil
         var request = Self.items([asset], destination: destination, sourceAlbumID: sourceAlbumID)
         request.enqueueOnConfirmation = {
-            guard GalleryVaultService.shared.isUnlocked, GalleryVaultService.shared.authEpoch == epoch else { return }
+            if let capturedEpoch {
+                guard vault.isUnlocked, vault.authEpoch == capturedEpoch else { throw GalleryVaultTransferError.locked }
+            } else if !vault.isUnlocked {
+                try await vault.unlock()
+            }
+            guard vault.isUnlocked else { throw GalleryVaultTransferError.locked }
             GalleryDeleteQueue.shared.enqueueMove(item: .photos(asset), sourceAlbumID: sourceAlbumID, sessionID: sessionID,
-                action: .moveToVault(id: destination.id, epoch: epoch, sourceAlbumID: sourceAlbumID), vaultDestination: destination)
+                action: .moveToVault(id: destination?.id, epoch: vault.authEpoch, sourceAlbumID: sourceAlbumID),
+                vaultDestination: destination)
         }
         return request
     }
@@ -44,7 +51,15 @@ struct GalleryVaultConfirmation: ViewModifier {
             presenting: request
         ) { target in
             Button("Move to Private Vault", role: .destructive) {
-                if let enqueue = target.enqueueOnConfirmation { enqueue(); request = nil; return }
+                if let enqueue = target.enqueueOnConfirmation {
+                    request = nil
+                    resultMessage = nil
+                    Task { @MainActor in
+                        do { try await enqueue() }
+                        catch { resultMessage = error.localizedDescription }
+                    }
+                    return
+                }
                 showingVault = true
                 resultMessage = nil
                 Task { @MainActor in

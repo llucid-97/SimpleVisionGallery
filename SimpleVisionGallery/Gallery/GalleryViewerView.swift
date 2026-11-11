@@ -537,11 +537,10 @@ private struct GalleryViewerPane: View {
                     .disabled(session.count < 2)
                     if let asset = session.currentAsset {
                         Button("Move to Private Vault", systemImage: "lock") {
-                            guard !store.isPerformingOperation, !vault.isBusy else { return }
                             moreSessionID = nil
-                            vaultTransfer = .items([asset])
+                            vaultTransfer = .queuedItem(asset, destination: nil,
+                                sourceAlbumID: session.sourceAlbumID, sessionID: session.id)
                         }
-                        .disabled(store.isPerformingOperation || vault.isBusy)
                     }
                     if let record = session.currentItem?.vaultRecord {
                         if GalleryVaultRecycleBin.contains(record) {

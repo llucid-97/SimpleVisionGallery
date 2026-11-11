@@ -27,9 +27,23 @@ extension Notification.Name { static let galleryVaultWillLock = Notification.Nam
         let error: Error? = isUnlocked && epoch == authEpoch ? nil : Injected.locked
         return requests.map { .init(id: $0.id, error: error) }
     }
-    func moveQueuedToVault(asset: PHAsset, destination: GalleryVaultAlbum, sourceAlbumID: String?, epoch: UUID) async throws -> GalleryVaultTransferOutcome {
+    var copyDelay = 0
+    var deletionDelay = 0
+    var inCopy = false
+    var inPhotosDelete = false
+    var lastDestinationID: String?
+    func moveQueuedToVault(asset: PHAsset, destination: GalleryVaultAlbum?, sourceAlbumID: String?, epoch: UUID,
+                           onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async throws -> GalleryVaultTransferOutcome {
         GalleryViewerStore.shared.batches.append(["transfer:" + asset.localIdentifier])
         guard isUnlocked, epoch == authEpoch else { throw Injected.locked }
+        lastDestinationID = destination?.id
+        inCopy = true
+        try? await Task.sleep(for: .milliseconds(copyDelay))
+        inCopy = false; inPhotosDelete = true
+        onPhotosWaitChanged(true)
+        try? await Task.sleep(for: .milliseconds(deletionDelay))
+        onPhotosWaitChanged(false)
+        inPhotosDelete = false
         return .init(deleted: 1)
     }
     func lock() { isUnlocked = false; authEpoch = UUID(); NotificationCenter.default.post(name: .galleryVaultWillLock, object: nil) }
@@ -48,14 +62,18 @@ extension Notification.Name { static let galleryVaultWillLock = Notification.Nam
         completed.append(request.itemID)
         if !succeeded { failures.append(request.itemID) }
     }
-    func performQueuedPhotoDeletes(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
+    func performQueuedPhotoDeletes(_ requests: [GalleryDeleteRequest], onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async -> [UUID: Error] {
         batches.append(requests.map(\.itemID))
+        onPhotosWaitChanged(true)
         try? await Task.sleep(for: .milliseconds(photoDelay))
+        onPhotosWaitChanged(false)
         return Dictionary(uniqueKeysWithValues: requests.filter { failing.contains($0.itemID) }.map { ($0.id, Injected.failed as Error) })
     }
-    func performQueuedPhotoMove(_ request: GalleryDeleteRequest) async -> Error? {
+    func performQueuedPhotoMove(_ request: GalleryDeleteRequest, onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async -> Error? {
         batches.append(["move:" + request.itemID])
+        onPhotosWaitChanged(true)
         try? await Task.sleep(for: .milliseconds(photoDelay))
+        onPhotosWaitChanged(false)
         return failing.contains(request.itemID) ? Injected.failed : nil
     }
     func refreshAlbums() async {}
@@ -158,6 +176,22 @@ extension Notification.Name { static let galleryVaultWillLock = Notification.Nam
         precondition(!queue.enqueuePhotos([.init(localIdentifier: "duplicate")], sourceAlbumID: "bin", permanently: true) { _ in duplicateCompletionCalls += 1 })
         await idle(queue)
         precondition(duplicateCompletionCalls == 0, "rejected bulk input must not call completion")
+        store.reset()
+        vault.copyDelay = 80; vault.deletionDelay = 100
+        queue.photosWatchdogDelay = .milliseconds(20)
+        let watchEpoch = vault.authEpoch
+        queue.enqueueMove(item: .photos(.init(localIdentifier: "plain-vault")), sourceAlbumID: "source", sessionID: UUID(),
+            action: .moveToVault(id: nil, epoch: watchEpoch, sourceAlbumID: "source"))
+        while !vault.inCopy { try? await Task.sleep(for: .milliseconds(2)) }
+        try? await Task.sleep(for: .milliseconds(40))
+        precondition(!queue.photosUnresponsive, "encrypted copying must not start the Photos watchdog")
+        while !vault.inPhotosDelete { try? await Task.sleep(for: .milliseconds(2)) }
+        try? await Task.sleep(for: .milliseconds(40))
+        precondition(queue.photosUnresponsive, "a stalled Photos delete must surface the watchdog")
+        await idle(queue)
+        precondition(!queue.photosUnresponsive && vault.lastDestinationID == nil,
+                     "Photos warning must clear and no-destination move must stay no-destination")
+        vault.copyDelay = 0; vault.deletionDelay = 0; queue.photosWatchdogDelay = .seconds(20)
         print("PASS production queue with fake Photos and vault backends")
     }
 }

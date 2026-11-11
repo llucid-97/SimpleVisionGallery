@@ -12,7 +12,7 @@ enum GalleryRecycleBin { static func isRecycleBinTitle(_ title: String) -> Bool 
 struct GalleryVaultRecord { let id: UUID }
 enum GalleryMediaFilter { case all }
 enum GalleryAssetSortMode { case photosOrder }
-enum Action: Equatable { case recycle, permanent, moveToPhotos(destinationID: String?, newName: String?), moveToVault(id: String, epoch: UUID, sourceAlbumID: String?), removeFromAlbum; func keepsVaultItemHidden(inRecycleBin: Bool) -> Bool { true } }
+enum Action: Equatable { case recycle, permanent, moveToPhotos(destinationID: String?, newName: String?), moveToVault(id: String?, epoch: UUID, sourceAlbumID: String?), removeFromAlbum; func keepsVaultItemHidden(inRecycleBin: Bool) -> Bool { true } }
 struct GalleryDeleteRequest {
     enum Target { case photos(String, sourceAlbumID: String?), vault(UUID, epoch: UUID) }
     let target: Target; let action: Action

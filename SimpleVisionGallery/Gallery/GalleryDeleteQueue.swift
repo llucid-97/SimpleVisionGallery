@@ -3,7 +3,7 @@ import Foundation
 nonisolated enum GalleryDeleteAction: Sendable, Equatable {
     case recycle, permanent, putBack
     case moveToPhotos(destinationID: String?, newName: String?)
-    case moveToVault(id: String, epoch: UUID, sourceAlbumID: String?)
+    case moveToVault(id: String?, epoch: UUID, sourceAlbumID: String?)
     case removeFromAlbum
 
     func keepsVaultItemHidden(inRecycleBin: Bool) -> Bool {
@@ -88,6 +88,8 @@ final class GalleryDeleteQueue: ObservableObject {
     @Published private(set) var errorMessage: String?
     private var fifo = GalleryDeleteFIFO()
     private var worker: Task<Void, Never>?
+    private var photosWatchdog: Task<Void, Never>?
+    var photosWatchdogDelay: Duration = .seconds(20)
     private var lockObserver: AnyCancellable?
     private final class BulkCompletion {
         var remaining: Int
@@ -243,19 +245,13 @@ final class GalleryDeleteQueue: ObservableObject {
     // Keep the watchdog scoped to the Photos await so slow prompts remain visible.
     private func executePhotos(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
-        let watchdog = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(20)) } catch { return }
-            guard let self, !Task.isCancelled else { return }
-            self.photosUnresponsive = true
-            Self.log.notice("photos_pending pending_count=\(self.pendingCount, privacy: .public)")
-        }
-        defer { watchdog.cancel(); photosUnresponsive = false }
         var failures: [UUID: Error] = [:]
         // Mixed delete/move batches must retain capture order through the shared gate.
         var pendingDeletes: [GalleryDeleteRequest] = []
         func flushDeletes() async {
             guard !pendingDeletes.isEmpty else { return }
-            failures.merge(await GalleryViewerStore.shared.performQueuedPhotoDeletes(pendingDeletes)) { _, new in new }
+            failures.merge(await GalleryViewerStore.shared.performQueuedPhotoDeletes(pendingDeletes,
+                onPhotosWaitChanged: setPhotosAwaiting)) { _, new in new }
             pendingDeletes.removeAll()
         }
         for request in requests {
@@ -264,23 +260,42 @@ final class GalleryDeleteQueue: ObservableObject {
                 pendingDeletes.append(request)
             case .moveToPhotos, .removeFromAlbum:
                 await flushDeletes()
-                if let error = await GalleryViewerStore.shared.performQueuedPhotoMove(request) { failures[request.id] = error }
+                if let error = await GalleryViewerStore.shared.performQueuedPhotoMove(request, onPhotosWaitChanged: setPhotosAwaiting) { failures[request.id] = error }
             case .moveToVault:
                 await flushDeletes()
                 if let asset = pendingPhotoAssets[request.itemID],
-                   case .moveToVault(let id, let epoch, let sourceID) = request.action,
-                   let destination = pendingVaultDestinations[request.id], destination.id == id {
+                   case .moveToVault(let id, let epoch, let sourceID) = request.action {
+                    let destination = pendingVaultDestinations[request.id]
+                    guard id == nil || destination?.id == id else {
+                        failures[request.id] = GalleryQueuedMoveError.unavailable; continue
+                    }
                     do {
                         let outcome = try await GalleryVaultService.shared.moveQueuedToVault(asset: asset,
-                            destination: destination, sourceAlbumID: sourceID, epoch: epoch)
+                            destination: destination, sourceAlbumID: sourceID, epoch: epoch,
+                            onPhotosWaitChanged: setPhotosAwaiting)
                         guard outcome.deleted == 1 else { throw GalleryQueuedMoveError.notMoved }
-                        GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: id)
+                        if let id { GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: id) }
                     } catch { failures[request.id] = error }
                 } else { failures[request.id] = GalleryQueuedMoveError.unavailable }
             }
         }
         await flushDeletes()
         return failures
+    }
+
+    // Start the timer at the Photos call, never while encrypting or waiting for the gate.
+    private func setPhotosAwaiting(_ waiting: Bool) {
+        photosWatchdog?.cancel()
+        photosWatchdog = nil
+        photosUnresponsive = false
+        guard waiting else { return }
+        let delay = photosWatchdogDelay
+        photosWatchdog = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            self.photosUnresponsive = true
+            Self.log.notice("photos_pending pending_count=\(self.pendingCount, privacy: .public)")
+        }
     }
 
     // Submit vault changes under their captured epochs and map outcomes back to requests.
@@ -298,7 +313,7 @@ final class GalleryDeleteQueue: ObservableObject {
                 case .putBack: return .putBack(id)
                 case .permanent: return .delete(id)
                 case .moveToVault(let albumID, _, let sourceID):
-                    guard let destination = pendingVaultDestinations[request.id], destination.id == albumID else { return nil }
+                    guard let albumID, let destination = pendingVaultDestinations[request.id], destination.id == albumID else { return nil }
                     return .move(id, sourceAlbumID: sourceID, destination: destination)
                 case .moveToPhotos, .removeFromAlbum: return nil
                 }
@@ -316,7 +331,7 @@ final class GalleryDeleteQueue: ObservableObject {
                     continue
                 }
                 if let error = result.error { errors[request.id] = error }
-                else if case .moveToVault(let albumID, _, _) = request.action {
+                else if case .moveToVault(let albumID?, _, _) = request.action {
                     GalleryMoveHistory.shared.recordSuccessfulVaultMove(to: albumID)
                 }
             }

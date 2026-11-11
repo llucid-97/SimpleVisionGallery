@@ -586,16 +586,18 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     }
 
     /// Serialize Photos deletes with moves while running the transaction away from the UI.
-    func performQueuedPhotoDeletes(_ requests: [GalleryDeleteRequest]) async -> [UUID: Error] {
+    func performQueuedPhotoDeletes(_ requests: [GalleryDeleteRequest], onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async -> [UUID: Error] {
         guard !requests.isEmpty else { return [:] }
         // Serialize with existing Move transactions; the delete UI never waits on this gate.
         Self.gateLog.info("queue_acquire_begin")
         await acquireMutation()
         Self.gateLog.info("queue_acquire_end")
         let started = ProcessInfo.processInfo.systemUptime
+        onPhotosWaitChanged(true)
         let result = await Task.detached(priority: .userInitiated) {
             await GalleryQueuedPhotoDeletion.execute(requests)
         }.value
+        onPhotosWaitChanged(false)
         releaseMutation()
         Self.gateLog.info("queue_release duration_ms=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1000), privacy: .public)")
         GalleryVirtualLibraryIndex.shared.invalidate()
@@ -603,15 +605,17 @@ final class GalleryViewerStore: NSObject, ObservableObject, PHPhotoLibraryChange
     }
 
     /// Execute the captured Photos target without consulting the now-advanced viewer cursor.
-    func performQueuedPhotoMove(_ request: GalleryDeleteRequest) async -> Error? {
+    func performQueuedPhotoMove(_ request: GalleryDeleteRequest, onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async -> Error? {
         await acquireMutation()
         let result: Result<GalleryQueuedPhotoMove.Result, Error>
+        onPhotosWaitChanged(true)
         do {
             let value = try await Task.detached(priority: .userInitiated) {
                 try await GalleryQueuedPhotoMove.execute(request)
             }.value
             result = .success(value)
         } catch { result = .failure(error) }
+        onPhotosWaitChanged(false)
         releaseMutation()
         switch result {
         case .failure(let error): return error

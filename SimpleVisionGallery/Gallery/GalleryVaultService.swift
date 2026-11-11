@@ -72,6 +72,7 @@ nonisolated struct GalleryVaultMutationResult: Sendable {
 @MainActor
 final class GalleryVaultService: ObservableObject {
     static let shared = GalleryVaultService()
+    private var queuedPhotosWaitChanged: (@MainActor (Bool) -> Void)?
     @Published private(set) var isUnlocked = false
     @Published private(set) var authEpoch = UUID()
     @Published private(set) var records: [GalleryVaultRecord] = []
@@ -362,8 +363,10 @@ final class GalleryVaultService: ObservableObject {
         if !current.isEmpty {
             progress = .init(phase: "Moving from Photos", processed: 0, total: current.count, detail: nil)
             // A single Photos transaction means a batch receives a single system delete confirmation.
-            do { try await GalleryVaultPhotoLibrary.delete(current) }
+            queuedPhotosWaitChanged?(true)
+            do { try await GalleryVaultPhotoLibrary.delete(current); queuedPhotosWaitChanged?(false) }
             catch {
+                queuedPhotosWaitChanged?(false)
                 return (alreadyAbsent.count, "Photos did not delete the originals. Verified vault copies were kept; you can retry. \(error.localizedDescription)", 0)
             }
             guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
@@ -499,9 +502,12 @@ final class GalleryVaultService: ObservableObject {
         if let warning = result.warning { self.error = warning.localizedDescription }
     }
 
-    func moveQueuedToVault(asset: PHAsset, destination: GalleryVaultAlbum, sourceAlbumID: String?, epoch: UUID) async throws -> GalleryVaultTransferOutcome {
+    func moveQueuedToVault(asset: PHAsset, destination: GalleryVaultAlbum?, sourceAlbumID: String?, epoch: UUID,
+                           onPhotosWaitChanged: @escaping @MainActor (Bool) -> Void) async throws -> GalleryVaultTransferOutcome {
         await waitForIdle(epoch: epoch)
         guard isCurrent(epoch) else { throw GalleryVaultTransferError.locked }
+        queuedPhotosWaitChanged = onPhotosWaitChanged
+        defer { queuedPhotosWaitChanged = nil; onPhotosWaitChanged(false) }
         return try await moveToVault(assets: [asset], destination: destination, sourceAlbumID: sourceAlbumID)
     }
 
