@@ -45,8 +45,14 @@ enum GalleryMediaRequest { static func value<T>(of t:Task<T,Error>) async throws
  var hiddenSourceGenerations: [String:UUID] = [:]
  let generationGate=Gate()
  static func key(for item:GalleryMediaItem)->String { item.cacheKey }
- // This probe isolates in-flight acquisition; completed-cache behavior is checked separately.
- func preparedVideo(for asset:GalleryMediaItem,foreground:Bool)->GalleryPreparedVideo? { nil }
+ // The completed shared-cache helper is tested separately; preserve its retained-video lookup here.
+ func preparedVideo(for asset:GalleryMediaItem,foreground:Bool)->GalleryPreparedVideo? {
+  guard asset.vaultRecord == nil || GalleryVaultStorage.shared.isUnlocked,
+        let retained=retainedPrefetch[asset.cacheKey], case .video(let video)=retained.media else { return nil }
+  if foreground && video.isVault { retainedPrefetch.removeValue(forKey:asset.cacheKey) }
+  if foreground { video.promote() }
+  return video
+ }
  func rememberVideo(_ video:GalleryPreparedVideo,key:String) {}
  RELEASE
  VIDEO
