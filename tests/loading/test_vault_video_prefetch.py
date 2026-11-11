@@ -45,6 +45,9 @@ enum GalleryMediaRequest { static func value<T>(of t:Task<T,Error>) async throws
  var hiddenSourceGenerations: [String:UUID] = [:]
  let generationGate=Gate()
  static func key(for item:GalleryMediaItem)->String { item.cacheKey }
+ // This probe isolates in-flight acquisition; completed-cache behavior is checked separately.
+ func preparedVideo(for asset:GalleryMediaItem,foreground:Bool)->GalleryPreparedVideo? { nil }
+ func rememberVideo(_ video:GalleryPreparedVideo,key:String) {}
  RELEASE
  VIDEO
  RELEASE_VIDEO
