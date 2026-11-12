@@ -352,6 +352,9 @@ struct GalleryView: View {
             }
             #if os(visionOS)
             mediaSelectionButton.labelStyle(.titleAndIcon).galleryHoverLabel(isSelectingMedia ? "Cancel selection" : "Select")
+            if isSelectingMedia || manager.isSelectionMode {
+                selectAllMenuButton
+            }
             #endif
             if manager.selectedCount > 0 {
                 moveSelectionButton.labelStyle(.iconOnly).galleryHoverLabel("Move")
