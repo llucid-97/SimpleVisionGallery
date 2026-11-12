@@ -191,6 +191,14 @@ struct GalleryView: View {
         #endif
     }
 
+    private var isMediaSelectionActive: Bool {
+        #if os(visionOS)
+        isSelectingMedia || manager.isSelectionMode
+        #else
+        manager.isSelectionMode
+        #endif
+    }
+
     @ViewBuilder private var ornamentMediaToolbar: some View {
         if let album = manager.selectedAlbum {
             mediaHeaderRow(album: album, compact: true, searchMaxWidth: 320)
@@ -346,17 +354,24 @@ struct GalleryView: View {
             isSearching: manager.isIndexingMediaSearch, showsBackButton: showsBackButton && manager.librarySection != .photos,
             searchMaxWidth: searchMaxWidth, back: { manager.closeAlbum() }) {
             GalleryVaultSessionButton()
-            sortMenu.labelStyle(.titleAndIcon).galleryHoverLabel("Sort")
+            if !compact || !isMediaSelectionActive {
+                sortMenu.labelStyle(.titleAndIcon).galleryHoverLabel("Sort")
+            }
             if !compact {
                 thumbnailSizeButton.labelStyle(.iconOnly).galleryHoverLabel("Thumbnail size")
             }
             #if os(visionOS)
             mediaSelectionButton.labelStyle(.titleAndIcon).galleryHoverLabel(isSelectingMedia ? "Cancel selection" : "Select")
+            if isMediaSelectionActive {
+                selectAllMenuButton.buttonStyle(LensLabSecondaryButtonStyle())
+            }
             #endif
             if manager.selectedCount > 0 {
                 moveSelectionButton.labelStyle(.iconOnly).galleryHoverLabel("Move")
             }
-            mediaFilterMenu
+            if !compact || !isMediaSelectionActive {
+                mediaFilterMenu
+            }
             if manager.isRecycleBin(album: album) {
                 GalleryHoverIcon(symbol: "trash", title: "Empty Recycle Bin", identifier: "gallery-empty-recycle-bin") {
                     Task { deletionReview = await manager.prepareEntireRecycleBinDeletionReview() }
@@ -666,6 +681,7 @@ struct GalleryView: View {
                     if manager.selectedAlbum != nil {
                         sortMenu
                         thumbnailSizeButton
+                        if isMediaSelectionActive { mediaFilterMenu }
                         #if os(visionOS)
                             mediaSelectionButton
                         #endif
