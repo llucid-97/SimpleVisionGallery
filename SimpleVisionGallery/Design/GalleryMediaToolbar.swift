@@ -11,13 +11,30 @@ struct GalleryMediaToolbar<Actions: View>: View {
     @ViewBuilder var actions: Actions
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                navigation
+                actionRow
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                navigation
+                actionRow
+            }
+        }
+    }
+
+    private var navigation: some View {
         HStack(spacing: 12) {
             if showsBackButton {
                 GalleryHoverIcon(symbol: "chevron.left", title: "Albums", identifier: "svt-gallery-back-to-albums", action: back)
             }
             GalleryDesignSearchField(query: $query, placeholder: placeholder, isSearching: isSearching)
                 .frame(minWidth: 160, maxWidth: searchMaxWidth ?? .infinity)
-            HStack(spacing: 12) { actions }.fixedSize(horizontal: true, vertical: false)
         }
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 12) { actions }
+            .fixedSize(horizontal: true, vertical: false)
     }
 }
