@@ -41,6 +41,8 @@ cache_methods = "\n\n".join([
     block_after(production[cache_anchor:], "private func releaseVideoPreroll", "private func releaseVideoPreroll"),
     block_after(production[cache_anchor:], "private func cancelVideoPrerollForPromotion", "private func cancelVideoPrerollForPromotion"),
     block_after(production[cache_anchor:], "func clearSpeculativeVideoPreroll", "func clearSpeculativeVideoPreroll"),
+    block_after(production[cache_anchor:], "func updatePrefetchDemand", "func updatePrefetchDemand"),
+    block_after(production[cache_anchor:], "private func trimPrefetchRetentions", "private func trimPrefetchRetentions"),
 ])
 outcome = block_after(production[cache_anchor:], "enum GalleryVideoPrerollOutcome", "enum GalleryVideoPrerollOutcome")
 if "let preparedPlayer = video.takePrerolledPlayer()" not in production:
@@ -156,19 +158,36 @@ cache_methods = cache_methods.replace(
     "NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)",
     "postSlotChange()"
 )
+cache_methods = cache_methods.replace(
+    'NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil,\n            userInfo: consumed ? ["consumedKey": key] : nil)',
+    'postSlotChange(consumedKey: consumed ? key : nil)'
+)
 cache_methods = cache_methods.replace("func scheduleVideoPreroll(", "fileprivate func scheduleVideoPreroll(")
-cache_stub = r'''@MainActor final class GallerySceneCacheProbe {
+cache_stub = r'''enum GalleryViewerPreferences {
+    static let globalPrefetchItemBudget = 20
+    static let globalPrefetchPixelBudget = 80_000_000
+}
+@MainActor final class GallerySceneCacheProbe {
     struct VideoPrerollReservation {
         let key: String
-        let owner: UUID
         let id: UUID
         fileprivate let video: GalleryPreparedVideo
         let task: Task<Void, Never>
         var isReady: Bool
     }
     var videoPrerollReservation: VideoPrerollReservation?
+    struct FakeMedia { var pixelCost = 0 }
+    struct Retained { var owners: Set<UUID>; var media = FakeMedia() }
+    var demands: [UUID: [String]] = [:]
+    var retainedPrefetch: [String: Retained] = [:]
+    static let prefetchOwnersDidChange = Notification.Name("probeOwnersChanged")
     private(set) var slotNotifications = 0
-    func postSlotChange() { slotNotifications += 1 }
+    private(set) var lastConsumedKey: String?
+    func postSlotChange(consumedKey: String? = nil) {
+        slotNotifications += 1
+        lastConsumedKey = consumedKey
+    }
+    func trimGlobalPreparedResults() {}
 '''
 cache_class = cache_stub + "\n" + outcome + "\n" + cache_methods + "\n}\n"
 
@@ -248,9 +267,8 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
 
     // UUID replacement race: old late failure cannot clear the new attempt/reservation.
     let cache = GallerySceneCacheProbe()
-    let owner = UUID()
     let sameVideo = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 160, prerollResult: false))
-    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same", owner: owner) == .scheduled, "old attempt scheduled")
+    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same") == .scheduled, "old attempt scheduled")
     let oldReservation = cache.videoPrerollReservation!
     let oldStarted = await waitUntil({ sameVideo.testPlayer?.prerollStarts == 1 })
     check(oldStarted, "old attempt actually starts preroll before cancellation")
@@ -259,7 +277,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
     sameVideo.promote() // Evicts/cancels the old UUID before its async catch can run.
     sameVideo.asset.prerollDelay = 15
     sameVideo.asset.prerollResult = true
-    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same", owner: owner) == .scheduled, "new same-key attempt starts")
+    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same") == .scheduled, "new same-key attempt starts")
     let newReservation = cache.videoPrerollReservation!
     check(oldReservation.id != newReservation.id, "retry uses a new attempt UUID")
     let newReady = await waitUntil({ cache.videoPrerollReservation?.id == newReservation.id && cache.videoPrerollReservation?.isReady == true && sameVideo.testPlayer !== oldPlayer })
@@ -274,7 +292,27 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
 
     // One shared cache reservation serializes speculative players across photo and vault keys.
     let secondVideo = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 30))
-    check(cache.scheduleVideoPreroll(secondVideo, key: "vault:other", owner: owner) == .slotUnavailable, "global single slot spans photos and vault")
+    check(cache.scheduleVideoPreroll(secondVideo, key: "vault:other") == .slotUnavailable, "global single slot spans photos and vault")
+    let beforeConsumption = cache.slotNotifications
+    _ = sameVideo.takePrerolledPlayer()
+    check(cache.lastConsumedKey == "photo:same", "successful consumption identifies the key that remaining owners may warm again")
+    check(cache.slotNotifications == beforeConsumption + 1, "consumption releases exactly once despite the ordinary release callback")
+
+    // Withdraw one inactive owner's demand without destroying an active sibling's exact player.
+    let a = UUID(), b = UUID()
+    cache.updatePrefetchDemand(owner: a, orderedKeys: ["photo:shared"])
+    cache.updatePrefetchDemand(owner: b, orderedKeys: ["photo:shared"])
+    let shared = GalleryPreparedVideo(asset: AVAsset())
+    check(cache.scheduleVideoPreroll(shared, key: "photo:shared") == .scheduled, "shared warmup scheduled")
+    let sharedReady = await waitUntil({ cache.videoPrerollReservation?.isReady == true })
+    check(sharedReady, "shared player ready before owner withdrawal")
+    let sharedIdentity = shared.testPlayer
+    cache.updatePrefetchDemand(owner: a, orderedKeys: [])
+    check(shared.testPlayer === sharedIdentity && cache.videoPrerollReservation?.isReady == true,
+          "inactive creator preserves exact ready player while sibling still demands it")
+    cache.updatePrefetchDemand(owner: b, orderedKeys: ["photo:different"])
+    check(cache.videoPrerollReservation == nil && !shared.hasPrerolledPlayer,
+          "different-key sibling cannot keep an orphaned warm slot")
     cache.clearSpeculativeVideoPreroll()
     check(cache.videoPrerollReservation == nil, "clear releases global reservation")
     print("PASS: readiness, paused/muted warming, timeout/failure fallback, take/reset, independent second consumer, completion exactly-once, UUID stale-cleanup race, and shared Photos/vault slot")
