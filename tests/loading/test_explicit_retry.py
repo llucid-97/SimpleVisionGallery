@@ -10,31 +10,40 @@ def block(marker):
    depth-=1
    if depth==0:return s[start:i+1]
  raise ValueError(marker)
-methods='\n'.join(block(m) for m in ['    func prefetch(items assets:', '    private func startPrefetchIfNeeded()', '    func setSceneActive(_ active:'])
+methods='\n'.join(block(m) for m in ['    func prefetch(items assets:', '    private func startPrefetchIfNeeded()', '    private func recordVideoPrerollOutcome(', '    func setSceneActive(_ active:'])
 code='''
 import Foundation
-struct GalleryMediaItem { let localIdentifier: String }
-struct GalleryPrefetchedMedia {}
+struct GalleryMediaItem { let localIdentifier: String; var mediaType: PHAssetMediaType = .image }
+enum PHAssetMediaType { case image, video }
+final class GalleryPreparedVideo {}
+enum GalleryPrefetchedMedia { case image, video(GalleryPreparedVideo) }
 enum GalleryMediaError: Error { case prefetchVideoSlotUnavailable, transient }
 struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
 @MainActor final class GalleryPrefetchPriority {}
 @MainActor final class GallerySceneCache {
- static let shared=GallerySceneCache(); var prefetchOwnerCount=1; var vaultVideoSlotAvailable=true; var retained:Set<String>=[]
+ enum GalleryVideoPrerollOutcome: Equatable { case scheduled, alreadyPrepared, slotUnavailable }
+ static let shared=GallerySceneCache(); var prefetchOwnerCount=1; var vaultVideoSlotAvailable=true; var videoPrerollSlotAvailable=true; var retained:Set<String>=[]
+ var demands:[UUID:[String]] = [:]
  static func key(for item:GalleryMediaItem)->String {item.localIdentifier}
- func updatePrefetchDemand(owner:UUID,orderedKeys:[String]) { retained.formIntersection(orderedKeys) }
+ func updatePrefetchDemand(owner:UUID,orderedKeys:[String]) { if orderedKeys.isEmpty { demands.removeValue(forKey:owner) } else { demands[owner]=orderedKeys }; retained.formIntersection(orderedKeys) }
  func retainPrefetched(_ media:GalleryPrefetchedMedia,key:String,owner:UUID)->Bool { retained.insert(key); return true }
+ func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String)->GallerySceneCache.GalleryVideoPrerollOutcome { .scheduled }
+ func clearSpeculativeVideoPreroll() {}
 }
 @MainActor final class Player { var timeControlStatus: Status = .paused; enum Status {case paused,playing}; func pause(){};func play(){} }
 @MainActor final class Probe {
  var desiredPrefetchAssets:[GalleryMediaItem]=[],requestedPrefetchAssets:[GalleryMediaItem]=[]
  var requestedExcludingCurrent:GalleryMediaItem?, requestedPreserving:GalleryMediaItem?
  var prefetched:Set<String>=[], prefetchFailures:Set<String>=[],prefetchVideoSlotFailures:Set<String>=[]
+ var attemptedVideoPrerolls:Set<String>=[],deferredVideoPrerolls:Set<String>=[]
  let prefetchOwnerID=UUID();var currentKey:String?,prefetchKey:String?
  var prefetchTask:Task<GalleryPrefetchedMedia,Error>?,prefetchCoordinator:Task<Void,Never>?
- var prefetchGeneration=UUID(),prefetchPriority:GalleryPrefetchPriority?
+ var prefetchGeneration=UUID(),prefetchPriority:GalleryPrefetchPriority?,videoPrerollSlotGeneration:UInt64=0
  var lastPrefetchOwnerCount=1,isSceneActive=true,isLoading=false,isPresentationCovered=false,resumePlaybackWhenActive=false
  var player:Player?
  var attempts:[String:Int]=[:];var failOnce:Set<String>=[];var failAlways:Set<String>=[]
+ func upgradeNearestVideoPreroll() {}
+ func isNearestVideo(_ key:String)->Bool { false }
  func cancelPrefetchWork() {prefetchGeneration=UUID();prefetchCoordinator?.cancel();prefetchCoordinator=nil;prefetchTask?.cancel();prefetchTask=nil;prefetchKey=nil}
  func nextPrefetchRequest()->(String,Task<GalleryPrefetchedMedia,Error>)? {
   guard isSceneActive && !isLoading else {return nil}
@@ -42,7 +51,7 @@ struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
   let t=Task<GalleryPrefetchedMedia,Error> { @MainActor in
    self.attempts[key,default:0]+=1
    if self.failOnce.remove(key) != nil || self.failAlways.contains(key) {throw GalleryMediaError.transient}
-   return GalleryPrefetchedMedia()
+   return .image
   }
   prefetchTask=t;prefetchKey=key;return(key,t)
  }
@@ -66,6 +75,19 @@ struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
   precondition(attempts["reactivate"]==1)
   setSceneActive(false);setSceneActive(true);try await waitIdle()
   precondition(attempts["reactivate"]==2 && GallerySceneCache.shared.retained.contains("reactivate"),"reactivation must retry once")
+  let sharedKey=GalleryMediaItem(localIdentifier:"shared-X",mediaType:.video)
+  let otherKey=GalleryMediaItem(localIdentifier:"owner-only-Y")
+  prefetch(items:[sharedKey,otherKey]);try await waitIdle()
+  let siblingOwner=UUID();GallerySceneCache.shared.updatePrefetchDemand(owner:siblingOwner,orderedKeys:["shared-X"])
+  precondition(GallerySceneCache.shared.demands[prefetchOwnerID]==["shared-X","owner-only-Y"])
+  attemptedVideoPrerolls.insert("video-inactive");deferredVideoPrerolls.insert("video-inactive")
+  setSceneActive(false)
+  precondition(GallerySceneCache.shared.demands[prefetchOwnerID]==nil && GallerySceneCache.shared.demands[siblingOwner]==["shared-X"] && attemptedVideoPrerolls.isEmpty && deferredVideoPrerolls.isEmpty,"inactive window drops only its own demand and leaves shared identity demanded")
+  setSceneActive(true);try await waitIdle()
+  precondition(GallerySceneCache.shared.demands[prefetchOwnerID]==["shared-X","owner-only-Y"],"resuming window restores saved demand")
+  attemptedVideoPrerolls.insert("video-inactive");deferredVideoPrerolls.insert("video-inactive")
+  setSceneActive(false)
+  precondition(attemptedVideoPrerolls.isEmpty && deferredVideoPrerolls.isEmpty,"inactive window clears per-demand retry state")
   print("PASS: real coordinator; unchanged refresh retry; permanent failure no spin; reactivation retry")
  }
 }

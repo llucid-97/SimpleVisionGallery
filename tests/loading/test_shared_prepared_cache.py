@@ -36,9 +36,11 @@ final class FakeTask {func cancel(){}}
  var completedVideos:[String:WeakVideo]=[:],retainedPrefetch:[String:Retained]=[:]
  var demands:[UUID:[String]]=[:],hiddenSourceGenerations:[String:UUID]=[:]
  var clock:UInt64=0,vaultGeneration=UUID(),photosGeneration=UUID();var vaultVideoReservation:(key:String,id:UUID)?
+ var videoPrerollReservation:(key:String,id:UUID)?
  static func key(for asset:GalleryMediaItem)->String {asset.localIdentifier}
  func removeDemandKeys(where predicate:(String)->Bool){}
  func releaseVaultVideoReservation(key:String){vaultVideoReservation=nil}
+ func clearSpeculativeVideoPreroll(){videoPrerollReservation=nil}
  METHODS
  func run() {
   let photo=GalleryMediaItem(localIdentifier:"photo",vaultRecord:nil),vault=GalleryMediaItem(localIdentifier:"vault:test",vaultRecord:true)

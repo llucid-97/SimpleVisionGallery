@@ -14,6 +14,33 @@ parts=[block(m) for m in ['private final class GalleryPreparedVideo', '    priva
 code='''
 import Foundation
 class AVAsset {}
+enum GalleryMediaError: Error { case videoPrerollFailed }
+final class GalleryPrerollCompletion {
+ func finish(_ result: Result<Void,Error>) {}
+ func install(_ continuation: CheckedContinuation<Void,Error>) {}
+}
+final class AVPlayerItem {
+ enum Status { case unknown, readyToPlay, failed }
+ var status: Status = .readyToPlay
+ var error: Error?
+ var preferredForwardBufferDuration: Double = 0
+ init(asset: AVAsset) {}
+}
+final class AVPlayer {
+ enum Status { case unknown, readyToPlay, failed }
+ enum ActionAtItemEnd { case pause }
+ var status: Status = .readyToPlay
+ var error: Error?
+ var currentItem: AVPlayerItem?
+ var isMuted = false
+ var volume: Float = 1
+ var actionAtItemEnd: ActionAtItemEnd = .pause
+ init(playerItem: AVPlayerItem) { currentItem = playerItem }
+ func pause() {}
+ func cancelPendingPrerolls() {}
+ func replaceCurrentItem(with item: AVPlayerItem?) { currentItem = item }
+ func preroll(atRate: Float, completionHandler: @escaping (Bool)->Void) { completionHandler(true) }
+}
 struct GalleryMediaItem {let localIdentifier:String;let vaultRecord:Bool?}
 enum GalleryPrefetchedMedia {case video(GalleryPreparedVideo)}
 enum GalleryViewerPreferences {static let globalPrefetchItemBudget=20}
