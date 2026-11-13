@@ -160,6 +160,7 @@ cache_methods = cache_methods.replace("func scheduleVideoPreroll(", "fileprivate
 cache_stub = r'''@MainActor final class GallerySceneCacheProbe {
     struct VideoPrerollReservation {
         let key: String
+        let owner: UUID
         let id: UUID
         fileprivate let video: GalleryPreparedVideo
         let task: Task<Void, Never>
@@ -247,8 +248,9 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
 
     // UUID replacement race: old late failure cannot clear the new attempt/reservation.
     let cache = GallerySceneCacheProbe()
+    let owner = UUID()
     let sameVideo = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 160, prerollResult: false))
-    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same") == .scheduled, "old attempt scheduled")
+    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same", owner: owner) == .scheduled, "old attempt scheduled")
     let oldReservation = cache.videoPrerollReservation!
     let oldStarted = await waitUntil({ sameVideo.testPlayer?.prerollStarts == 1 })
     check(oldStarted, "old attempt actually starts preroll before cancellation")
@@ -257,7 +259,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
     sameVideo.promote() // Evicts/cancels the old UUID before its async catch can run.
     sameVideo.asset.prerollDelay = 15
     sameVideo.asset.prerollResult = true
-    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same") == .scheduled, "new same-key attempt starts")
+    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same", owner: owner) == .scheduled, "new same-key attempt starts")
     let newReservation = cache.videoPrerollReservation!
     check(oldReservation.id != newReservation.id, "retry uses a new attempt UUID")
     let newReady = await waitUntil({ cache.videoPrerollReservation?.id == newReservation.id && cache.videoPrerollReservation?.isReady == true && sameVideo.testPlayer !== oldPlayer })
@@ -272,7 +274,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
 
     // One shared cache reservation serializes speculative players across photo and vault keys.
     let secondVideo = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 30))
-    check(cache.scheduleVideoPreroll(secondVideo, key: "vault:other") == .slotUnavailable, "global single slot spans photos and vault")
+    check(cache.scheduleVideoPreroll(secondVideo, key: "vault:other", owner: owner) == .slotUnavailable, "global single slot spans photos and vault")
     cache.clearSpeculativeVideoPreroll()
     check(cache.videoPrerollReservation == nil, "clear releases global reservation")
     print("PASS: readiness, paused/muted warming, timeout/failure fallback, take/reset, independent second consumer, completion exactly-once, UUID stale-cleanup race, and shared Photos/vault slot")

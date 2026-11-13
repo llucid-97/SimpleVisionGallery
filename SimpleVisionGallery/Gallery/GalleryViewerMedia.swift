@@ -1761,6 +1761,7 @@ private final class GalleryPreparedVideo {
         onPrerollPromotion = nil
     }
 
+    /// Transfer the ready speculative player once; later windows create independent playback.
     func takePrerolledPlayer() -> AVPlayer? {
         guard let player = prerolledPlayer, let item = prerolledItem,
               player.currentItem === item, player.status == .readyToPlay,
@@ -1780,6 +1781,7 @@ private final class GalleryPreparedVideo {
         return player
     }
 
+    /// Cancel only this attempt so an old callback cannot discard a newer player.
     func discardPrerolledPlayer(expectedID: UUID) {
         guard prerollID == expectedID else { return }
         prerollID = nil
@@ -1859,9 +1861,11 @@ private final class GalleryPreparedVideo {
         }
     }
 
+    /// Bound readiness waits without blocking the main actor or assuming item readiness implies player readiness.
     private func waitUntilReady(_ item: AVPlayerItem, player: AVPlayer, id: UUID) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(6))
+        // Yield between status checks so cancellation and foreground promotion can run.
         while true {
             try Task.checkCancellation()
             if prerollID != id || prerollCancelled { throw CancellationError() }
