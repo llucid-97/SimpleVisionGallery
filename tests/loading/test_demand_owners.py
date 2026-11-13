@@ -14,27 +14,30 @@ update=block('    func updatePrefetchDemand(owner:')
 remove=block('    private func removeDemandKeys(') if '    private func removeDemandKeys(' in s else 'private func removeDemandKeys(where shouldRemove: (String) -> Bool) { for (owner,keys) in demands { demands[owner] = keys.filter { !shouldRemove($0) } } }'
 outcome=block('    private func recordVideoPrerollOutcome(')
 upgrade=block('    private func upgradeNearestVideoPreroll()')
-slot_changed=block('    private func prefetchVideoSlotDidChange()')
+slot_changed=block('    private func prefetchVideoSlotDidChange(consumedKey:')
 code='''
 import Foundation
 enum PHAssetMediaType { case image, video }
 struct GalleryMediaItem { let localIdentifier: String; let mediaType: PHAssetMediaType }
 final class GalleryPreparedVideo { var hasPrerolledPlayer = false }
-enum GalleryVideoPrerollOutcome { case scheduled, alreadyPrepared, slotUnavailable }
 @MainActor final class GallerySceneCache {
+ enum GalleryVideoPrerollOutcome { case scheduled, alreadyPrepared, slotUnavailable }
  static let shared=GallerySceneCache()
  static let prefetchVideoSlotDidChange=Notification.Name("testVideoSlotChanged")
+ var videoPrerollSlotAvailable=true
  static func key(for item:GalleryMediaItem)->String { item.localIdentifier }
  var video: GalleryPreparedVideo?
  var retained: Set<String> = []
  func hasPrefetched(_ key:String,owner:UUID)->Bool { retained.contains(key) }
  func prefetchedVideo(key:String,owner:UUID)->GalleryPreparedVideo? { retained.contains(key) ? video : nil }
- func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String,owner:UUID)->GalleryVideoPrerollOutcome {
+ func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String)->GalleryVideoPrerollOutcome {
   if video.hasPrerolledPlayer { return .alreadyPrepared }
+  guard videoPrerollSlotAvailable else { return .slotUnavailable }
   video.hasPrerolledPlayer=true
+  videoPrerollSlotAvailable=false
   return .scheduled
  }
- func releaseVideoPreroll() { video?.hasPrerolledPlayer=false }
+ func releaseVideoPreroll() { video?.hasPrerolledPlayer=false; videoPrerollSlotAvailable=true }
 }
 @MainActor final class Probe {
  struct Retained { var owners: Set<UUID> }
@@ -78,15 +81,18 @@ enum GalleryVideoPrerollOutcome { case scheduled, alreadyPrepared, slotUnavailab
  GallerySceneCache.shared.retained.insert(key)
  firstOwner.desiredPrefetchAssets=[video]
  sibling.desiredPrefetchAssets=[video]
- let firstOutcome=GallerySceneCache.shared.scheduleVideoPreroll(sharedVideo,key:key,owner:firstOwner.prefetchOwnerID)
+ let firstOutcome=GallerySceneCache.shared.scheduleVideoPreroll(sharedVideo,key:key)
  firstOwner.recordVideoPrerollOutcome(firstOutcome,key:key)
  precondition(firstOwner.attemptedVideoPrerolls.contains(key) && sharedVideo.hasPrerolledPlayer)
- sibling.upgradeNearestVideoPreroll()
+ sibling.recordVideoPrerollOutcome(.alreadyPrepared,key:key)
  precondition(!sibling.attemptedVideoPrerolls.contains(key),"alreadyPrepared belongs to the sibling's warm reservation, not this owner's attempt")
  GallerySceneCache.shared.releaseVideoPreroll()
- sibling.prefetchVideoSlotDidChange()
- precondition(sibling.attemptedVideoPrerolls.contains(key) && sharedVideo.hasPrerolledPlayer,"slot release must let the sibling schedule the shared cached video")
- print("PASS: owner registration, stable count, vault lock, close and rebalance signal")
+ firstOwner.prefetchVideoSlotDidChange(consumedKey:key)
+ precondition(firstOwner.attemptedVideoPrerolls.contains(key) && sharedVideo.hasPrerolledPlayer,"consumption by a sibling must release A's attempt so A can rewarm its still-demanded item")
+ GallerySceneCache.shared.releaseVideoPreroll()
+ firstOwner.prefetchVideoSlotDidChange()
+ precondition(firstOwner.attemptedVideoPrerolls.contains(key) && !sharedVideo.hasPrerolledPlayer,"an ordinary failed release must not trigger an automatic preroll loop")
+ print("PASS: owner registration, shared demand, consumed-player retry and bounded failure")
  }
 }
 @main struct Main { @MainActor static func main() { Probe().run() } }

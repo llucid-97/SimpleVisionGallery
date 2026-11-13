@@ -92,8 +92,9 @@ final class GalleryViewerMedia {
         })
         prefetchVideoSlotObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
             forName: GallerySceneCache.prefetchVideoSlotDidChange, object: nil, queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.prefetchVideoSlotDidChange() }
+        ) { [weak self] note in
+            let consumedKey = note.userInfo?["consumedKey"] as? String
+            Task { @MainActor [weak self] in self?.prefetchVideoSlotDidChange(consumedKey: consumedKey) }
         })
     }
 
@@ -361,7 +362,7 @@ final class GalleryViewerMedia {
         let wanted = Set(orderedKeys).union(preservedKey.map { [$0] } ?? [])
         prefetched.formIntersection(wanted)
         GallerySceneCache.shared.updatePrefetchDemand(owner: prefetchOwnerID,
-            orderedKeys: preservedKey.map { [$0] + orderedKeys } ?? orderedKeys)
+            orderedKeys: isSceneActive ? (preservedKey.map { [$0] + orderedKeys } ?? orderedKeys) : [])
         // Each external demand refresh is one new chance after a transient failure.
         prefetchFailures.removeAll()
         prefetchVideoSlotFailures.removeAll()
@@ -374,7 +375,7 @@ final class GalleryViewerMedia {
 
     private func prefetchOwnersDidChange() {
         // A different owner count changes this viewer's item and pixel budgets.
-        guard GallerySceneCache.shared.prefetchOwnerCount != lastPrefetchOwnerCount else { return }
+        guard isSceneActive, GallerySceneCache.shared.prefetchOwnerCount != lastPrefetchOwnerCount else { return }
         cancelPrefetchWork()
         prefetchFailures.removeAll()
         prefetchVideoSlotFailures.removeAll()
@@ -384,8 +385,9 @@ final class GalleryViewerMedia {
                  preserving: requestedPreserving)
     }
 
-    private func prefetchVideoSlotDidChange() {
+    private func prefetchVideoSlotDidChange(consumedKey: String? = nil) {
         videoPrerollSlotGeneration &+= 1
+        if let consumedKey { attemptedVideoPrerolls.remove(consumedKey) }
         prefetchFailures.subtract(prefetchVideoSlotFailures)
         prefetchVideoSlotFailures.removeAll()
         deferredVideoPrerolls.removeAll()
@@ -415,7 +417,7 @@ final class GalleryViewerMedia {
                         self.prefetched.insert(key)
                         if case .video(let video) = result,
                            self.isNearestVideo(key), !self.attemptedVideoPrerolls.contains(key) {
-                            let outcome = GallerySceneCache.shared.scheduleVideoPreroll(video, key: key, owner: self.prefetchOwnerID)
+                            let outcome = GallerySceneCache.shared.scheduleVideoPreroll(video, key: key)
                             self.recordVideoPrerollOutcome(outcome, key: key)
                         }
                     } else {
@@ -455,12 +457,12 @@ final class GalleryViewerMedia {
               GallerySceneCache.shared.hasPrefetched(key, owner: prefetchOwnerID),
               let video = GallerySceneCache.shared.prefetchedVideo(key: key, owner: prefetchOwnerID),
               !video.hasPrerolledPlayer else { return }
-        let outcome = GallerySceneCache.shared.scheduleVideoPreroll(video, key: key, owner: prefetchOwnerID)
+        let outcome = GallerySceneCache.shared.scheduleVideoPreroll(video, key: key)
         recordVideoPrerollOutcome(outcome, key: key)
     }
 
     /// Only a reservation this window schedules counts as its attempt; a sibling may own the warm player.
-    private func recordVideoPrerollOutcome(_ outcome: GalleryVideoPrerollOutcome, key: String) {
+    private func recordVideoPrerollOutcome(_ outcome: GallerySceneCache.GalleryVideoPrerollOutcome, key: String) {
         switch outcome {
         case .scheduled:
             attemptedVideoPrerolls.insert(key)
@@ -584,11 +586,12 @@ final class GalleryViewerMedia {
                 if resumePlaybackWhenActive { player?.play() }
                 resumePlaybackWhenActive = false
             }
-            startPrefetchIfNeeded()
+            prefetch(items: requestedPrefetchAssets, excludingCurrent: requestedExcludingCurrent,
+                     preserving: requestedPreserving)
         } else {
             cancelPrefetchWork()
-            // Inactive scenes cannot consume this window's detached warm player; covered Move surfaces stay active.
-            GallerySceneCache.shared.clearSpeculativeVideoPreroll(owner: prefetchOwnerID)
+            // Remove this window's demand; the cache keeps shared media wanted by an active sibling.
+            GallerySceneCache.shared.updatePrefetchDemand(owner: prefetchOwnerID, orderedKeys: [])
             attemptedVideoPrerolls.removeAll()
             deferredVideoPrerolls.removeAll()
             resumePlaybackWhenActive = resumePlaybackWhenActive || (player.map { $0.timeControlStatus != .paused } ?? false)
@@ -722,7 +725,6 @@ private final class GallerySceneCache {
     }
     private struct VideoPrerollReservation {
         var key: String
-        var owner: UUID
         var id: UUID
         var video: GalleryPreparedVideo
         var task: Task<Void, Never>
@@ -862,7 +864,7 @@ private final class GallerySceneCache {
     }
 
     /// Schedule the only speculative AVPlayer across Photos and vault without blocking photo lookahead.
-    func scheduleVideoPreroll(_ video: GalleryPreparedVideo, key: String, owner: UUID) -> GalleryVideoPrerollOutcome {
+    func scheduleVideoPreroll(_ video: GalleryPreparedVideo, key: String) -> GalleryVideoPrerollOutcome {
         if video.hasPrerolledPlayer { return .alreadyPrepared }
         guard videoPrerollReservation == nil else { return .slotUnavailable }
         let id = UUID()
@@ -877,6 +879,7 @@ private final class GallerySceneCache {
                     return
                 }
                 video.onPrerollRelease = { [weak self] in self?.releaseVideoPreroll(key: key, id: id) }
+                video.onPrerollConsumed = { [weak self] in self?.releaseVideoPreroll(key: key, id: id, consumed: true) }
                 if var reservation = self.videoPrerollReservation {
                     reservation.isReady = true
                     self.videoPrerollReservation = reservation
@@ -887,16 +890,17 @@ private final class GallerySceneCache {
                 video.discardPrerolledPlayer(expectedID: id)
             }
         }
-        videoPrerollReservation = VideoPrerollReservation(key: key, owner: owner, id: id, video: video,
+        videoPrerollReservation = VideoPrerollReservation(key: key, id: id, video: video,
             task: task, isReady: false)
         return .scheduled
     }
 
-    private func releaseVideoPreroll(key: String, id: UUID) {
+    private func releaseVideoPreroll(key: String, id: UUID, consumed: Bool = false) {
         guard let reservation = videoPrerollReservation,
               reservation.key == key, reservation.id == id else { return }
         videoPrerollReservation = nil
-        NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)
+        NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil,
+            userInfo: consumed ? ["consumedKey": key] : nil)
     }
 
     private func cancelVideoPrerollForPromotion(key: String, id: UUID) {
@@ -909,10 +913,9 @@ private final class GallerySceneCache {
         NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)
     }
 
-    /// Drop speculative decode work, optionally only for the window that reserved the player.
-    func clearSpeculativeVideoPreroll(owner: UUID? = nil) {
-        guard let reservation = videoPrerollReservation,
-              owner == nil || reservation.owner == owner else { return }
+    /// Drop speculative decode work while leaving a foreground viewer's player alone.
+    func clearSpeculativeVideoPreroll() {
+        guard let reservation = videoPrerollReservation else { return }
         videoPrerollReservation = nil
         reservation.task.cancel()
         reservation.video.discardPrerolledPlayer(expectedID: reservation.id)
@@ -1720,6 +1723,7 @@ private final class GalleryPreparedVideo {
     private let plaintextURL: URL?
     var onPrefetchRelease: (@MainActor () -> Void)?
     var onPrerollRelease: (@MainActor () -> Void)?
+    var onPrerollConsumed: (@MainActor () -> Void)?
     var onPrerollPromotion: (@MainActor () -> Void)?
     private var prerolledPlayer: AVPlayer?
     private var prerolledItem: AVPlayerItem?
@@ -1775,6 +1779,8 @@ private final class GalleryPreparedVideo {
         prerollID = nil
         player.isMuted = false
         player.volume = 1
+        onPrerollConsumed?()
+        onPrerollConsumed = nil
         onPrerollRelease?()
         onPrerollRelease = nil
         onPrerollPromotion = nil
@@ -1788,6 +1794,7 @@ private final class GalleryPreparedVideo {
         prerollCancelled = true
         prerollCompletion?.finish(.failure(CancellationError()))
         prerollCompletion = nil
+        onPrerollConsumed = nil
         onPrerollPromotion = nil
         prerolledPlayer?.cancelPendingPrerolls()
         prerolledPlayer?.pause()

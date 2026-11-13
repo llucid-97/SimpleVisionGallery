@@ -17,18 +17,18 @@ struct GalleryMediaItem { let localIdentifier: String; var mediaType: PHAssetMed
 enum PHAssetMediaType { case image, video }
 final class GalleryPreparedVideo {}
 enum GalleryPrefetchedMedia { case image, video(GalleryPreparedVideo) }
-enum GalleryVideoPrerollOutcome: Equatable { case scheduled, alreadyPrepared, slotUnavailable }
 enum GalleryMediaError: Error { case prefetchVideoSlotUnavailable, transient }
 struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
 @MainActor final class GalleryPrefetchPriority {}
 @MainActor final class GallerySceneCache {
+ enum GalleryVideoPrerollOutcome: Equatable { case scheduled, alreadyPrepared, slotUnavailable }
  static let shared=GallerySceneCache(); var prefetchOwnerCount=1; var vaultVideoSlotAvailable=true; var videoPrerollSlotAvailable=true; var retained:Set<String>=[]
- var videoPrerollOwner:UUID?
+ var demands:[UUID:[String]] = [:]
  static func key(for item:GalleryMediaItem)->String {item.localIdentifier}
- func updatePrefetchDemand(owner:UUID,orderedKeys:[String]) { retained.formIntersection(orderedKeys) }
+ func updatePrefetchDemand(owner:UUID,orderedKeys:[String]) { if orderedKeys.isEmpty { demands.removeValue(forKey:owner) } else { demands[owner]=orderedKeys }; retained.formIntersection(orderedKeys) }
  func retainPrefetched(_ media:GalleryPrefetchedMedia,key:String,owner:UUID)->Bool { retained.insert(key); return true }
- func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String,owner:UUID)->GalleryVideoPrerollOutcome { .scheduled }
- func clearSpeculativeVideoPreroll(owner:UUID? = nil) { if owner == nil || videoPrerollOwner == owner { videoPrerollOwner=nil } }
+ func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String)->GallerySceneCache.GalleryVideoPrerollOutcome { .scheduled }
+ func clearSpeculativeVideoPreroll() {}
 }
 @MainActor final class Player { var timeControlStatus: Status = .paused; enum Status {case paused,playing}; func pause(){};func play(){} }
 @MainActor final class Probe {
@@ -75,14 +75,19 @@ struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
   precondition(attempts["reactivate"]==1)
   setSceneActive(false);setSceneActive(true);try await waitIdle()
   precondition(attempts["reactivate"]==2 && GallerySceneCache.shared.retained.contains("reactivate"),"reactivation must retry once")
-  let siblingOwner=UUID();GallerySceneCache.shared.videoPrerollOwner=siblingOwner
+  let sharedKey=GalleryMediaItem(localIdentifier:"shared-X",mediaType:.video)
+  let otherKey=GalleryMediaItem(localIdentifier:"owner-only-Y")
+  prefetch(items:[sharedKey,otherKey]);try await waitIdle()
+  let siblingOwner=UUID();GallerySceneCache.shared.updatePrefetchDemand(owner:siblingOwner,orderedKeys:["shared-X"])
+  precondition(GallerySceneCache.shared.demands[prefetchOwnerID]==["shared-X","owner-only-Y"])
   attemptedVideoPrerolls.insert("video-inactive");deferredVideoPrerolls.insert("video-inactive")
   setSceneActive(false)
-  precondition(GallerySceneCache.shared.videoPrerollOwner==siblingOwner && attemptedVideoPrerolls.isEmpty && deferredVideoPrerolls.isEmpty,"inactive window clears its retry state without releasing another window's slot")
-  setSceneActive(true);GallerySceneCache.shared.videoPrerollOwner=prefetchOwnerID
+  precondition(GallerySceneCache.shared.demands[prefetchOwnerID]==nil && GallerySceneCache.shared.demands[siblingOwner]==["shared-X"] && attemptedVideoPrerolls.isEmpty && deferredVideoPrerolls.isEmpty,"inactive window drops only its own demand and leaves shared identity demanded")
+  setSceneActive(true);try await waitIdle()
+  precondition(GallerySceneCache.shared.demands[prefetchOwnerID]==["shared-X","owner-only-Y"],"resuming window restores saved demand")
   attemptedVideoPrerolls.insert("video-inactive");deferredVideoPrerolls.insert("video-inactive")
   setSceneActive(false)
-  precondition(GallerySceneCache.shared.videoPrerollOwner==nil && attemptedVideoPrerolls.isEmpty && deferredVideoPrerolls.isEmpty,"inactive window releases its own detached warm slot and retries on resume")
+  precondition(attemptedVideoPrerolls.isEmpty && deferredVideoPrerolls.isEmpty,"inactive window clears per-demand retry state")
   print("PASS: real coordinator; unchanged refresh retry; permanent failure no spin; reactivation retry")
  }
 }
