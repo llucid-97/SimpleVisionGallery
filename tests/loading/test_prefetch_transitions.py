@@ -38,6 +38,7 @@ enum GalleryViewerPreferences { static let globalPrefetchItemBudget = 20 }
  func retainVideo(_ key: String, owner: UUID) { retainedVideos[key, default: []].insert(owner) }
 }
 @MainActor final class Probe {
+ var isSceneActive = true
  var desiredPrefetchAssets: [GalleryMediaItem] = []
  var requestedPrefetchAssets: [GalleryMediaItem] = []
  var requestedExcludingCurrent: GalleryMediaItem?
@@ -88,7 +89,14 @@ enum GalleryViewerPreferences { static let globalPrefetchItemBudget = 20 }
   let selectedOwner=Probe()
   selectedOwner.prefetch(items:[videoB,videoA],preserving:videoA)
   precondition(GallerySceneCache.shared.demands[selectedOwner.prefetchOwnerID]==["video-A","video-B"],"preserved current video stays available for handoff alongside the nearest successor")
-  print("PASS: explicit refresh, navigation/reorder retry, capacity rebalance, close/reopen")
+  selectedOwner.isSceneActive=false
+  selectedOwner.prefetch(items:[videoB,videoA])
+  precondition(GallerySceneCache.shared.demands[selectedOwner.prefetchOwnerID]==nil,"inactive external refresh must not reclaim shared preparation capacity")
+  let inactiveScheduled=selectedOwner.scheduled
+  GallerySceneCache.shared.prefetchOwnerCount=3
+  selectedOwner.prefetchOwnersDidChange()
+  precondition(selectedOwner.scheduled==inactiveScheduled,"owner notifications must not restart inactive demand")
+  print("PASS: explicit refresh, navigation/reorder retry, capacity rebalance, close/reopen, inactive demand")
  }
 }
 @main struct Main { @MainActor static func main() { Probe().run() } }
