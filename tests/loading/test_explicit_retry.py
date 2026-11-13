@@ -13,7 +13,8 @@ def block(marker):
 methods='\n'.join(block(m) for m in ['    func prefetch(items assets:', '    private func startPrefetchIfNeeded()', '    func setSceneActive(_ active:'])
 code='''
 import Foundation
-struct GalleryMediaItem { let localIdentifier: String }
+struct GalleryMediaItem { let localIdentifier: String; var mediaType: PHAssetMediaType = .image }
+enum PHAssetMediaType { case image, video }
 final class GalleryPreparedVideo {}
 enum GalleryPrefetchedMedia { case image, video(GalleryPreparedVideo) }
 enum GalleryVideoPrerollOutcome: Equatable { case scheduled, alreadyPrepared, slotUnavailable }

@@ -347,9 +347,14 @@ final class GalleryViewerMedia {
         lastPrefetchOwnerCount = GallerySceneCache.shared.prefetchOwnerCount
         let itemShare = max(1, GalleryViewerPreferences.globalPrefetchItemBudget / lastPrefetchOwnerCount)
         let currentAssetKey = excludingCurrent.map(GallerySceneCache.key(for:)) ?? currentKey
+        var hasNextVideo = false
         desiredPrefetchAssets = Array(assets.prefix(itemShare)).filter {
             let key = GallerySceneCache.key(for: $0)
-            return key != currentAssetKey && seen.insert(key).inserted
+            guard key != currentAssetKey, seen.insert(key).inserted else { return false }
+            guard $0.mediaType == .video else { return true }
+            guard !hasNextVideo else { return false }
+            hasNextVideo = true
+            return true
         }
         let orderedKeys = desiredPrefetchAssets.map(GallerySceneCache.key(for:))
         let preservedKey = preserving.map(GallerySceneCache.key(for:))

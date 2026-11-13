@@ -16,15 +16,26 @@ harness='''
 import Foundation
 struct GalleryMediaItem {
  let localIdentifier: String
+ var mediaType: PHAssetMediaType = .image
  var cacheKey: String { localIdentifier }
 }
+enum PHAssetMediaType { case image, video }
 enum GalleryViewerPreferences { static let globalPrefetchItemBudget = 20 }
 @MainActor final class GallerySceneCache {
  static let shared = GallerySceneCache()
  var prefetchOwnerCount = 1
- var demand: [String] = []
+ var demands: [UUID: [String]] = [:]
+ var retainedVideos: [String: Set<UUID>] = [:]
  static func key(for item: GalleryMediaItem) -> String { item.cacheKey }
- func updatePrefetchDemand(owner: UUID, orderedKeys: [String]) { demand = orderedKeys }
+ func updatePrefetchDemand(owner: UUID, orderedKeys: [String]) {
+  if orderedKeys.isEmpty { demands.removeValue(forKey: owner) }
+  else { demands[owner] = orderedKeys }
+  for key in Array(retainedVideos.keys) where !orderedKeys.contains(key) {
+   retainedVideos[key]?.remove(owner)
+   if retainedVideos[key]?.isEmpty == true { retainedVideos.removeValue(forKey: key) }
+  }
+ }
+ func retainVideo(_ key: String, owner: UUID) { retainedVideos[key, default: []].insert(owner) }
 }
 @MainActor final class Probe {
  var desiredPrefetchAssets: [GalleryMediaItem] = []
@@ -57,6 +68,26 @@ enum GalleryViewerPreferences { static let globalPrefetchItemBudget = 20 }
   prefetch(items:[A,B]); prefetchFailures.insert("A")
   prefetch(items:[]); precondition(prefetchFailures.isEmpty, "close clears failures")
   prefetch(items:[A,B]); precondition(!prefetchFailures.contains("A"), "reopen may retry")
+  let videoA=GalleryMediaItem(localIdentifier:"video-A",mediaType:.video)
+  let videoB=GalleryMediaItem(localIdentifier:"video-B",mediaType:.video)
+  let videoOwner=Probe()
+  videoOwner.prefetch(items:[videoA,videoB])
+  precondition(GallerySceneCache.shared.demands[videoOwner.prefetchOwnerID]==["video-A"],"only the nearest video should be demanded")
+  GallerySceneCache.shared.retainVideo("video-A",owner:videoOwner.prefetchOwnerID)
+  videoOwner.prefetch(items:[videoB,videoA])
+  precondition(GallerySceneCache.shared.demands[videoOwner.prefetchOwnerID]==["video-B"]
+    && GallerySceneCache.shared.retainedVideos["video-A"]==nil,"reorder should evict the stale same-window video reservation")
+  let sibling=UUID()
+  GallerySceneCache.shared.updatePrefetchDemand(owner:sibling,orderedKeys:["video-A"])
+  GallerySceneCache.shared.retainVideo("video-A",owner:sibling)
+  videoOwner.prefetch(items:[videoA,videoB])
+  GallerySceneCache.shared.retainVideo("video-A",owner:videoOwner.prefetchOwnerID)
+  videoOwner.prefetch(items:[videoB,videoA])
+  precondition(GallerySceneCache.shared.demands[sibling]==["video-A"]
+    && GallerySceneCache.shared.retainedVideos["video-A"]==[sibling],"reordering one window must preserve a sibling's nearest video")
+  let selectedOwner=Probe()
+  selectedOwner.prefetch(items:[videoB,videoA],preserving:videoA)
+  precondition(GallerySceneCache.shared.demands[selectedOwner.prefetchOwnerID]==["video-A","video-B"],"preserved current video stays available for handoff alongside the nearest successor")
   print("PASS: explicit refresh, navigation/reorder retry, capacity rebalance, close/reopen")
  }
 }
