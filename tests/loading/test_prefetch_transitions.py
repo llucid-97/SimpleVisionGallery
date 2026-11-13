@@ -35,6 +35,8 @@ enum GalleryViewerPreferences { static let globalPrefetchItemBudget = 20 }
  var prefetched: Set<String> = []
  var prefetchFailures: Set<String> = []
  var prefetchVideoSlotFailures: Set<String> = []
+ var attemptedVideoPrerolls: Set<String> = []
+ var deferredVideoPrerolls: Set<String> = []
  let prefetchOwnerID = UUID()
  var currentKey: String?
  var prefetchKey: String?

@@ -14,27 +14,33 @@ methods='\n'.join(block(m) for m in ['    func prefetch(items assets:', '    pri
 code='''
 import Foundation
 struct GalleryMediaItem { let localIdentifier: String }
-struct GalleryPrefetchedMedia {}
+final class GalleryPreparedVideo {}
+enum GalleryPrefetchedMedia { case image, video(GalleryPreparedVideo) }
+enum GalleryVideoPrerollOutcome: Equatable { case scheduled, alreadyPrepared, slotUnavailable }
 enum GalleryMediaError: Error { case prefetchVideoSlotUnavailable, transient }
 struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
 @MainActor final class GalleryPrefetchPriority {}
 @MainActor final class GallerySceneCache {
- static let shared=GallerySceneCache(); var prefetchOwnerCount=1; var vaultVideoSlotAvailable=true; var retained:Set<String>=[]
+ static let shared=GallerySceneCache(); var prefetchOwnerCount=1; var vaultVideoSlotAvailable=true; var videoPrerollSlotAvailable=true; var retained:Set<String>=[]
  static func key(for item:GalleryMediaItem)->String {item.localIdentifier}
  func updatePrefetchDemand(owner:UUID,orderedKeys:[String]) { retained.formIntersection(orderedKeys) }
  func retainPrefetched(_ media:GalleryPrefetchedMedia,key:String,owner:UUID)->Bool { retained.insert(key); return true }
+ func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String)->GalleryVideoPrerollOutcome { .scheduled }
 }
 @MainActor final class Player { var timeControlStatus: Status = .paused; enum Status {case paused,playing}; func pause(){};func play(){} }
 @MainActor final class Probe {
  var desiredPrefetchAssets:[GalleryMediaItem]=[],requestedPrefetchAssets:[GalleryMediaItem]=[]
  var requestedExcludingCurrent:GalleryMediaItem?, requestedPreserving:GalleryMediaItem?
  var prefetched:Set<String>=[], prefetchFailures:Set<String>=[],prefetchVideoSlotFailures:Set<String>=[]
+ var attemptedVideoPrerolls:Set<String>=[],deferredVideoPrerolls:Set<String>=[]
  let prefetchOwnerID=UUID();var currentKey:String?,prefetchKey:String?
  var prefetchTask:Task<GalleryPrefetchedMedia,Error>?,prefetchCoordinator:Task<Void,Never>?
- var prefetchGeneration=UUID(),prefetchPriority:GalleryPrefetchPriority?
+ var prefetchGeneration=UUID(),prefetchPriority:GalleryPrefetchPriority?,videoPrerollSlotGeneration:UInt64=0
  var lastPrefetchOwnerCount=1,isSceneActive=true,isLoading=false,isPresentationCovered=false,resumePlaybackWhenActive=false
  var player:Player?
  var attempts:[String:Int]=[:];var failOnce:Set<String>=[];var failAlways:Set<String>=[]
+ func upgradeNearestVideoPreroll() {}
+ func isNearestVideo(_ key:String)->Bool { false }
  func cancelPrefetchWork() {prefetchGeneration=UUID();prefetchCoordinator?.cancel();prefetchCoordinator=nil;prefetchTask?.cancel();prefetchTask=nil;prefetchKey=nil}
  func nextPrefetchRequest()->(String,Task<GalleryPrefetchedMedia,Error>)? {
   guard isSceneActive && !isLoading else {return nil}
@@ -42,7 +48,7 @@ struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
   let t=Task<GalleryPrefetchedMedia,Error> { @MainActor in
    self.attempts[key,default:0]+=1
    if self.failOnce.remove(key) != nil || self.failAlways.contains(key) {throw GalleryMediaError.transient}
-   return GalleryPrefetchedMedia()
+   return .image
   }
   prefetchTask=t;prefetchKey=key;return(key,t)
  }
