@@ -9,6 +9,7 @@ final class GalleryShareExtensionViewController: UIViewController {
     private var staged: [StagedShare] = []
     private var stagingDirectory: URL?
     private var isSaving = false
+    private var isDismissed = false
     private var saveTask: Task<Void, Never>?
     private var prepareTask: Task<Void, Never>?
 
@@ -60,11 +61,7 @@ final class GalleryShareExtensionViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if !isSaving {
-            prepareTask?.cancel()
-            Task { [weak self] in
-                await self?.prepareTask?.value
-                self?.cleanStaging()
-            }
+            dismiss(cancelRequest: false)
         }
     }
 
@@ -125,6 +122,10 @@ final class GalleryShareExtensionViewController: UIViewController {
         } else {
             authorization = current
         }
+        guard !Task.isCancelled, !isDismissed else {
+            saveTask = nil
+            return
+        }
         guard authorization == .authorized || authorization == .limited else {
             saveTask = nil
             cancelButton.isEnabled = true
@@ -132,7 +133,10 @@ final class GalleryShareExtensionViewController: UIViewController {
             status.text = "Photos access was not granted. Allow adding photos in Settings, then try again."
             return
         }
-        guard !Task.isCancelled else { return }
+        guard !staged.isEmpty else {
+            saveTask = nil
+            return
+        }
         isSaving = true
         cancelButton.isEnabled = false
         status.text = "Saving \(staged.count) item(s) to Photos…"
@@ -161,22 +165,22 @@ final class GalleryShareExtensionViewController: UIViewController {
 
     @objc private func cancel() {
         guard !isSaving else { return }
-        if let prepareTask {
-            cancelButton.isEnabled = false
-            saveButton.isEnabled = false
-            status.text = "Cancelling…"
-            prepareTask.cancel()
-            Task { [weak self] in
-                await prepareTask.value
-                guard let self else { return }
-                self.cleanStaging()
-                self.extensionContext?.cancelRequest(withError: NSError(domain: "GalleryShareExtension", code: NSUserCancelledError))
-            }
-            return
-        }
+        dismiss(cancelRequest: true)
+    }
+
+    private func dismiss(cancelRequest: Bool) {
+        guard !isDismissed else { return }
+        isDismissed = true
+        prepareTask?.cancel()
         saveTask?.cancel()
-        cleanStaging()
-        extensionContext?.cancelRequest(withError: NSError(domain: "GalleryShareExtension", code: NSUserCancelledError))
+        if cancelRequest {
+            extensionContext?.cancelRequest(withError: NSError(domain: "GalleryShareExtension", code: NSUserCancelledError))
+        }
+        let pendingPreparation = prepareTask
+        Task { [self] in
+            await pendingPreparation?.value
+            cleanStaging()
+        }
     }
 
     private func fail(_ message: String) {
