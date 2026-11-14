@@ -17,7 +17,8 @@ enum GalleryShareInput {
 
     // NSItemProvider's temporary representation is copied before its callback returns.
     static func copyRepresentation(from provider: NSItemProvider, type: UTType, to directory: URL, fallbackName: String) async throws -> StagedShare {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<StagedShare, Error>) in
+        let suggestedName = provider.suggestedName.flatMap(safeFilename)
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<StagedShare, Error>) in
             provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { source, error in
                 if let error { continuation.resume(throwing: error); return }
                 guard let source else {
@@ -26,9 +27,14 @@ enum GalleryShareInput {
                     return
                 }
                 do {
-                    let proposedName = source.lastPathComponent
-                    let safeName = (proposedName as NSString).lastPathComponent
-                    let name = safeName.isEmpty ? fallbackName : safeName
+                    let sourceName = safeFilename(source.lastPathComponent)
+                    let proposedName = suggestedName ?? sourceName ?? fallbackName
+                    let name: String
+                    if (proposedName as NSString).pathExtension.isEmpty, let fileExtension = type.preferredFilenameExtension {
+                        name = "\(proposedName).\(fileExtension)"
+                    } else {
+                        name = proposedName
+                    }
                     let destination = directory.appendingPathComponent(UUID().uuidString + "-" + name)
                     try FileManager.default.copyItem(at: source, to: destination)
                     continuation.resume(returning: StagedShare(url: destination, type: type, filename: name))
@@ -37,5 +43,11 @@ enum GalleryShareInput {
                 }
             }
         }
+    }
+
+    private static func safeFilename(_ name: String) -> String? {
+        let component = (name as NSString).lastPathComponent
+        guard !component.isEmpty, component != ".", component != "..", component != "/" else { return nil }
+        return component
     }
 }
