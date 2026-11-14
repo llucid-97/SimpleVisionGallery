@@ -86,7 +86,7 @@ final class GalleryShareExtensionViewController: UIViewController {
                 let result = try await GalleryShareInput.copyRepresentation(from: provider, type: type, to: directory, fallbackName: fallback)
                 try Task.checkCancellation()
                 accepted.append(result)
-                status.text = "Prepared \(accepted.count) item(s)…"
+                status.text = "Prepared \(itemCount(accepted.count))…"
             }
             try Task.checkCancellation()
             guard !accepted.isEmpty else {
@@ -94,7 +94,7 @@ final class GalleryShareExtensionViewController: UIViewController {
                 return
             }
             staged = accepted
-            status.text = "\(accepted.count) item(s) ready. Choose Save to add copies to Photos."
+            status.text = "\(itemCount(accepted.count)) ready. Choose Save to add copies to Photos."
             saveButton.isEnabled = true
         } catch {
             cleanStaging()
@@ -139,7 +139,7 @@ final class GalleryShareExtensionViewController: UIViewController {
         }
         isSaving = true
         cancelButton.isEnabled = false
-        status.text = "Saving \(staged.count) item(s) to Photos…"
+        status.text = "Saving \(itemCount(staged.count)) to Photos…"
         let itemsToSave = staged
         do {
             try await PHPhotoLibrary.shared().performChanges {
@@ -181,6 +181,10 @@ final class GalleryShareExtensionViewController: UIViewController {
             await pendingPreparation?.value
             cleanStaging()
         }
+    }
+
+    private func itemCount(_ count: Int) -> String {
+        "\(count) \(count == 1 ? "item" : "items")"
     }
 
     private func fail(_ message: String) {
