@@ -45,18 +45,19 @@ cache_methods = "\n\n".join([
     block_after(production[cache_anchor:], "private func trimPrefetchRetentions", "private func trimPrefetchRetentions"),
 ])
 outcome = block_after(production[cache_anchor:], "enum GalleryVideoPrerollOutcome", "enum GalleryVideoPrerollOutcome")
-if "let preparedPlayer = video.takePrerolledPlayer()" not in production:
-    raise SystemExit("production foreground handoff expression is missing")
-if "let item = preparedPlayer?.currentItem ?? AVPlayerItem(asset: avAsset)" not in production:
+if "let preparedPresentation = video.takePrerolledPresentation()" not in production:
+    raise SystemExit("production foreground presentation handoff is missing")
+if "let item = preparedPresentation?.player.currentItem ?? AVPlayerItem(asset: avAsset)" not in production:
     raise SystemExit("production foreground item fallback is missing")
-if "self.player = preparedPlayer ?? AVPlayer(playerItem: item)" not in production:
+if "let player = preparedPresentation?.player ?? AVPlayer(playerItem: item)" not in production:
     raise SystemExit("production independent foreground player fallback is missing")
 
 # Use the exact production handoff expressions, wrapped only in a host-test helper.
-handoff = """@MainActor fileprivate func productionForegroundHandoff(video: GalleryPreparedVideo, avAsset: AVAsset) -> AVPlayer {
-    let preparedPlayer = video.takePrerolledPlayer()
-    let item = preparedPlayer?.currentItem ?? AVPlayerItem(asset: avAsset)
-    return preparedPlayer ?? AVPlayer(playerItem: item)
+handoff = """@MainActor fileprivate func productionForegroundHandoff(video: GalleryPreparedVideo, avAsset: AVAsset) -> (player: AVPlayer, spatialComponent: VideoPlayerComponent?) {
+    let preparedPresentation = video.takePrerolledPresentation()
+    let item = preparedPresentation?.player.currentItem ?? AVPlayerItem(asset: avAsset)
+    let player = preparedPresentation?.player ?? AVPlayer(playerItem: item)
+    return (player, preparedPresentation?.spatialComponent)
 }"""
 
 prepared = prepared.replace(".seconds(6)", ".milliseconds(250)")
@@ -104,6 +105,13 @@ final class AVPlayerItem {
 }
 
 enum AVPlayerActionAtItemEnd { case pause }
+struct VideoPlayerComponent {
+    let avPlayer: AVPlayer
+    init(avPlayer: AVPlayer) { self.avPlayer = avPlayer }
+}
+func makeSpatialVideoPlayerComponent(for player: AVPlayer) async -> VideoPlayerComponent {
+    VideoPlayerComponent(avPlayer: player)
+}
 final class AVPlayer {
     var currentItem: AVPlayerItem?
     var status: FakeStatus
@@ -220,28 +228,55 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
     // First foreground consumer gets the same player, reset for user playback.
     readyVideo.testPlayer!.currentItem!.preferredForwardBufferDuration = 1.5
     let warmedPlayer = readyVideo.testPlayer!
-    let taken = productionForegroundHandoff(video: readyVideo, avAsset: bothReadyAsset)
+    let taken = productionForegroundHandoff(video: readyVideo, avAsset: bothReadyAsset).player
     check(taken === warmedPlayer, "first consumer takes the actual warmed player")
     check(!taken.isMuted && taken.volume == 1, "take resets mute and volume")
     check(taken.currentItem!.preferredForwardBufferDuration == 0, "take resets foreground buffer duration")
     check(!taken.isPlaying, "taken player is not autoplayed by preroll")
     check(!readyVideo.hasPrerolledPlayer, "take consumes the preroll")
-    let independent = productionForegroundHandoff(video: readyVideo, avAsset: bothReadyAsset)
+    let independent = productionForegroundHandoff(video: readyVideo, avAsset: bothReadyAsset).player
     check(independent !== taken, "second consumer builds an independent foreground player")
     check(independent.currentItem !== taken.currentItem, "independent consumer gets an independent item")
+
+    // The warm spatial component follows only its prepared player and attempt.
+    let spatialVideo = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 1))
+    spatialVideo.isSpatialVideo = true
+    let spatialAttempt = UUID()
+    try? await spatialVideo.preparePreroll(id: spatialAttempt)
+    let spatialPlayer = spatialVideo.testPlayer!
+    do {
+        try await spatialVideo.prepareSpatialPrerollComponent(id: UUID())
+        fatalError("a stale attempt cannot prepare a spatial component")
+    } catch { }
+    check(spatialVideo.testSpatialComponent == nil, "stale attempt does not install a component")
+    try? await spatialVideo.prepareSpatialPrerollComponent(id: spatialAttempt)
+    check(spatialVideo.testSpatialComponent?.avPlayer === spatialPlayer, "prepared component belongs to the exact warmed player")
+    let spatialPresentation = spatialVideo.takePrerolledPresentation()
+    check(spatialPresentation?.player === spatialPlayer, "spatial presentation transfers the warmed player")
+    check(spatialPresentation?.spatialComponent?.avPlayer === spatialPlayer, "same-attempt component transfers with its player")
+    check(spatialVideo.testSpatialComponent == nil, "presentation transfer clears the warm component")
+
+    let cancelledSpatial = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 1))
+    cancelledSpatial.isSpatialVideo = true
+    let cancelledAttempt = UUID()
+    try? await cancelledSpatial.preparePreroll(id: cancelledAttempt)
+    try? await cancelledSpatial.prepareSpatialPrerollComponent(id: cancelledAttempt)
+    cancelledSpatial.discardPrerolledPlayer(expectedID: cancelledAttempt)
+    check(cancelledSpatial.testSpatialComponent == nil && !cancelledSpatial.hasPrerolledPlayer,
+          "cancel clears the component and warmed player")
 
     // A warm player can fail after preroll succeeds but before foreground promotion.
     let lateFailed = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 1))
     try? await lateFailed.preparePreroll(id: UUID())
     let brokenPlayer = lateFailed.testPlayer!
     brokenPlayer.status = .failed
-    let afterLateFailure = productionForegroundHandoff(video: lateFailed, avAsset: lateFailed.asset)
+    let afterLateFailure = productionForegroundHandoff(video: lateFailed, avAsset: lateFailed.asset).player
     check(afterLateFailure !== brokenPlayer, "late failed warm player is discarded before foreground handoff")
     let lateDetached = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 1))
     try? await lateDetached.preparePreroll(id: UUID())
     let detachedPlayer = lateDetached.testPlayer!
     detachedPlayer.replaceCurrentItem(with: nil)
-    let afterDetach = productionForegroundHandoff(video: lateDetached, avAsset: lateDetached.asset)
+    let afterDetach = productionForegroundHandoff(video: lateDetached, avAsset: lateDetached.asset).player
     check(afterDetach !== detachedPlayer && afterDetach.currentItem != nil, "late detached warm item falls back to a fresh foreground player")
 
     // Timeout and callback failure discard the speculative player and permit fallback.
@@ -252,7 +287,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
     let failed = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 1, prerollResult: false))
     do { try await failed.preparePreroll(id: UUID()); fatalError("failed callback should fail") } catch { }
     check(!failed.hasPrerolledPlayer, "failed callback discards warm player")
-    check(productionForegroundHandoff(video: failed, avAsset: failed.asset) !== taken, "failure falls back to a new foreground player")
+    check(productionForegroundHandoff(video: failed, avAsset: failed.asset).player !== taken, "failure falls back to a new foreground player")
 
     // Cancel before continuation installation / duplicate callback both settle exactly once.
     let completion = GalleryPrerollCompletion()
@@ -294,7 +329,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
     let secondVideo = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 30))
     check(cache.scheduleVideoPreroll(secondVideo, key: "vault:other") == .slotUnavailable, "global single slot spans photos and vault")
     let beforeConsumption = cache.slotNotifications
-    _ = sameVideo.takePrerolledPlayer()
+    _ = sameVideo.takePrerolledPresentation()
     check(cache.lastConsumedKey == "photo:same", "successful consumption identifies the key that remaining owners may warm again")
     check(cache.slotNotifications == beforeConsumption + 1, "consumption releases exactly once despite the ordinary release callback")
 
@@ -320,6 +355,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
 
 @MainActor extension GalleryPreparedVideo {
     var testPlayer: AVPlayer? { Mirror(reflecting: self).children.first { $0.label == "prerolledPlayer" }?.value as? AVPlayer }
+    var testSpatialComponent: VideoPlayerComponent? { Mirror(reflecting: self).children.first { $0.label == "prerolledSpatialComponent" }?.value as? VideoPlayerComponent }
 }
 
 @main struct Runner {

@@ -10,7 +10,7 @@ def block(marker):
    depth-=1
    if depth==0:return s[start:i+1]
  raise ValueError(marker)
-methods='\n'.join(block(m) for m in ['    func prefetch(items assets:', '    private func startPrefetchIfNeeded()', '    private func recordVideoPrerollOutcome(', '    func setSceneActive(_ active:'])
+methods='\n'.join(block(m) for m in ['    func prefetch(items assets:', '    private func startPrefetchIfNeeded()', '    private func recordVideoPrerollOutcome(', '    func setSceneActive(_ active:', '    private func resumeVideoPlaybackIfEligible()', '    private func isVideoPlaybackActive('])
 code='''
 import Foundation
 struct GalleryMediaItem { let localIdentifier: String; var mediaType: PHAssetMediaType = .image }
@@ -30,7 +30,8 @@ struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
  func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String)->GallerySceneCache.GalleryVideoPrerollOutcome { .scheduled }
  func clearSpeculativeVideoPreroll() {}
 }
-@MainActor final class Player { var timeControlStatus: Status = .paused; enum Status {case paused,playing}; func pause(){};func play(){} }
+@MainActor final class Player { var timeControlStatus: Status = .paused; var rate:Float=0; enum Status {case paused,playing}; func pause(){timeControlStatus = .paused;rate=0};func play(){timeControlStatus = .playing;rate=1} }
+typealias AVPlayer = Player
 @MainActor final class Probe {
  var desiredPrefetchAssets:[GalleryMediaItem]=[],requestedPrefetchAssets:[GalleryMediaItem]=[]
  var requestedExcludingCurrent:GalleryMediaItem?, requestedPreserving:GalleryMediaItem?
@@ -40,6 +41,7 @@ struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
  var prefetchTask:Task<GalleryPrefetchedMedia,Error>?,prefetchCoordinator:Task<Void,Never>?
  var prefetchGeneration=UUID(),prefetchPriority:GalleryPrefetchPriority?,videoPrerollSlotGeneration:UInt64=0
  var lastPrefetchOwnerCount=1,isSceneActive=true,isLoading=false,isPresentationCovered=false,resumePlaybackWhenActive=false
+ var attachedVideoPlayerID:ObjectIdentifier?
  var player:Player?
  var attempts:[String:Int]=[:];var failOnce:Set<String>=[];var failAlways:Set<String>=[]
  func upgradeNearestVideoPreroll() {}

@@ -7,14 +7,23 @@ import SwiftUI
 /// inside the gallery's fixed pane, including when two slideshows share a window.
 struct GallerySpatialVideoView: View {
     let player: AVPlayer
+    let component: VideoPlayerComponent
+    let onSurfaceAttached: (AVPlayer, UUID) -> Void
+    let onSurfaceDetached: (AVPlayer, UUID) -> Void
+    let onPlaybackRequest: (Bool, AVPlayer) -> Void
     var initialYawDegrees: Float = 0
     var initialPitchDegrees: Float = 0
+    @State private var rootEntity = Entity()
     @State private var videoEntity = Entity()
+    @State private var fitRevision = 0
     @State private var position = 0.0
     @State private var duration = 0.0
     @State private var isPlaying = false
     @State private var isScrubbing = false
     @State private var renderingID = UUID()
+    @State private var videoEntityAdded = false
+    @State private var componentInstalled = false
+    @State private var attachedSurfaceID: UUID?
 
     var body: some View {
         VStack(spacing: 96) {
@@ -60,17 +69,45 @@ struct GallerySpatialVideoView: View {
             .padding(.bottom, 12)
         }
         .task(id: ObjectIdentifier(player)) {
+            guard !Task.isCancelled else { return }
             let token = UUID()
             renderingID = token
             isScrubbing = false
-            var component = VideoPlayerComponent(avPlayer: player)
-            component.desiredViewingMode = .stereo
-            component.desiredSpatialVideoMode = .spatial
-            component.desiredImmersiveViewingMode = .portal
-            component.isPassthroughTintingEnabled = false
-            videoEntity.components.set(component)
+            componentInstalled = false
+            guard component.avPlayer === player else { return }
+            let entity = Entity()
+            videoEntity = entity
+            entity.components.remove(BillboardComponent.self)
+            applyOrientation()
+            var localComponent = VideoPlayerComponent(avPlayer: player)
+            localComponent.desiredViewingMode = component.desiredViewingMode
+            localComponent.desiredSpatialVideoMode = component.desiredSpatialVideoMode
+            localComponent.desiredImmersiveViewingMode = component.desiredImmersiveViewingMode
+            localComponent.isPassthroughTintingEnabled = component.isPassthroughTintingEnabled
+            entity.components.set(localComponent)
+            rootEntity.addChild(entity)
+            componentInstalled = true
+            notifySurfaceAttached(for: player, token: token)
             defer {
-                if renderingID == token { videoEntity.components.remove(VideoPlayerComponent.self) }
+                entity.components.remove(VideoPlayerComponent.self)
+                entity.removeFromParent()
+                if attachedSurfaceID == token {
+                    attachedSurfaceID = nil
+                    onSurfaceDetached(player, token)
+                }
+                if renderingID == token { componentInstalled = false }
+            }
+            // The native size arrives after attachment; request one fit update when it does.
+            let sizeDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !Task.isCancelled, renderingID == token, ContinuousClock.now < sizeDeadline {
+                // RealityView does not update when this native component gains its size.
+                if let size = entity.components[VideoPlayerComponent.self]?.playerScreenSize,
+                   size.x.isFinite, size.y.isFinite, size.x > 0, size.y > 0 {
+                    fitRevision &+= 1
+                    break
+                }
+                do { try await Task.sleep(for: .milliseconds(16)) }
+                catch { break }
             }
             // This view-owned task is cancelled automatically on item changes/close.
             while !Task.isCancelled {
@@ -85,6 +122,16 @@ struct GallerySpatialVideoView: View {
                 catch { break }
             }
         }
+        .onDisappear {
+            videoEntityAdded = false
+            let token = renderingID
+            detachSurface(for: player, token: token)
+            if componentInstalled {
+                componentInstalled = false
+                videoEntity.components.remove(VideoPlayerComponent.self)
+                videoEntity.removeFromParent()
+            }
+        }
     }
 
     @ViewBuilder
@@ -92,11 +139,12 @@ struct GallerySpatialVideoView: View {
         GeometryReader3D { geometry in
             RealityView { content in
                 // Keep orientation fixed between explicit calibration changes.
-                videoEntity.components.remove(BillboardComponent.self)
-                applyOrientation()
-                content.add(videoEntity)
+                content.add(rootEntity)
+                videoEntityAdded = true
+                notifySurfaceAttached(for: player, token: renderingID)
                 fit(content: content, geometry: geometry)
             } update: { content in
+                _ = fitRevision
                 fit(content: content, geometry: geometry)
             }
             .onChange(of: initialYawDegrees) { _, _ in applyOrientation() }
@@ -109,6 +157,20 @@ struct GallerySpatialVideoView: View {
     private func applyOrientation() {
         videoEntity.orientation = GalleryViewerPreferences.pairedOrientation(
             yawDegrees: initialYawDegrees, pitchDegrees: initialPitchDegrees)
+    }
+
+    private func notifySurfaceAttached(for player: AVPlayer, token: UUID) {
+        guard renderingID == token, videoEntityAdded, componentInstalled,
+              videoEntity.components[VideoPlayerComponent.self]?.avPlayer === player,
+              attachedSurfaceID != token else { return }
+        attachedSurfaceID = token
+        onSurfaceAttached(player, token)
+    }
+
+    private func detachSurface(for player: AVPlayer, token: UUID) {
+        guard attachedSurfaceID == token else { return }
+        attachedSurfaceID = nil
+        onSurfaceDetached(player, token)
     }
 
     private func fit(content: RealityViewContent, geometry: GeometryProxy3D) {
@@ -124,14 +186,12 @@ struct GallerySpatialVideoView: View {
     }
 
     private func togglePlayback() {
-        if player.timeControlStatus != .paused {
-            player.pause()
-            isPlaying = false
-        } else {
+        let shouldPlay = player.timeControlStatus == .paused && player.rate == 0
+        if shouldPlay {
             if duration > 0 && position >= duration - 0.1 { seek(to: 0) }
-            player.play()
-            isPlaying = true
         }
+        onPlaybackRequest(shouldPlay, player)
+        isPlaying = shouldPlay
     }
 
     private func seek(to seconds: Double) {

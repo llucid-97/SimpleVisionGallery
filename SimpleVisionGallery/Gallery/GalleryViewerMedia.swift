@@ -7,6 +7,16 @@ import RealityKit
 import UIKit
 import UniformTypeIdentifiers
 
+@concurrent
+private func makeSpatialVideoPlayerComponent(for player: AVPlayer) async -> sending VideoPlayerComponent {
+    var component = VideoPlayerComponent(avPlayer: player)
+    component.desiredViewingMode = .stereo
+    component.desiredSpatialVideoMode = .spatial
+    component.desiredImmersiveViewingMode = .portal
+    component.isPassthroughTintingEnabled = false
+    return component
+}
+
 /// Each window owns playback and presentation; expensive generated images are shared.
 @MainActor @Observable
 final class GalleryViewerMedia {
@@ -16,6 +26,7 @@ final class GalleryViewerMedia {
     var menuPreview: UIImage? { menuPreviewState.image }
     var menuPreviewKey: String? { menuPreviewState.itemKey }
     private(set) var player: AVPlayer?
+    private(set) var spatialVideoComponent: VideoPlayerComponent?
     private(set) var isSpatialVideo = false
     private(set) var aspectRatio: Double?
     private(set) var isLoading = false
@@ -58,6 +69,8 @@ final class GalleryViewerMedia {
     private var isSceneActive = true
     private var isPresentationCovered = false
     private var resumePlaybackWhenActive = false
+    private var attachedVideoPlayerID: ObjectIdentifier?
+    private var attachedVideoSurfaceID: UUID?
 
     init() {
         vaultLockObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
@@ -158,7 +171,8 @@ final class GalleryViewerMedia {
             else { ready = GallerySceneCache.shared.preparedVideo(for: asset, foreground: true) }
             if let ready {
                 promoted?.cancel()
-                presentVideo(ready, token: token)
+                await presentVideo(ready, token: token)
+                guard generation == token else { return }
                 isLoading = false
                 startPrefetchIfNeeded()
                 return
@@ -205,7 +219,7 @@ final class GalleryViewerMedia {
                     }
                     try Task.checkCancellation()
                     guard self.generation == token else { return }
-                    self.presentVideo(video, token: token)
+                    await self.presentVideo(video, token: token)
                 } else {
                     let key = GallerySceneCache.key(for: asset)
                     let image: GalleryPreparedImage
@@ -249,7 +263,7 @@ final class GalleryViewerMedia {
     }
 
     // Attach one viewer-owned player using metadata already loaded during preparation.
-    private func presentVideo(_ video: GalleryPreparedVideo, token: UUID) {
+    private func presentVideo(_ video: GalleryPreparedVideo, token: UUID) async {
         video.promote()
         self.prepared = nil
         self.preparedKey = nil
@@ -263,10 +277,16 @@ final class GalleryViewerMedia {
         if spatialVideo { self.status = "Showing a 2D preview in Simulator. Spatial video needs Apple Vision Pro." }
         #endif
         // The first foreground consumer takes the warmed player; sibling windows make independent players.
-        let preparedPlayer = video.takePrerolledPlayer()
-        let item = preparedPlayer?.currentItem ?? AVPlayerItem(asset: avAsset)
-        self.player = preparedPlayer ?? AVPlayer(playerItem: item)
-        self.player?.actionAtItemEnd = self.videoLooping ? .none : .pause
+        let preparedPresentation = video.takePrerolledPresentation()
+        let item = preparedPresentation?.player.currentItem ?? AVPlayerItem(asset: avAsset)
+        let player = preparedPresentation?.player ?? AVPlayer(playerItem: item)
+        self.player = player
+        self.spatialVideoComponent = spatialVideo ? preparedPresentation?.spatialComponent : nil
+        self.attachedVideoPlayerID = nil
+        self.attachedVideoSurfaceID = nil
+        // Playback intent waits for the view that owns this exact player to attach.
+        self.resumePlaybackWhenActive = true
+        player.actionAtItemEnd = self.videoLooping ? .none : .pause
         self.playerEndObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
             forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
         ) { [weak self, weak item] _ in
@@ -279,8 +299,8 @@ final class GalleryViewerMedia {
                 // A manual/background pause before this callback wins.
                 // Play before the seek completes so no delayed completion
                 // can restart a player the user pauses during the seek.
+                self.requestVideoPlayback(true, for: player)
                 player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-                player.play()
             }
         })
         self.playerObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -291,8 +311,49 @@ final class GalleryViewerMedia {
                 self.error = message
             }
         }
-        if self.isSceneActive && !self.isPresentationCovered { self.player?.play() }
-        else { self.resumePlaybackWhenActive = true }
+        if spatialVideo, self.spatialVideoComponent == nil {
+            let component = await makeSpatialVideoPlayerComponent(for: player)
+            guard self.generation == token, self.player === player,
+                  self.currentVideo === video else { return }
+            self.spatialVideoComponent = component
+        }
+    }
+
+    func videoSurfaceDidAttach(_ player: AVPlayer, surfaceID: UUID) {
+        guard self.player === player else { return }
+        attachedVideoPlayerID = ObjectIdentifier(player)
+        attachedVideoSurfaceID = surfaceID
+        resumeVideoPlaybackIfEligible()
+    }
+
+    func videoSurfaceDidDetach(_ player: AVPlayer, surfaceID: UUID) {
+        guard self.player === player,
+              attachedVideoPlayerID == ObjectIdentifier(player),
+              attachedVideoSurfaceID == surfaceID else { return }
+        if player.timeControlStatus != .paused || player.rate > 0 {
+            resumePlaybackWhenActive = true
+        }
+        attachedVideoPlayerID = nil
+        attachedVideoSurfaceID = nil
+        player.pause()
+    }
+
+    func requestVideoPlayback(_ play: Bool, for player: AVPlayer) {
+        guard self.player === player else { return }
+        resumePlaybackWhenActive = play
+        if play { resumeVideoPlaybackIfEligible() }
+        else { player.pause() }
+    }
+
+    private func resumeVideoPlaybackIfEligible() {
+        guard isSceneActive, !isPresentationCovered, resumePlaybackWhenActive,
+              let player, attachedVideoPlayerID == ObjectIdentifier(player) else { return }
+        player.play()
+        resumePlaybackWhenActive = false
+    }
+
+    private func isVideoPlaybackActive(_ player: AVPlayer) -> Bool {
+        player.timeControlStatus != .paused || player.rate > 0
     }
 
     // Present completed media inline so a warm navigation does not wait on another task.
@@ -534,11 +595,12 @@ final class GalleryViewerMedia {
         guard covered != isPresentationCovered else { return }
         isPresentationCovered = covered
         if covered {
-            resumePlaybackWhenActive = resumePlaybackWhenActive || (player.map { $0.timeControlStatus != .paused } ?? false)
-            player?.pause()
+            if let player {
+                resumePlaybackWhenActive = resumePlaybackWhenActive || isVideoPlaybackActive(player)
+                player.pause()
+            }
         } else if isSceneActive {
-            if resumePlaybackWhenActive { player?.play() }
-            resumePlaybackWhenActive = false
+            resumeVideoPlaybackIfEligible()
         }
     }
 
@@ -582,10 +644,7 @@ final class GalleryViewerMedia {
         if active {
             prefetchFailures.removeAll()
             prefetchVideoSlotFailures.removeAll()
-            if !isPresentationCovered {
-                if resumePlaybackWhenActive { player?.play() }
-                resumePlaybackWhenActive = false
-            }
+            if !isPresentationCovered { resumeVideoPlaybackIfEligible() }
             prefetch(items: requestedPrefetchAssets, excludingCurrent: requestedExcludingCurrent,
                      preserving: requestedPreserving)
         } else {
@@ -594,8 +653,10 @@ final class GalleryViewerMedia {
             GallerySceneCache.shared.updatePrefetchDemand(owner: prefetchOwnerID, orderedKeys: [])
             attemptedVideoPrerolls.removeAll()
             deferredVideoPrerolls.removeAll()
-            resumePlaybackWhenActive = resumePlaybackWhenActive || (player.map { $0.timeControlStatus != .paused } ?? false)
-            player?.pause()
+            if let player {
+                resumePlaybackWhenActive = resumePlaybackWhenActive || isVideoPlaybackActive(player)
+                player.pause()
+            }
         }
     }
 
@@ -615,6 +676,9 @@ final class GalleryViewerMedia {
         playerObservation = nil
         if releaseImage { prepared = nil; preparedKey = nil }
         resumePlaybackWhenActive = false
+        attachedVideoPlayerID = nil
+        attachedVideoSurfaceID = nil
+        spatialVideoComponent = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
@@ -873,6 +937,7 @@ private final class GallerySceneCache {
             guard let video else { return }
             do {
                 try await video.preparePreroll(id: id)
+                try await video.prepareSpatialPrerollComponent(id: id)
                 try Task.checkCancellation()
                 guard let self, self.videoPrerollReservation?.id == id else {
                     video.discardPrerolledPlayer(expectedID: id)
@@ -1727,6 +1792,9 @@ private final class GalleryPreparedVideo {
     var onPrerollPromotion: (@MainActor () -> Void)?
     private var prerolledPlayer: AVPlayer?
     private var prerolledItem: AVPlayerItem?
+    private var prerolledSpatialComponent: VideoPlayerComponent?
+    private var prerolledSpatialComponentPlayerID: ObjectIdentifier?
+    private var prerolledSpatialComponentAttemptID: UUID?
     private var prerollCompletion: GalleryPrerollCompletion?
     private var prerollID: UUID?
     private var prerollCancelled = false
@@ -1765,18 +1833,29 @@ private final class GalleryPreparedVideo {
         onPrerollPromotion = nil
     }
 
-    /// Transfer the ready speculative player once; later windows create independent playback.
-    func takePrerolledPlayer() -> AVPlayer? {
+    /// Transfer a ready player and only the component built for that exact player attempt.
+    func takePrerolledPresentation() -> (player: AVPlayer, spatialComponent: VideoPlayerComponent?)? {
         guard let player = prerolledPlayer, let item = prerolledItem,
               player.currentItem === item, player.status == .readyToPlay,
-              item.status == .readyToPlay, prerollID != nil else {
+              item.status == .readyToPlay, let attemptID = prerollID else {
             if let activeID = prerollID { discardPrerolledPlayer(expectedID: activeID) }
             return nil
+        }
+        let component: VideoPlayerComponent?
+        if prerolledSpatialComponentAttemptID == attemptID,
+           prerolledSpatialComponentPlayerID == ObjectIdentifier(player),
+           prerolledSpatialComponent?.avPlayer === player {
+            component = prerolledSpatialComponent
+        } else {
+            component = nil
         }
         item.preferredForwardBufferDuration = 0
         prerolledPlayer = nil
         prerolledItem = nil
         prerollID = nil
+        prerolledSpatialComponent = nil
+        prerolledSpatialComponentPlayerID = nil
+        prerolledSpatialComponentAttemptID = nil
         player.isMuted = false
         player.volume = 1
         onPrerollConsumed?()
@@ -1784,7 +1863,19 @@ private final class GalleryPreparedVideo {
         onPrerollRelease?()
         onPrerollRelease = nil
         onPrerollPromotion = nil
-        return player
+        return (player, component)
+    }
+
+    /// Prepare the RealityKit component off the main actor for this attempt's paused player.
+    func prepareSpatialPrerollComponent(id: UUID) async throws {
+        guard isSpatialVideo else { return }
+        guard prerollID == id, let player = prerolledPlayer else { throw CancellationError() }
+        let component = await makeSpatialVideoPlayerComponent(for: player)
+        try Task.checkCancellation()
+        guard prerollID == id, prerolledPlayer === player else { throw CancellationError() }
+        prerolledSpatialComponent = component
+        prerolledSpatialComponentPlayerID = ObjectIdentifier(player)
+        prerolledSpatialComponentAttemptID = id
     }
 
     /// Cancel only this attempt so an old callback cannot discard a newer player.
@@ -1796,6 +1887,11 @@ private final class GalleryPreparedVideo {
         prerollCompletion = nil
         onPrerollConsumed = nil
         onPrerollPromotion = nil
+        if prerolledSpatialComponentAttemptID == expectedID {
+            prerolledSpatialComponent = nil
+            prerolledSpatialComponentPlayerID = nil
+            prerolledSpatialComponentAttemptID = nil
+        }
         prerolledPlayer?.cancelPendingPrerolls()
         prerolledPlayer?.pause()
         prerolledPlayer?.replaceCurrentItem(with: nil)
