@@ -29,6 +29,12 @@ Vault deletion must never remove Photos assets. Mixed Photos/vault bulk actions 
 
 Remember the last N successful Move destinations for Photos and vault albums, including newly created vault albums. Use the same recency order and limit, remove duplicates, and move a reused destination to the front. Names are display values, not identity. Filter unavailable, deleted, source and reserved-bin destinations; do not leak vault titles while locked. Preserve existing Photos history when upgrading.
 
+## Sharing preserves supplied media
+
+The incoming Share extension accepts supported photo and video representations and saves a copy to Photos without decoding or recompressing it. It uses a safe sender filename when available, leaves the source untouched and asks for Photos add permission before saving. Cancel dismisses promptly while staged files remain until an in-flight provider callback finishes. The existing Photos grid and viewer Share actions continue to export original resources.
+
+`python3 tests/check_sharing_input.py` verifies concrete image-type selection, suggested and fallback filenames, temporary-provider callback lifetime, exact copied bytes, unsupported input and provider failures.
+
 ## Scripted transition coverage
 
 Maintain a code-backed inventory of the implicit loading states and every reachable transition. When code adds a transition, add its test. Use a controlled backend for delays/failures and generated real PhotoKit/encrypted-storage fixtures for store boundaries. A source-string check alone does not prove runtime behavior.
