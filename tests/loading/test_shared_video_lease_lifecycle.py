@@ -41,6 +41,8 @@ final class AVPlayer {
  func replaceCurrentItem(with item: AVPlayerItem?) { currentItem = item }
  func preroll(atRate: Float, completionHandler: @escaping (Bool)->Void) { completionHandler(true) }
 }
+struct VideoPlayerComponent { let avPlayer: AVPlayer; init(avPlayer: AVPlayer) { self.avPlayer = avPlayer } }
+func makeSpatialVideoPlayerComponent(for player: AVPlayer) async -> VideoPlayerComponent { VideoPlayerComponent(avPlayer: player) }
 struct GalleryMediaItem {let localIdentifier:String;let vaultRecord:Bool?}
 enum GalleryPrefetchedMedia {case video(GalleryPreparedVideo)}
 enum GalleryViewerPreferences {static let globalPrefetchItemBudget=20}

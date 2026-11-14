@@ -37,6 +37,8 @@ final class AVPlayer {
  func replaceCurrentItem(with item: AVPlayerItem?) { currentItem = item }
  func preroll(atRate: Float, completionHandler: @escaping (Bool)->Void) { completionHandler(true) }
 }
+struct VideoPlayerComponent { let avPlayer: AVPlayer; init(avPlayer: AVPlayer) { self.avPlayer = avPlayer } }
+func makeSpatialVideoPlayerComponent(for player: AVPlayer) async -> VideoPlayerComponent { VideoPlayerComponent(avPlayer: player) }
 @MainActor final class GalleryVaultStorage {
  static let shared=GalleryVaultStorage(); var cleanupSucceeds=true; var events:[String]=[]
  func releasePlaintext(_ url:URL)->Bool { events.append("cleanup"); return cleanupSucceeds }
