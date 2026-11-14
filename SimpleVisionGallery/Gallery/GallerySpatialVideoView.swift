@@ -7,6 +7,10 @@ import SwiftUI
 /// inside the gallery's fixed pane, including when two slideshows share a window.
 struct GallerySpatialVideoView: View {
     let player: AVPlayer
+    let component: VideoPlayerComponent
+    let onSurfaceAttached: (AVPlayer) -> Void
+    let onSurfaceDetached: (AVPlayer) -> Void
+    let onPlaybackRequest: (Bool, AVPlayer) -> Void
     var initialYawDegrees: Float = 0
     var initialPitchDegrees: Float = 0
     @State private var videoEntity = Entity()
@@ -15,6 +19,9 @@ struct GallerySpatialVideoView: View {
     @State private var isPlaying = false
     @State private var isScrubbing = false
     @State private var renderingID = UUID()
+    @State private var videoEntityAdded = false
+    @State private var componentInstalled = false
+    @State private var attachedPlayerID: ObjectIdentifier?
 
     var body: some View {
         VStack(spacing: 96) {
@@ -63,13 +70,17 @@ struct GallerySpatialVideoView: View {
             let token = UUID()
             renderingID = token
             isScrubbing = false
-            var component = VideoPlayerComponent(avPlayer: player)
-            component.desiredViewingMode = .stereo
-            component.desiredSpatialVideoMode = .spatial
-            component.desiredImmersiveViewingMode = .portal
-            component.isPassthroughTintingEnabled = false
+            componentInstalled = false
+            attachedPlayerID = nil
+            guard component.avPlayer === player else { return }
             videoEntity.components.set(component)
+            componentInstalled = true
+            notifySurfaceAttached(for: player, token: token)
             defer {
+                if attachedPlayerID == ObjectIdentifier(player) {
+                    attachedPlayerID = nil
+                    onSurfaceDetached(player)
+                }
                 if renderingID == token { videoEntity.components.remove(VideoPlayerComponent.self) }
             }
             // This view-owned task is cancelled automatically on item changes/close.
@@ -85,6 +96,7 @@ struct GallerySpatialVideoView: View {
                 catch { break }
             }
         }
+        .onDisappear { videoEntityAdded = false }
     }
 
     @ViewBuilder
@@ -95,6 +107,8 @@ struct GallerySpatialVideoView: View {
                 videoEntity.components.remove(BillboardComponent.self)
                 applyOrientation()
                 content.add(videoEntity)
+                videoEntityAdded = true
+                notifySurfaceAttached(for: player, token: renderingID)
                 fit(content: content, geometry: geometry)
             } update: { content in
                 fit(content: content, geometry: geometry)
@@ -111,6 +125,14 @@ struct GallerySpatialVideoView: View {
             yawDegrees: initialYawDegrees, pitchDegrees: initialPitchDegrees)
     }
 
+    private func notifySurfaceAttached(for player: AVPlayer, token: UUID) {
+        let id = ObjectIdentifier(player)
+        guard renderingID == token, videoEntityAdded, componentInstalled,
+              component.avPlayer === player, attachedPlayerID != id else { return }
+        attachedPlayerID = id
+        onSurfaceAttached(player)
+    }
+
     private func fit(content: RealityViewContent, geometry: GeometryProxy3D) {
         guard let size = videoEntity.observable.components[VideoPlayerComponent.self]?.playerScreenSize,
               size.x.isFinite, size.y.isFinite, size.x > 0, size.y > 0 else { return }
@@ -124,14 +146,12 @@ struct GallerySpatialVideoView: View {
     }
 
     private func togglePlayback() {
-        if player.timeControlStatus != .paused {
-            player.pause()
-            isPlaying = false
-        } else {
+        let shouldPlay = player.timeControlStatus == .paused && player.rate == 0
+        if shouldPlay {
             if duration > 0 && position >= duration - 0.1 { seek(to: 0) }
-            player.play()
-            isPlaying = true
         }
+        onPlaybackRequest(shouldPlay, player)
+        isPlaying = shouldPlay
     }
 
     private func seek(to seconds: Double) {

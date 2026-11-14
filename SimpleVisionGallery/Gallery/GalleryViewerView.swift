@@ -622,10 +622,19 @@ private struct GalleryViewerPane: View {
                 .tint(.white).foregroundStyle(.white)
         } else if let player = media.player, media.error == nil {
             if media.isSpatialVideo {
-                GallerySpatialVideoView(player: player, initialYawDegrees: Float(backingYaw),
-                    initialPitchDegrees: Float(backingPitch))
+                if let component = media.spatialVideoComponent, component.avPlayer === player {
+                    GallerySpatialVideoView(player: player, component: component,
+                        onSurfaceAttached: media.videoSurfaceDidAttach,
+                        onSurfaceDetached: media.videoSurfaceDidDetach,
+                        onPlaybackRequest: media.requestVideoPlayback,
+                        initialYawDegrees: Float(backingYaw), initialPitchDegrees: Float(backingPitch))
+                } else {
+                    ProgressView("Preparing video…").tint(.white).foregroundStyle(.white)
+                }
             } else {
-                GalleryNativeVideoPlayer(player: player)
+                GalleryNativeVideoPlayer(player: player,
+                    onSurfaceAttached: media.videoSurfaceDidAttach,
+                    onSurfaceDetached: media.videoSurfaceDidDetach)
             }
         } else if let image = media.fallbackImage {
             Image(uiImage: image).resizable().scaledToFit()
@@ -949,23 +958,98 @@ private struct GalleryViewerMoveSheet: View {
 
 private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
     let player: AVPlayer
+    let onSurfaceAttached: (AVPlayer) -> Void
+    let onSurfaceDetached: (AVPlayer) -> Void
+
+    @MainActor
+    final class Coordinator {
+        var onSurfaceAttached: (AVPlayer) -> Void
+        var onSurfaceDetached: (AVPlayer) -> Void
+        private var attachedPlayerID: ObjectIdentifier?
+        private var pendingAttachTask: Task<Void, Never>?
+        private var isDismantled = false
+
+        init(onSurfaceAttached: @escaping (AVPlayer) -> Void,
+             onSurfaceDetached: @escaping (AVPlayer) -> Void) {
+            self.onSurfaceAttached = onSurfaceAttached
+            self.onSurfaceDetached = onSurfaceDetached
+        }
+
+        func attach(_ player: AVPlayer) {
+            guard !isDismantled, attachedPlayerID != ObjectIdentifier(player) else { return }
+            pendingAttachTask = nil
+            attachedPlayerID = ObjectIdentifier(player)
+            onSurfaceAttached(player)
+        }
+
+        func detach(_ player: AVPlayer) {
+            pendingAttachTask?.cancel()
+            pendingAttachTask = nil
+            guard attachedPlayerID == ObjectIdentifier(player) else { return }
+            attachedPlayerID = nil
+            onSurfaceDetached(player)
+        }
+
+        func scheduleAttachment(to controller: AVPlayerViewController, player: AVPlayer) {
+            guard !isDismantled, attachedPlayerID != ObjectIdentifier(player), pendingAttachTask == nil else { return }
+            pendingAttachTask = Task { @MainActor [weak self, weak controller] in
+                while !Task.isCancelled, let self, let controller, !self.isDismantled,
+                      controller.player === player, controller.viewIfLoaded?.window == nil {
+                    do { try await Task.sleep(for: .milliseconds(16)) }
+                    catch { return }
+                }
+                guard !Task.isCancelled, let self, let controller, !self.isDismantled,
+                      controller.player === player, controller.viewIfLoaded?.window != nil else { return }
+                self.attach(player)
+            }
+        }
+
+        func dismantle() {
+            isDismantled = true
+            pendingAttachTask?.cancel()
+            pendingAttachTask = nil
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSurfaceAttached: onSurfaceAttached, onSurfaceDetached: onSurfaceDetached)
+    }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.player = player
         controller.videoGravity = .resizeAspect
         controller.showsPlaybackControls = true
+        _ = controller.view
+        context.coordinator.scheduleAttachment(to: controller, player: player)
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        if controller.player !== player { controller.player = player }
+        context.coordinator.onSurfaceAttached = onSurfaceAttached
+        context.coordinator.onSurfaceDetached = onSurfaceDetached
+        if controller.player !== player {
+            if let previous = controller.player {
+                context.coordinator.detach(previous)
+                previous.pause()
+            }
+            controller.player = player
+        }
+        controller.videoGravity = .resizeAspect
+        controller.showsPlaybackControls = true
+        _ = controller.view
+        context.coordinator.scheduleAttachment(to: controller, player: player)
     }
 
-    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: ()) {
-        controller.player?.pause()
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
+        if let player = controller.player {
+            coordinator.detach(player)
+            player.pause()
+        }
+        coordinator.dismantle()
         controller.player = nil
     }
+
 }
 
 struct GalleryRealityImage: View {
