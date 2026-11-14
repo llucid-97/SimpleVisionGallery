@@ -70,6 +70,7 @@ final class GalleryViewerMedia {
     private var isPresentationCovered = false
     private var resumePlaybackWhenActive = false
     private var attachedVideoPlayerID: ObjectIdentifier?
+    private var attachedVideoSurfaceID: UUID?
 
     init() {
         vaultLockObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
@@ -282,6 +283,7 @@ final class GalleryViewerMedia {
         self.player = player
         self.spatialVideoComponent = spatialVideo ? preparedPresentation?.spatialComponent : nil
         self.attachedVideoPlayerID = nil
+        self.attachedVideoSurfaceID = nil
         // Playback intent waits for the view that owns this exact player to attach.
         self.resumePlaybackWhenActive = true
         player.actionAtItemEnd = self.videoLooping ? .none : .pause
@@ -317,19 +319,22 @@ final class GalleryViewerMedia {
         }
     }
 
-    func videoSurfaceDidAttach(_ player: AVPlayer) {
+    func videoSurfaceDidAttach(_ player: AVPlayer, surfaceID: UUID) {
         guard self.player === player else { return }
         attachedVideoPlayerID = ObjectIdentifier(player)
+        attachedVideoSurfaceID = surfaceID
         resumeVideoPlaybackIfEligible()
     }
 
-    func videoSurfaceDidDetach(_ player: AVPlayer) {
+    func videoSurfaceDidDetach(_ player: AVPlayer, surfaceID: UUID) {
         guard self.player === player,
-              attachedVideoPlayerID == ObjectIdentifier(player) else { return }
+              attachedVideoPlayerID == ObjectIdentifier(player),
+              attachedVideoSurfaceID == surfaceID else { return }
         if player.timeControlStatus != .paused || player.rate > 0 {
             resumePlaybackWhenActive = true
         }
         attachedVideoPlayerID = nil
+        attachedVideoSurfaceID = nil
         player.pause()
     }
 
@@ -672,6 +677,7 @@ final class GalleryViewerMedia {
         if releaseImage { prepared = nil; preparedKey = nil }
         resumePlaybackWhenActive = false
         attachedVideoPlayerID = nil
+        attachedVideoSurfaceID = nil
         spatialVideoComponent = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)

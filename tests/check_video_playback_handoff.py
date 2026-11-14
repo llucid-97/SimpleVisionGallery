@@ -39,7 +39,7 @@ cancel_current = block("    private func cancelCurrent(")
 # Verify its real intent/attachment initialization and leave its playback decision to
 # the extracted, compiled production methods below.
 present_body = present[present.index("{") + 1:-1]
-if "self.attachedVideoPlayerID = nil" not in present_body:
+if "self.attachedVideoPlayerID = nil" not in present_body or "self.attachedVideoSurfaceID = nil" not in present_body:
     raise SystemExit("presentVideo no longer clears the previous player's attachment")
 if "self.resumePlaybackWhenActive = true" not in present_body:
     raise SystemExit("presentVideo no longer records pending playback intent")
@@ -76,6 +76,7 @@ typealias GallerySceneCache = FakeCache
     var isPresentationCovered = false
     var resumePlaybackWhenActive = false
     var attachedVideoPlayerID: ObjectIdentifier?
+    var attachedVideoSurfaceID: UUID?
     var prefetchFailures: Set<String> = []
     var prefetchVideoSlotFailures: Set<String> = []
     var attemptedVideoPrerolls: Set<String> = []
@@ -116,32 +117,46 @@ func check(_ value: @autoclosure () -> Bool, _ message: String) {
     viewer.player = player
     viewer.resumePlaybackWhenActive = true
     check(player.playCalls == 0, "pending intent does not play before surface attachment")
-    viewer.videoSurfaceDidAttach(player)
+    let firstSurface = UUID()
+    viewer.videoSurfaceDidAttach(player, surfaceID: firstSurface)
     check(player.playCalls == 1 && player.rate > 0, "the matching native surface starts playback")
-    viewer.videoSurfaceDidAttach(player)
+    viewer.videoSurfaceDidAttach(player, surfaceID: firstSurface)
     check(player.playCalls == 1, "repeated attachment does not start twice")
 
     let pendingViewer = Probe(), pendingPlayer = FakePlayer()
     pendingViewer.player = pendingPlayer
     pendingViewer.resumePlaybackWhenActive = true
     pendingViewer.requestVideoPlayback(false, for: pendingPlayer)
-    pendingViewer.videoSurfaceDidAttach(pendingPlayer)
+    pendingViewer.videoSurfaceDidAttach(pendingPlayer, surfaceID: UUID())
     check(pendingPlayer.playCalls == 0 && !pendingViewer.resumePlaybackWhenActive, "manual pause cancels pending pre-attachment autoplay")
 
     // Stale native events cannot take or stop the current player's attachment.
     let stale = FakePlayer()
-    viewer.videoSurfaceDidAttach(stale)
+    viewer.videoSurfaceDidAttach(stale, surfaceID: UUID())
     check(stale.playCalls == 0 && viewer.attachedVideoPlayerID == ObjectIdentifier(player), "stale attach has no effect")
-    viewer.videoSurfaceDidDetach(stale)
+    viewer.videoSurfaceDidDetach(stale, surfaceID: UUID())
     check(player.rate > 0 && viewer.attachedVideoPlayerID == ObjectIdentifier(player), "stale detach cannot pause or detach current player")
+
+    // A late detach from an old surface must not stop the same player on its new surface.
+    let replacementViewer = Probe(), replacementPlayer = FakePlayer()
+    replacementViewer.player = replacementPlayer
+    replacementViewer.resumePlaybackWhenActive = true
+    let oldSurface = UUID()
+    let replacementSurface = UUID()
+    replacementViewer.videoSurfaceDidAttach(replacementPlayer, surfaceID: oldSurface)
+    replacementViewer.videoSurfaceDidAttach(replacementPlayer, surfaceID: replacementSurface)
+    replacementViewer.videoSurfaceDidDetach(replacementPlayer, surfaceID: oldSurface)
+    check(replacementPlayer.rate > 0 && replacementViewer.attachedVideoSurfaceID == replacementSurface, "old same-player surface detach leaves replacement playing")
+    replacementViewer.videoSurfaceDidDetach(replacementPlayer, surfaceID: replacementSurface)
+    check(replacementPlayer.rate == 0 && replacementViewer.attachedVideoSurfaceID == nil, "current same-player surface detach pauses and clears attachment")
 
     // A user pause remains authoritative through cover and detach transitions.
     viewer.requestVideoPlayback(false, for: player)
     viewer.setPresentationCovered(true)
     viewer.setPresentationCovered(false)
     check(player.rate == 0 && player.playCalls == 1, "manual pause before cover stays paused")
-    viewer.videoSurfaceDidDetach(player)
-    viewer.videoSurfaceDidAttach(player)
+    viewer.videoSurfaceDidDetach(player, surfaceID: firstSurface)
+    viewer.videoSurfaceDidAttach(player, surfaceID: firstSurface)
     check(player.rate == 0 && player.playCalls == 1, "manual pause before detach stays paused after reattachment")
 
     // Cover and inactive scene preserve an already-playing intent for the current attachment.
@@ -165,21 +180,21 @@ func check(_ value: @autoclosure () -> Bool, _ message: String) {
 
     // A covered or detached current surface cannot resume until its own reattachment.
     viewer.setPresentationCovered(true)
-    viewer.videoSurfaceDidDetach(player)
+    viewer.videoSurfaceDidDetach(player, surfaceID: firstSurface)
     viewer.setPresentationCovered(false)
     check(player.rate == 0, "detached player remains paused on uncover")
-    viewer.videoSurfaceDidAttach(stale)
+    viewer.videoSurfaceDidAttach(stale, surfaceID: UUID())
     check(player.rate == 0 && stale.playCalls == 0, "stale reattachment cannot resume playback")
-    viewer.videoSurfaceDidAttach(player)
+    viewer.videoSurfaceDidAttach(player, surfaceID: firstSurface)
     check(player.rate > 0, "current reattachment resumes retained intent")
 
     // Cancel invalidates attachment and intent; a late native attach cannot resurrect it.
     let token = viewer.generation
     let callsBeforeCancel = player.playCalls
     viewer.cancelForTest()
-    check(viewer.player == nil && viewer.attachedVideoPlayerID == nil && !viewer.resumePlaybackWhenActive, "cancel clears player, attachment, and pending intent")
+    check(viewer.player == nil && viewer.attachedVideoPlayerID == nil && viewer.attachedVideoSurfaceID == nil && !viewer.resumePlaybackWhenActive, "cancel clears player, attachment, and pending intent")
     check(player.itemWasCleared && player.rate == 0, "cancel pauses and releases the old player item")
-    viewer.videoSurfaceDidAttach(player)
+    viewer.videoSurfaceDidAttach(player, surfaceID: firstSurface)
     check(player.playCalls == callsBeforeCancel && viewer.generation != token, "late attachment after cancel cannot resurrect playback")
     print("PASS: pending attach gate, single matching attach, stale attach/detach, manual pause, cover/inactive resume, current reattachment and cancel cleanup")
 }

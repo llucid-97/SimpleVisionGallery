@@ -958,19 +958,20 @@ private struct GalleryViewerMoveSheet: View {
 
 private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
     let player: AVPlayer
-    let onSurfaceAttached: (AVPlayer) -> Void
-    let onSurfaceDetached: (AVPlayer) -> Void
+    let onSurfaceAttached: (AVPlayer, UUID) -> Void
+    let onSurfaceDetached: (AVPlayer, UUID) -> Void
 
     @MainActor
     final class Coordinator {
-        var onSurfaceAttached: (AVPlayer) -> Void
-        var onSurfaceDetached: (AVPlayer) -> Void
+        var onSurfaceAttached: (AVPlayer, UUID) -> Void
+        var onSurfaceDetached: (AVPlayer, UUID) -> Void
+        private let surfaceID = UUID()
         private var attachedPlayerID: ObjectIdentifier?
         private var pendingAttachTask: Task<Void, Never>?
         private var isDismantled = false
 
-        init(onSurfaceAttached: @escaping (AVPlayer) -> Void,
-             onSurfaceDetached: @escaping (AVPlayer) -> Void) {
+        init(onSurfaceAttached: @escaping (AVPlayer, UUID) -> Void,
+             onSurfaceDetached: @escaping (AVPlayer, UUID) -> Void) {
             self.onSurfaceAttached = onSurfaceAttached
             self.onSurfaceDetached = onSurfaceDetached
         }
@@ -979,7 +980,7 @@ private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
             guard !isDismantled, attachedPlayerID != ObjectIdentifier(player) else { return }
             pendingAttachTask = nil
             attachedPlayerID = ObjectIdentifier(player)
-            onSurfaceAttached(player)
+            onSurfaceAttached(player, surfaceID)
         }
 
         func detach(_ player: AVPlayer) {
@@ -987,7 +988,7 @@ private struct GalleryNativeVideoPlayer: UIViewControllerRepresentable {
             pendingAttachTask = nil
             guard attachedPlayerID == ObjectIdentifier(player) else { return }
             attachedPlayerID = nil
-            onSurfaceDetached(player)
+            onSurfaceDetached(player, surfaceID)
         }
 
         func scheduleAttachment(to controller: AVPlayerViewController, player: AVPlayer) {
