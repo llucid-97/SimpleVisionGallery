@@ -19,6 +19,7 @@ code='''
 import Foundation
 enum PHAssetMediaType { case image, video }
 struct GalleryMediaItem { let localIdentifier: String; let mediaType: PHAssetMediaType }
+struct GallerySpatialVideoLookahead {}
 final class GalleryPreparedVideo { var hasPrerolledPlayer = false }
 @MainActor final class GallerySceneCache {
  enum GalleryVideoPrerollOutcome { case scheduled, alreadyPrepared, slotUnavailable }
@@ -30,13 +31,14 @@ final class GalleryPreparedVideo { var hasPrerolledPlayer = false }
  var retained: Set<String> = []
  func hasPrefetched(_ key:String,owner:UUID)->Bool { retained.contains(key) }
  func prefetchedVideo(key:String,owner:UUID)->GalleryPreparedVideo? { retained.contains(key) ? video : nil }
- func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String)->GalleryVideoPrerollOutcome {
+ func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String,owner:UUID)->GalleryVideoPrerollOutcome {
   if video.hasPrerolledPlayer { return .alreadyPrepared }
   guard videoPrerollSlotAvailable else { return .slotUnavailable }
   video.hasPrerolledPlayer=true
   videoPrerollSlotAvailable=false
   return .scheduled
  }
+ func spatialVideoLookahead(owner:UUID)->GallerySpatialVideoLookahead? { nil }
  func releaseVideoPreroll() { video?.hasPrerolledPlayer=false; videoPrerollSlotAvailable=true }
 }
 @MainActor final class Probe {
@@ -46,6 +48,7 @@ final class GalleryPreparedVideo { var hasPrerolledPlayer = false }
  var retainedPrefetch: [String:Retained] = [:]
  var notifications = 0
  var desiredPrefetchAssets: [GalleryMediaItem] = []
+ var spatialVideoLookahead: GallerySpatialVideoLookahead?
  var prefetchFailures: Set<String> = []
  var prefetchVideoSlotFailures: Set<String> = []
  var attemptedVideoPrerolls: Set<String> = []
@@ -81,7 +84,7 @@ final class GalleryPreparedVideo { var hasPrerolledPlayer = false }
  GallerySceneCache.shared.retained.insert(key)
  firstOwner.desiredPrefetchAssets=[video]
  sibling.desiredPrefetchAssets=[video]
- let firstOutcome=GallerySceneCache.shared.scheduleVideoPreroll(sharedVideo,key:key)
+ let firstOutcome=GallerySceneCache.shared.scheduleVideoPreroll(sharedVideo,key:key,owner:firstOwner.prefetchOwnerID)
  firstOwner.recordVideoPrerollOutcome(firstOutcome,key:key)
  precondition(firstOwner.attemptedVideoPrerolls.contains(key) && sharedVideo.hasPrerolledPlayer)
  sibling.recordVideoPrerollOutcome(.alreadyPrepared,key:key)

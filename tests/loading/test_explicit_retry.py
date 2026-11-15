@@ -14,6 +14,7 @@ methods='\n'.join(block(m) for m in ['    func prefetch(items assets:', '    pri
 code='''
 import Foundation
 struct GalleryMediaItem { let localIdentifier: String; var mediaType: PHAssetMediaType = .image }
+struct GallerySpatialVideoLookahead {}
 enum PHAssetMediaType { case image, video }
 final class GalleryPreparedVideo {}
 enum GalleryPrefetchedMedia { case image, video(GalleryPreparedVideo) }
@@ -27,13 +28,16 @@ struct GalleryViewerPreferences { static let globalPrefetchItemBudget=20 }
  static func key(for item:GalleryMediaItem)->String {item.localIdentifier}
  func updatePrefetchDemand(owner:UUID,orderedKeys:[String]) { if orderedKeys.isEmpty { demands.removeValue(forKey:owner) } else { demands[owner]=orderedKeys }; retained.formIntersection(orderedKeys) }
  func retainPrefetched(_ media:GalleryPrefetchedMedia,key:String,owner:UUID)->Bool { retained.insert(key); return true }
- func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String)->GallerySceneCache.GalleryVideoPrerollOutcome { .scheduled }
+ func scheduleVideoPreroll(_ video:GalleryPreparedVideo,key:String,owner:UUID)->GallerySceneCache.GalleryVideoPrerollOutcome { .scheduled }
+ func spatialVideoLookahead(owner:UUID)->GallerySpatialVideoLookahead? { nil }
+ func releaseVideoSurfaceClaim(owner:UUID) {}
  func clearSpeculativeVideoPreroll() {}
 }
 @MainActor final class Player { var timeControlStatus: Status = .paused; var rate:Float=0; enum Status {case paused,playing}; func pause(){timeControlStatus = .paused;rate=0};func play(){timeControlStatus = .playing;rate=1} }
 typealias AVPlayer = Player
 @MainActor final class Probe {
  var desiredPrefetchAssets:[GalleryMediaItem]=[],requestedPrefetchAssets:[GalleryMediaItem]=[]
+ var spatialVideoLookahead:GallerySpatialVideoLookahead?
  var requestedExcludingCurrent:GalleryMediaItem?, requestedPreserving:GalleryMediaItem?
  var prefetched:Set<String>=[], prefetchFailures:Set<String>=[],prefetchVideoSlotFailures:Set<String>=[]
  var attemptedVideoPrerolls:Set<String>=[],deferredVideoPrerolls:Set<String>=[]

@@ -69,6 +69,12 @@ if os.environ.get("DISABLE_UUID_GUARD") == "1":
 
 stub = r'''import Foundation
 
+final class Entity {
+    struct Components { func remove<T>(_ type: T.Type) {} }
+    let components = Components()
+    func removeFromParent() {}
+}
+
 enum FakeStatus: Equatable { case unknown, readyToPlay, failed }
 enum GalleryMediaError: Error { case videoPrerollFailed }
 
@@ -178,10 +184,12 @@ cache_stub = r'''enum GalleryViewerPreferences {
 @MainActor final class GallerySceneCacheProbe {
     struct VideoPrerollReservation {
         let key: String
+        let owner: UUID
         let id: UUID
         fileprivate let video: GalleryPreparedVideo
         let task: Task<Void, Never>
         var isReady: Bool
+        var claimedSurface: (owner: UUID, entity: Entity, fitted: Bool)?
     }
     var videoPrerollReservation: VideoPrerollReservation?
     struct FakeMedia { var pixelCost = 0 }
@@ -303,7 +311,8 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
     // UUID replacement race: old late failure cannot clear the new attempt/reservation.
     let cache = GallerySceneCacheProbe()
     let sameVideo = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 160, prerollResult: false))
-    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same") == .scheduled, "old attempt scheduled")
+    let firstOwner = UUID()
+    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same", owner: firstOwner) == .scheduled, "old attempt scheduled")
     let oldReservation = cache.videoPrerollReservation!
     let oldStarted = await waitUntil({ sameVideo.testPlayer?.prerollStarts == 1 })
     check(oldStarted, "old attempt actually starts preroll before cancellation")
@@ -312,7 +321,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
     sameVideo.promote() // Evicts/cancels the old UUID before its async catch can run.
     sameVideo.asset.prerollDelay = 15
     sameVideo.asset.prerollResult = true
-    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same") == .scheduled, "new same-key attempt starts")
+    check(cache.scheduleVideoPreroll(sameVideo, key: "photo:same", owner: firstOwner) == .scheduled, "new same-key attempt starts")
     let newReservation = cache.videoPrerollReservation!
     check(oldReservation.id != newReservation.id, "retry uses a new attempt UUID")
     let newReady = await waitUntil({ cache.videoPrerollReservation?.id == newReservation.id && cache.videoPrerollReservation?.isReady == true && sameVideo.testPlayer !== oldPlayer })
@@ -327,7 +336,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
 
     // One shared cache reservation serializes speculative players across photo and vault keys.
     let secondVideo = GalleryPreparedVideo(asset: AVAsset(prerollDelay: 30))
-    check(cache.scheduleVideoPreroll(secondVideo, key: "vault:other") == .slotUnavailable, "global single slot spans photos and vault")
+    check(cache.scheduleVideoPreroll(secondVideo, key: "vault:other", owner: UUID()) == .slotUnavailable, "global single slot spans photos and vault")
     let beforeConsumption = cache.slotNotifications
     _ = sameVideo.takePrerolledPresentation()
     check(cache.lastConsumedKey == "photo:same", "successful consumption identifies the key that remaining owners may warm again")
@@ -338,7 +347,7 @@ func tick(_ ms: UInt64 = 30) async { try? await Task.sleep(for: .milliseconds(ms
     cache.updatePrefetchDemand(owner: a, orderedKeys: ["photo:shared"])
     cache.updatePrefetchDemand(owner: b, orderedKeys: ["photo:shared"])
     let shared = GalleryPreparedVideo(asset: AVAsset())
-    check(cache.scheduleVideoPreroll(shared, key: "photo:shared") == .scheduled, "shared warmup scheduled")
+    check(cache.scheduleVideoPreroll(shared, key: "photo:shared", owner: a) == .scheduled, "shared warmup scheduled")
     let sharedReady = await waitUntil({ cache.videoPrerollReservation?.isReady == true })
     check(sharedReady, "shared player ready before owner withdrawal")
     let sharedIdentity = shared.testPlayer

@@ -7,6 +7,18 @@ import RealityKit
 import UIKit
 import UniformTypeIdentifiers
 
+@MainActor
+struct GallerySpatialVideoLookahead {
+    let key: String
+    let reservationID: UUID
+    let player: AVPlayer
+    let component: VideoPlayerComponent
+
+    func matches(_ other: GallerySpatialVideoLookahead) -> Bool {
+        key == other.key && reservationID == other.reservationID && player === other.player
+    }
+}
+
 @concurrent
 private func makeSpatialVideoPlayerComponent(for player: AVPlayer) async -> sending VideoPlayerComponent {
     var component = VideoPlayerComponent(avPlayer: player)
@@ -27,6 +39,7 @@ final class GalleryViewerMedia {
     var menuPreviewKey: String? { menuPreviewState.itemKey }
     private(set) var player: AVPlayer?
     private(set) var spatialVideoComponent: VideoPlayerComponent?
+    private(set) var spatialVideoLookahead: GallerySpatialVideoLookahead?
     private(set) var isSpatialVideo = false
     private(set) var aspectRatio: Double?
     private(set) var isLoading = false
@@ -71,6 +84,44 @@ final class GalleryViewerMedia {
     private var resumePlaybackWhenActive = false
     private var attachedVideoPlayerID: ObjectIdentifier?
     private var attachedVideoSurfaceID: UUID?
+    private var attachedVideoEntity: Entity?
+    private var spatialVideoHostID: UUID?
+    private var spatialVideoHostCleanup: ((AVPlayer?, Bool) -> Void)?
+
+    func registerSpatialVideoHost(id: UUID, cleanup: @escaping (AVPlayer?, Bool) -> Void) {
+        if let spatialVideoHostID, spatialVideoHostID != id {
+            spatialVideoHostCleanup?(player, true)
+        }
+        spatialVideoHostID = id
+        spatialVideoHostCleanup = cleanup
+    }
+
+    func unregisterSpatialVideoHost(id: UUID) {
+        guard spatialVideoHostID == id else { return }
+        spatialVideoHostID = nil
+        spatialVideoHostCleanup = nil
+    }
+
+    private func cleanupSpatialVideoHost(canceledPlayer: AVPlayer?, all: Bool) {
+        spatialVideoHostCleanup?(canceledPlayer, all)
+    }
+
+    func spatialVideoLookaheadDidFit(_ lookahead: GallerySpatialVideoLookahead, entity: Entity) -> Bool {
+        guard spatialVideoLookahead?.matches(lookahead) == true else { return false }
+        return GallerySceneCache.shared.registerVideoSurface(
+            owner: prefetchOwnerID, lookahead: lookahead, entity: entity, fitted: true)
+    }
+
+    func spatialVideoLookaheadDidAttach(_ lookahead: GallerySpatialVideoLookahead, entity: Entity) -> Bool {
+        guard spatialVideoLookahead?.matches(lookahead) == true else { return false }
+        return GallerySceneCache.shared.registerVideoSurface(
+            owner: prefetchOwnerID, lookahead: lookahead, entity: entity, fitted: false)
+    }
+
+    func spatialVideoLookaheadDidDetach(_ lookahead: GallerySpatialVideoLookahead, entity: Entity) {
+        GallerySceneCache.shared.clearFittedVideoSurface(
+            owner: prefetchOwnerID, lookahead: lookahead, entity: entity)
+    }
 
     init() {
         vaultLockObserver = GalleryNotificationToken(NotificationCenter.default.addObserver(
@@ -276,7 +327,16 @@ final class GalleryViewerMedia {
         #if targetEnvironment(simulator)
         if spatialVideo { self.status = "Showing a 2D preview in Simulator. Spatial video needs Apple Vision Pro." }
         #endif
-        // The first foreground consumer takes the warmed player; sibling windows make independent players.
+        // Any first consumer can take the warmed player. Only the owning pane can
+        // reuse its fitted entity; other panes attach that same player in their root.
+        let key = currentKey ?? ""
+        let mayReuseWarmSurface = GallerySceneCache.shared.canReuseFittedVideoSurface(
+            key: key, owner: prefetchOwnerID)
+        if !mayReuseWarmSurface {
+            // Keep the cached player for the first foreground consumer, but
+            // remove a surface claimed by another window before it attaches.
+            GallerySceneCache.shared.detachClaimedVideoSurface(key: key)
+        }
         let preparedPresentation = video.takePrerolledPresentation()
         let item = preparedPresentation?.player.currentItem ?? AVPlayerItem(asset: avAsset)
         let player = preparedPresentation?.player ?? AVPlayer(playerItem: item)
@@ -326,6 +386,16 @@ final class GalleryViewerMedia {
         resumeVideoPlaybackIfEligible()
     }
 
+    func videoSurfaceDidAttach(_ player: AVPlayer, surfaceID: UUID, entity: Entity) {
+        guard self.player === player else { return }
+        attachedVideoEntity = entity
+        videoSurfaceDidAttach(player, surfaceID: surfaceID)
+    }
+
+    func ownsSpatialVideoSurface(_ player: AVPlayer) -> Bool {
+        self.player === player && isSpatialVideo && spatialVideoComponent?.avPlayer === player
+    }
+
     func videoSurfaceDidDetach(_ player: AVPlayer, surfaceID: UUID) {
         guard self.player === player,
               attachedVideoPlayerID == ObjectIdentifier(player),
@@ -335,6 +405,7 @@ final class GalleryViewerMedia {
         }
         attachedVideoPlayerID = nil
         attachedVideoSurfaceID = nil
+        attachedVideoEntity = nil
         player.pause()
     }
 
@@ -452,6 +523,7 @@ final class GalleryViewerMedia {
         prefetchFailures.subtract(prefetchVideoSlotFailures)
         prefetchVideoSlotFailures.removeAll()
         deferredVideoPrerolls.removeAll()
+        spatialVideoLookahead = GallerySceneCache.shared.spatialVideoLookahead(owner: prefetchOwnerID)
         // Revisit cached videos when another window frees the single decoder slot.
         startPrefetchIfNeeded()
     }
@@ -478,7 +550,8 @@ final class GalleryViewerMedia {
                         self.prefetched.insert(key)
                         if case .video(let video) = result,
                            self.isNearestVideo(key), !self.attemptedVideoPrerolls.contains(key) {
-                            let outcome = GallerySceneCache.shared.scheduleVideoPreroll(video, key: key)
+                            let outcome = GallerySceneCache.shared.scheduleVideoPreroll(
+                                video, key: key, owner: self.prefetchOwnerID)
                             self.recordVideoPrerollOutcome(outcome, key: key)
                         }
                     } else {
@@ -518,7 +591,8 @@ final class GalleryViewerMedia {
               GallerySceneCache.shared.hasPrefetched(key, owner: prefetchOwnerID),
               let video = GallerySceneCache.shared.prefetchedVideo(key: key, owner: prefetchOwnerID),
               !video.hasPrerolledPlayer else { return }
-        let outcome = GallerySceneCache.shared.scheduleVideoPreroll(video, key: key)
+        let outcome = GallerySceneCache.shared.scheduleVideoPreroll(
+            video, key: key, owner: prefetchOwnerID)
         recordVideoPrerollOutcome(outcome, key: key)
     }
 
@@ -653,6 +727,8 @@ final class GalleryViewerMedia {
             GallerySceneCache.shared.updatePrefetchDemand(owner: prefetchOwnerID, orderedKeys: [])
             attemptedVideoPrerolls.removeAll()
             deferredVideoPrerolls.removeAll()
+            GallerySceneCache.shared.releaseVideoSurfaceClaim(owner: prefetchOwnerID)
+            spatialVideoLookahead = nil
             if let player {
                 resumePlaybackWhenActive = resumePlaybackWhenActive || isVideoPlaybackActive(player)
                 player.pause()
@@ -661,13 +737,17 @@ final class GalleryViewerMedia {
     }
 
     func cancel(releaseImage: Bool = true) {
+        cleanupSpatialVideoHost(canceledPlayer: player, all: true)
         prefetch(assets: [])
+        GallerySceneCache.shared.releaseVideoSurfaceClaim(owner: prefetchOwnerID)
+        spatialVideoLookahead = nil
         currentKey = nil
         aspectRatio = nil
         cancelCurrent(releaseImage: releaseImage)
     }
 
     private func cancelCurrent(releaseImage: Bool) {
+        cleanupSpatialVideoHost(canceledPlayer: player, all: false)
         generation = UUID()
         activeLoad?.cancel()
         activeLoad = nil
@@ -678,6 +758,11 @@ final class GalleryViewerMedia {
         resumePlaybackWhenActive = false
         attachedVideoPlayerID = nil
         attachedVideoSurfaceID = nil
+        if let attachedVideoEntity {
+            attachedVideoEntity.components.remove(VideoPlayerComponent.self)
+            attachedVideoEntity.removeFromParent()
+        }
+        attachedVideoEntity = nil
         spatialVideoComponent = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
@@ -789,10 +874,12 @@ private final class GallerySceneCache {
     }
     private struct VideoPrerollReservation {
         var key: String
+        var owner: UUID
         var id: UUID
         var video: GalleryPreparedVideo
         var task: Task<Void, Never>
         var isReady: Bool
+        var claimedSurface: (owner: UUID, entity: Entity, fitted: Bool)?
     }
     private var retainedPrefetch: [String: RetainedPrefetch] = [:]
     private var demands: [UUID: [String]] = [:]
@@ -928,7 +1015,7 @@ private final class GallerySceneCache {
     }
 
     /// Schedule the only speculative AVPlayer across Photos and vault without blocking photo lookahead.
-    func scheduleVideoPreroll(_ video: GalleryPreparedVideo, key: String) -> GalleryVideoPrerollOutcome {
+    func scheduleVideoPreroll(_ video: GalleryPreparedVideo, key: String, owner: UUID) -> GalleryVideoPrerollOutcome {
         if video.hasPrerolledPlayer { return .alreadyPrepared }
         guard videoPrerollReservation == nil else { return .slotUnavailable }
         let id = UUID()
@@ -949,21 +1036,98 @@ private final class GallerySceneCache {
                     reservation.isReady = true
                     self.videoPrerollReservation = reservation
                 }
+                NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)
             } catch {
                 guard let self else { video.discardPrerolledPlayer(expectedID: id); return }
                 self.releaseVideoPreroll(key: key, id: id)
                 video.discardPrerolledPlayer(expectedID: id)
             }
         }
-        videoPrerollReservation = VideoPrerollReservation(key: key, id: id, video: video,
-            task: task, isReady: false)
+        videoPrerollReservation = VideoPrerollReservation(key: key, owner: owner, id: id,
+            video: video, task: task, isReady: false, claimedSurface: nil)
         return .scheduled
+    }
+
+    func spatialVideoLookahead(owner: UUID) -> GallerySpatialVideoLookahead? {
+        guard let reservation = videoPrerollReservation,
+              reservation.owner == owner, reservation.isReady,
+              reservation.video.isSpatialVideo,
+              let prepared = reservation.video.prerolledPresentation(expectedID: reservation.id),
+              let component = prepared.spatialComponent else { return nil }
+        return GallerySpatialVideoLookahead(key: reservation.key, reservationID: reservation.id,
+            player: prepared.player, component: component)
+    }
+
+    func registerVideoSurface(owner: UUID, lookahead: GallerySpatialVideoLookahead,
+                              entity: Entity, fitted: Bool) -> Bool {
+        guard var reservation = videoPrerollReservation,
+              reservation.owner == owner, reservation.key == lookahead.key,
+              reservation.id == lookahead.reservationID,
+              reservation.video.prerolledPresentation(expectedID: reservation.id)?.player === lookahead.player else { return false }
+        if fitted {
+            guard reservation.claimedSurface?.entity === entity else { return false }
+        } else if let previous = reservation.claimedSurface, previous.entity !== entity {
+            previous.entity.components.remove(VideoPlayerComponent.self)
+            previous.entity.removeFromParent()
+        }
+        reservation.claimedSurface = (owner, entity, fitted)
+        videoPrerollReservation = reservation
+        return true
+    }
+
+    func clearFittedVideoSurface(owner: UUID, lookahead: GallerySpatialVideoLookahead, entity: Entity) {
+        guard var reservation = videoPrerollReservation,
+              reservation.owner == owner, reservation.id == lookahead.reservationID,
+              reservation.claimedSurface?.owner == owner,
+              reservation.claimedSurface?.entity === entity else { return }
+        reservation.claimedSurface = nil
+        videoPrerollReservation = reservation
+    }
+
+    func canReuseFittedVideoSurface(key: String, owner: UUID) -> Bool {
+        guard let reservation = videoPrerollReservation, reservation.key == key else { return true }
+        guard reservation.video.isSpatialVideo else { return true }
+        return reservation.owner == owner && reservation.claimedSurface?.owner == owner
+            && reservation.claimedSurface?.fitted == true
+    }
+
+    func releaseVideoSurfaceClaim(owner: UUID) {
+        guard var reservation = videoPrerollReservation, reservation.owner == owner else { return }
+        if let surface = reservation.claimedSurface {
+            surface.entity.components.remove(VideoPlayerComponent.self)
+            surface.entity.removeFromParent()
+            reservation.claimedSurface = nil
+        }
+        let nextOwner = demands.keys
+            .filter { $0 != owner && demands[$0]?.contains(reservation.key) == true }
+            .sorted { $0.uuidString < $1.uuidString }
+            .first
+        guard let nextOwner else {
+            clearSpeculativeVideoPreroll(owner: owner)
+            return
+        }
+        reservation.owner = nextOwner
+        videoPrerollReservation = reservation
+        NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)
+    }
+
+    func detachClaimedVideoSurface(key: String) {
+        guard var reservation = videoPrerollReservation, reservation.key == key,
+              let surface = reservation.claimedSurface else { return }
+        surface.entity.components.remove(VideoPlayerComponent.self)
+        surface.entity.removeFromParent()
+        reservation.claimedSurface = nil
+        videoPrerollReservation = reservation
     }
 
     private func releaseVideoPreroll(key: String, id: UUID, consumed: Bool = false) {
         guard let reservation = videoPrerollReservation,
               reservation.key == key, reservation.id == id else { return }
         videoPrerollReservation = nil
+        if !consumed, let surface = reservation.claimedSurface {
+            surface.entity.components.remove(VideoPlayerComponent.self)
+            surface.entity.removeFromParent()
+        }
         NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil,
             userInfo: consumed ? ["consumedKey": key] : nil)
     }
@@ -979,10 +1143,15 @@ private final class GallerySceneCache {
     }
 
     /// Drop speculative decode work while leaving a foreground viewer's player alone.
-    func clearSpeculativeVideoPreroll() {
-        guard let reservation = videoPrerollReservation else { return }
+    func clearSpeculativeVideoPreroll(owner: UUID? = nil) {
+        guard let reservation = videoPrerollReservation,
+              owner == nil || reservation.owner == owner else { return }
         videoPrerollReservation = nil
         reservation.task.cancel()
+        if let surface = reservation.claimedSurface {
+            surface.entity.components.remove(VideoPlayerComponent.self)
+            surface.entity.removeFromParent()
+        }
         reservation.video.discardPrerolledPlayer(expectedID: reservation.id)
         NotificationCenter.default.post(name: Self.prefetchVideoSlotDidChange, object: nil)
     }
@@ -1831,6 +2000,21 @@ private final class GalleryPreparedVideo {
         onPrefetchRelease = nil
         onPrerollPromotion?()
         onPrerollPromotion = nil
+    }
+
+    func prerolledPresentation(expectedID: UUID) -> (player: AVPlayer, spatialComponent: VideoPlayerComponent?)? {
+        guard let player = prerolledPlayer, let item = prerolledItem,
+              prerollID == expectedID, player.currentItem === item,
+              player.status == .readyToPlay, item.status == .readyToPlay else { return nil }
+        let component: VideoPlayerComponent?
+        if prerolledSpatialComponentAttemptID == expectedID,
+           prerolledSpatialComponentPlayerID == ObjectIdentifier(player),
+           prerolledSpatialComponent?.avPlayer === player {
+            component = prerolledSpatialComponent
+        } else {
+            component = nil
+        }
+        return (player, component)
     }
 
     /// Transfer a ready player and only the component built for that exact player attempt.
