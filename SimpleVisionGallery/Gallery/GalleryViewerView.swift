@@ -366,6 +366,10 @@ private struct GalleryViewerPane: View {
         return media.aspectRatio ?? assetRatio
     }
 
+    private var mediaSurfaceCovered: Bool {
+        moveTarget != nil || pendingDelete != nil || vaultCovered
+    }
+
     private var verticalClearance: CGFloat {
         GalleryViewerLayout.clearance(aspectRatio: mediaAspectRatio, isVideo: session.currentItem?.mediaType == .video)
     }
@@ -606,6 +610,29 @@ private struct GalleryViewerPane: View {
 
     @ViewBuilder
     private func mediaStage(height: CGFloat) -> some View {
+        ZStack {
+            GallerySpatialVideoView(
+                player: media.isSpatialVideo ? media.player : nil,
+                component: media.isSpatialVideo ? media.spatialVideoComponent : nil,
+                currentCovered: mediaSurfaceCovered,
+                lookahead: media.spatialVideoLookahead,
+                isCurrentPlayer: media.ownsSpatialVideoSurface,
+                onLookaheadDidAttach: media.spatialVideoLookaheadDidAttach,
+                onLookaheadDidFit: media.spatialVideoLookaheadDidFit,
+                onLookaheadDidDetach: media.spatialVideoLookaheadDidDetach,
+                onSurfaceAttached: media.videoSurfaceDidAttach,
+                onSurfaceDetached: media.videoSurfaceDidDetach,
+                onPlaybackRequest: media.requestVideoPlayback,
+                initialYawDegrees: Float(backingYaw), initialPitchDegrees: Float(backingPitch))
+                .allowsHitTesting(!mediaSurfaceCovered && media.isSpatialVideo && media.player != nil)
+                .accessibilityHidden(!(media.isSpatialVideo && media.player != nil))
+
+            mediaStageContent(height: height)
+        }
+    }
+
+    @ViewBuilder
+    private func mediaStageContent(height: CGFloat) -> some View {
         if moveTarget != nil || pendingDelete != nil || vaultCovered {
             // Only More may retain flat context; privacy and mutation covers always stay blank.
             if GalleryMorePreviewPolicy.canShow(sessionID: session.id, moreSessionID: moreSessionID,
@@ -613,7 +640,7 @@ private struct GalleryViewerPane: View {
                 privacyCovered: privacyCovered || moveTarget != nil || pendingDelete != nil),
                let preview = media.menuPreview {
                 GalleryViewerMenuPreview(image: preview)
-            } else { Color.clear }
+            } else { Color.black }
         } else if session.currentItem == nil {
             ContentUnavailableView("No items left", systemImage: "photo",
                 description: Text("Moved items stay in their destination album."))
@@ -622,12 +649,8 @@ private struct GalleryViewerPane: View {
                 .tint(.white).foregroundStyle(.white)
         } else if let player = media.player, media.error == nil {
             if media.isSpatialVideo {
-                if let component = media.spatialVideoComponent, component.avPlayer === player {
-                    GallerySpatialVideoView(player: player, component: component,
-                        onSurfaceAttached: media.videoSurfaceDidAttach,
-                        onSurfaceDetached: media.videoSurfaceDidDetach,
-                        onPlaybackRequest: media.requestVideoPlayback,
-                        initialYawDegrees: Float(backingYaw), initialPitchDegrees: Float(backingPitch))
+                if media.spatialVideoComponent?.avPlayer === player {
+                    Color.clear
                 } else {
                     ProgressView("Preparing video…").tint(.white).foregroundStyle(.white)
                 }

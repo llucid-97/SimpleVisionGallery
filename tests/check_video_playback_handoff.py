@@ -61,6 +61,12 @@ probe = r'''import Foundation
     func replaceCurrentItem(with _: Any?) { itemWasCleared = true }
 }
 typealias AVPlayer = FakePlayer
+struct VideoPlayerComponent {}
+@MainActor final class Entity {
+    struct Components { func remove<T>(_ type: T.Type) {} }
+    let components = Components()
+    func removeFromParent() {}
+}
 @MainActor final class FakeObserver { func invalidate() {} }
 @MainActor final class FakeLoad { func cancel() {} }
 @MainActor final class FakeVideo {}
@@ -68,6 +74,7 @@ typealias AVPlayer = FakePlayer
 @MainActor final class FakeCache {
     static let shared = FakeCache()
     func updatePrefetchDemand(owner _: UUID, orderedKeys _: [String]) {}
+    func releaseVideoSurfaceClaim(owner _: UUID) {}
 }
 typealias GallerySceneCache = FakeCache
 @MainActor final class Probe {
@@ -77,6 +84,8 @@ typealias GallerySceneCache = FakeCache
     var resumePlaybackWhenActive = false
     var attachedVideoPlayerID: ObjectIdentifier?
     var attachedVideoSurfaceID: UUID?
+    var attachedVideoEntity: Entity?
+    var spatialVideoLookahead: Any?
     var prefetchFailures: Set<String> = []
     var prefetchVideoSlotFailures: Set<String> = []
     var attemptedVideoPrerolls: Set<String> = []
