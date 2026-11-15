@@ -34,6 +34,7 @@ active_test = block("    private func isVideoPlaybackActive(")
 covered = block("    func setPresentationCovered(")
 scene_active = block("    func setSceneActive(")
 cancel_current = block("    private func cancelCurrent(")
+cleanup_host = block("    private func cleanupSpatialVideoHost(")
 
 # presentVideo's AVFoundation observers and asset fields are outside this host probe.
 # Verify its real intent/attachment initialization and leave its playback decision to
@@ -46,7 +47,7 @@ if "self.resumePlaybackWhenActive = true" not in present_body:
 if "player.play()" in present_body:
     raise SystemExit("presentVideo must not play before its native surface attaches")
 
-methods = "\n".join((attach, detach, request, resume, active_test, covered, scene_active, cancel_current))
+methods = "\n".join((attach, detach, request, resume, active_test, covered, scene_active, cancel_current, cleanup_host))
 probe = r'''import Foundation
 
 @MainActor final class FakePlayer {
@@ -85,6 +86,7 @@ typealias GallerySceneCache = FakeCache
     var attachedVideoPlayerID: ObjectIdentifier?
     var attachedVideoSurfaceID: UUID?
     var attachedVideoEntity: Entity?
+    var spatialVideoHostCleanup: ((AVPlayer?, Bool) -> Void)?
     var spatialVideoLookahead: Any?
     var prefetchFailures: Set<String> = []
     var prefetchVideoSlotFailures: Set<String> = []

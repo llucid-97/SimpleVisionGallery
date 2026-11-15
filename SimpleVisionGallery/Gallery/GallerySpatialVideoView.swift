@@ -12,6 +12,7 @@ struct GallerySpatialVideoView: View {
     /// SwiftUI to reconcile the view from inside its render update.
     @MainActor
     private final class NativeHostState {
+        let id = UUID()
         let rootEntity = Entity()
         var activeEntity: Entity?
         var activePlayer: AVPlayer?
@@ -21,6 +22,29 @@ struct GallerySpatialVideoView: View {
         var lookaheadPlayer: AVPlayer?
         var attachedLookahead: GallerySpatialVideoLookahead?
         var fittedLookaheadID: UUID?
+
+        func cleanup(canceledPlayer: AVPlayer?, all: Bool,
+                     onLookaheadDidDetach: (GallerySpatialVideoLookahead, Entity) -> Void) {
+            if let entity = activeEntity {
+                entity.components.remove(VideoPlayerComponent.self)
+                entity.removeFromParent()
+            }
+            activeEntity = nil
+            activePlayer = nil
+            activeSurfaceID = nil
+            activeAttachDeadline = nil
+            if all || lookaheadPlayer === canceledPlayer {
+                if let entity = lookaheadEntity {
+                    if let attachedLookahead { onLookaheadDidDetach(attachedLookahead, entity) }
+                    entity.components.remove(VideoPlayerComponent.self)
+                    entity.removeFromParent()
+                }
+                lookaheadEntity = nil
+                lookaheadPlayer = nil
+                attachedLookahead = nil
+                fittedLookaheadID = nil
+            }
+        }
     }
 
     private struct SurfaceTaskIdentity: Hashable {
@@ -39,6 +63,8 @@ struct GallerySpatialVideoView: View {
     let onSurfaceAttached: (AVPlayer, UUID, Entity) -> Void
     let onSurfaceDetached: (AVPlayer, UUID) -> Void
     let onPlaybackRequest: (Bool, AVPlayer) -> Void
+    let registerHostCleanup: (UUID, @escaping (AVPlayer?, Bool) -> Void) -> Void
+    let unregisterHostCleanup: (UUID) -> Void
     var initialYawDegrees: Float = 0
     var initialPitchDegrees: Float = 0
 
@@ -60,6 +86,11 @@ struct GallerySpatialVideoView: View {
             GeometryReader3D { geometry in
                 RealityView { content in
                     content.add(host.rootEntity)
+                    let cleanup: (AVPlayer?, Bool) -> Void = { [weak host, onLookaheadDidDetach] canceledPlayer, all in
+                        host?.cleanup(canceledPlayer: canceledPlayer, all: all,
+                                      onLookaheadDidDetach: onLookaheadDidDetach)
+                    }
+                    registerHostCleanup(host.id, cleanup)
                     synchronize(content: content, geometry: geometry)
                 } update: { content in
                     _ = fitRevision
@@ -278,6 +309,7 @@ struct GallerySpatialVideoView: View {
     private func tearDown() {
         detachActive()
         removeLookahead()
+        unregisterHostCleanup(host.id)
     }
 
     private func applyOrientation(to entity: Entity?) {

@@ -619,10 +619,14 @@ private struct GalleryViewerPane: View {
                 isCurrentPlayer: media.ownsSpatialVideoSurface,
                 onLookaheadDidAttach: media.spatialVideoLookaheadDidAttach,
                 onLookaheadDidFit: media.spatialVideoLookaheadDidFit,
-                onLookaheadDidDetach: media.spatialVideoLookaheadDidDetach,
+                onLookaheadDidDetach: { [weak media] lookahead, entity in
+                    media?.spatialVideoLookaheadDidDetach(lookahead, entity: entity)
+                },
                 onSurfaceAttached: media.videoSurfaceDidAttach,
                 onSurfaceDetached: media.videoSurfaceDidDetach,
                 onPlaybackRequest: media.requestVideoPlayback,
+                registerHostCleanup: media.registerSpatialVideoHost,
+                unregisterHostCleanup: media.unregisterSpatialVideoHost,
                 initialYawDegrees: Float(backingYaw), initialPitchDegrees: Float(backingPitch))
                 .allowsHitTesting(!mediaSurfaceCovered && media.isSpatialVideo && media.player != nil)
                 .accessibilityHidden(!(media.isSpatialVideo && media.player != nil))

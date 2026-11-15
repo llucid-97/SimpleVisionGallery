@@ -85,6 +85,26 @@ final class GalleryViewerMedia {
     private var attachedVideoPlayerID: ObjectIdentifier?
     private var attachedVideoSurfaceID: UUID?
     private var attachedVideoEntity: Entity?
+    private var spatialVideoHostID: UUID?
+    private var spatialVideoHostCleanup: ((AVPlayer?, Bool) -> Void)?
+
+    func registerSpatialVideoHost(id: UUID, cleanup: @escaping (AVPlayer?, Bool) -> Void) {
+        if let spatialVideoHostID, spatialVideoHostID != id {
+            spatialVideoHostCleanup?(player, true)
+        }
+        spatialVideoHostID = id
+        spatialVideoHostCleanup = cleanup
+    }
+
+    func unregisterSpatialVideoHost(id: UUID) {
+        guard spatialVideoHostID == id else { return }
+        spatialVideoHostID = nil
+        spatialVideoHostCleanup = nil
+    }
+
+    private func cleanupSpatialVideoHost(canceledPlayer: AVPlayer?, all: Bool) {
+        spatialVideoHostCleanup?(canceledPlayer, all)
+    }
 
     func spatialVideoLookaheadDidFit(_ lookahead: GallerySpatialVideoLookahead, entity: Entity) -> Bool {
         guard spatialVideoLookahead?.matches(lookahead) == true else { return false }
@@ -717,6 +737,7 @@ final class GalleryViewerMedia {
     }
 
     func cancel(releaseImage: Bool = true) {
+        cleanupSpatialVideoHost(canceledPlayer: player, all: true)
         prefetch(assets: [])
         GallerySceneCache.shared.releaseVideoSurfaceClaim(owner: prefetchOwnerID)
         spatialVideoLookahead = nil
@@ -726,6 +747,7 @@ final class GalleryViewerMedia {
     }
 
     private func cancelCurrent(releaseImage: Bool) {
+        cleanupSpatialVideoHost(canceledPlayer: player, all: false)
         generation = UUID()
         activeLoad?.cancel()
         activeLoad = nil
