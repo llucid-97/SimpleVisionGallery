@@ -1042,6 +1042,12 @@ private final class GallerySceneCache {
               reservation.owner == owner, reservation.key == lookahead.key,
               reservation.id == lookahead.reservationID,
               reservation.video.prerolledPresentation(expectedID: reservation.id)?.player === lookahead.player else { return false }
+        if fitted {
+            guard reservation.claimedSurface?.entity === entity else { return false }
+        } else if let previous = reservation.claimedSurface, previous.entity !== entity {
+            previous.entity.components.remove(VideoPlayerComponent.self)
+            previous.entity.removeFromParent()
+        }
         reservation.claimedSurface = (owner, entity, fitted)
         videoPrerollReservation = reservation
         return true

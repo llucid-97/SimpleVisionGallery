@@ -8,10 +8,24 @@ import SwiftUI
 /// promotion moves its existing entity instead of constructing a new renderer.
 @MainActor
 struct GallerySpatialVideoView: View {
+    /// RealityView callbacks can mutate this stable reference without asking
+    /// SwiftUI to reconcile the view from inside its render update.
+    @MainActor
+    private final class NativeHostState {
+        let rootEntity = Entity()
+        var activeEntity: Entity?
+        var activePlayer: AVPlayer?
+        var activeSurfaceID: UUID?
+        var activeAttachDeadline: ContinuousClock.Instant?
+        var lookaheadEntity: Entity?
+        var lookaheadPlayer: AVPlayer?
+        var attachedLookahead: GallerySpatialVideoLookahead?
+        var fittedLookaheadID: UUID?
+    }
+
     private struct SurfaceTaskIdentity: Hashable {
         let playerID: ObjectIdentifier?
         let componentPlayerID: ObjectIdentifier?
-        let attachGeneration: UUID
     }
 
     let player: AVPlayer?
@@ -28,16 +42,7 @@ struct GallerySpatialVideoView: View {
     var initialYawDegrees: Float = 0
     var initialPitchDegrees: Float = 0
 
-    @State private var rootEntity = Entity()
-    @State private var activeEntity: Entity?
-    @State private var activePlayer: AVPlayer?
-    @State private var activeSurfaceID: UUID?
-    @State private var activeAttachDeadline: ContinuousClock.Instant?
-    @State private var activeAttachGeneration = UUID()
-    @State private var lookaheadEntity: Entity?
-    @State private var lookaheadPlayer: AVPlayer?
-    @State private var attachedLookahead: GallerySpatialVideoLookahead?
-    @State private var fittedLookaheadID: UUID?
+    @State private var host = NativeHostState()
     @State private var fitRevision = 0
     @State private var position = 0.0
     @State private var duration = 0.0
@@ -47,27 +52,26 @@ struct GallerySpatialVideoView: View {
     private var lookaheadID: UUID? { lookahead?.reservationID }
     private var surfaceTaskID: SurfaceTaskIdentity {
         SurfaceTaskIdentity(playerID: playerID,
-            componentPlayerID: component?.avPlayer.map(ObjectIdentifier.init),
-            attachGeneration: activeAttachGeneration)
+            componentPlayerID: component?.avPlayer.map(ObjectIdentifier.init))
     }
 
     var body: some View {
         VStack(spacing: 96) {
             GeometryReader3D { geometry in
                 RealityView { content in
-                    content.add(rootEntity)
+                    content.add(host.rootEntity)
                     synchronize(content: content, geometry: geometry)
                 } update: { content in
                     _ = fitRevision
                     synchronize(content: content, geometry: geometry)
                 }
                 .onChange(of: initialYawDegrees) { _, _ in
-                    applyOrientation(to: activeEntity)
-                    applyOrientation(to: lookaheadEntity)
+                    applyOrientation(to: host.activeEntity)
+                    applyOrientation(to: host.lookaheadEntity)
                 }
                 .onChange(of: initialPitchDegrees) { _, _ in
-                    applyOrientation(to: activeEntity)
-                    applyOrientation(to: lookaheadEntity)
+                    applyOrientation(to: host.activeEntity)
+                    applyOrientation(to: host.lookaheadEntity)
                 }
                 .accessibilityLabel("Spatial video")
                 .accessibilityIdentifier("gallery-spatial-video")
@@ -76,7 +80,7 @@ struct GallerySpatialVideoView: View {
             // Height-only layout must not collapse the native video volume.
             .frame(depth: 540)
 
-            if !currentCovered, let player, player === activePlayer {
+            if !currentCovered, let player, component?.avPlayer === player {
                 controls(for: player)
             }
         }
@@ -86,7 +90,7 @@ struct GallerySpatialVideoView: View {
         .task(id: lookaheadID) {
             guard let lookahead else { return }
             let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-            while !Task.isCancelled, fittedLookaheadID != lookahead.reservationID,
+            while !Task.isCancelled, host.fittedLookaheadID != lookahead.reservationID,
                   ContinuousClock.now < deadline {
                 fitRevision &+= 1
                 do { try await Task.sleep(for: .milliseconds(16)) }
@@ -100,15 +104,15 @@ struct GallerySpatialVideoView: View {
                 isPlaying = false
                 return
             }
-            let deadline = activeAttachDeadline ?? ContinuousClock.now.advanced(by: .seconds(2))
+            let fallbackDeadline = ContinuousClock.now.advanced(by: .seconds(2))
             while !Task.isCancelled,
-                  (activeSurfaceID == nil || component?.avPlayer !== player),
-                  ContinuousClock.now < deadline {
+                  (host.activeSurfaceID == nil || component?.avPlayer !== player),
+                  ContinuousClock.now < (host.activeAttachDeadline ?? fallbackDeadline) {
                 fitRevision &+= 1
                 do { try await Task.sleep(for: .milliseconds(16)) }
                 catch { return }
             }
-            if !Task.isCancelled, activeSurfaceID == nil { fitRevision &+= 1 }
+            if !Task.isCancelled, host.activeSurfaceID == nil { fitRevision &+= 1 }
             while !Task.isCancelled {
                 let nextDuration = player.currentItem?.duration.seconds ?? 0
                 duration = nextDuration.isFinite && nextDuration > 0 ? nextDuration : 0
@@ -126,88 +130,89 @@ struct GallerySpatialVideoView: View {
 
     private func synchronize(content: RealityViewContent, geometry: GeometryProxy3D) {
         if let lookahead, lookahead.player !== player {
-            if attachedLookahead?.matches(lookahead) != true {
+            if host.attachedLookahead?.matches(lookahead) != true {
                 removeLookahead()
                 let entity = Entity()
-                entity.components.set(lookahead.component)
-                entity.position = SIMD3<Float>(0, 0, -2)
-                applyOrientation(to: entity)
-                rootEntity.addChild(entity)
-                lookaheadEntity = entity
-                lookaheadPlayer = lookahead.player
-                attachedLookahead = lookahead
-                fittedLookaheadID = nil
-                if !onLookaheadDidAttach(lookahead, entity) { removeLookahead() }
+                // Claim before installation so a replaced host is detached first.
+                if onLookaheadDidAttach(lookahead, entity) {
+                    entity.position = SIMD3<Float>(0, 0, -2)
+                    entity.components.set(lookahead.component)
+                    applyOrientation(to: entity)
+                    host.rootEntity.addChild(entity)
+                    host.lookaheadEntity = entity
+                    host.lookaheadPlayer = lookahead.player
+                    host.attachedLookahead = lookahead
+                    host.fittedLookaheadID = nil
+                }
             }
-        } else if lookaheadEntity != nil,
-                  lookaheadPlayer !== player {
+        } else if host.lookaheadEntity != nil,
+                  host.lookaheadPlayer !== player {
             removeLookahead()
         }
 
         if let player, let component, component.avPlayer === player {
             guard isCurrentPlayer(player) else {
                 detachActive()
-                if lookaheadPlayer === player { removeLookahead() }
+                if host.lookaheadPlayer === player { removeLookahead() }
                 return
             }
-            if lookaheadPlayer === player, let promoted = lookaheadEntity,
-               promoted.parent === rootEntity,
+            if host.lookaheadPlayer === player, let promoted = host.lookaheadEntity,
+               promoted.parent === host.rootEntity,
                promoted.components[VideoPlayerComponent.self]?.avPlayer === player {
                 detachActive()
-                activeEntity = promoted
-                activePlayer = player
-                lookaheadEntity = nil
-                lookaheadPlayer = nil
-                attachedLookahead = nil
-                fittedLookaheadID = nil
+                host.activeEntity = promoted
+                host.activePlayer = player
+                host.lookaheadEntity = nil
+                host.lookaheadPlayer = nil
+                host.attachedLookahead = nil
+                host.fittedLookaheadID = nil
                 var position = promoted.position
                 position.z = 0
                 promoted.position = position
-            } else if activePlayer !== player {
-                if lookaheadPlayer === player { removeLookahead() }
+            } else if host.activePlayer !== player {
+                if host.lookaheadPlayer === player { removeLookahead() }
                 detachActive()
                 let entity = Entity()
                 entity.components.set(component)
                 applyOrientation(to: entity)
-                rootEntity.addChild(entity)
-                activeEntity = entity
-                activePlayer = player
-                activeAttachDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-                activeAttachGeneration = UUID()
+                host.rootEntity.addChild(entity)
+                host.activeEntity = entity
+                host.activePlayer = player
+                host.activeAttachDeadline = ContinuousClock.now.advanced(by: .seconds(2))
             }
         } else {
             detachActive()
         }
 
-        if let entity = activeEntity {
-            guard let player = activePlayer, isCurrentPlayer(player) else {
+        if let entity = host.activeEntity {
+            guard let player = host.activePlayer, isCurrentPlayer(player) else {
                 detachActive()
                 return
             }
             let fitted = fit(entity: entity, content: content, geometry: geometry,
                              depth: currentCovered ? -2 : 0)
-            if fitted, activeSurfaceID == nil {
+            if fitted, host.activeSurfaceID == nil {
                 let id = UUID()
-                activeSurfaceID = id
-                activeAttachDeadline = nil
+                host.activeSurfaceID = id
+                host.activeAttachDeadline = nil
                 onSurfaceAttached(player, id, entity)
-            } else if activeSurfaceID == nil,
-                      let deadline = activeAttachDeadline, ContinuousClock.now >= deadline,
+            } else if host.activeSurfaceID == nil,
+                      let deadline = host.activeAttachDeadline, ContinuousClock.now >= deadline,
                       isCurrentPlayer(player) {
                 // Do not strand playback if RealityKit never provides native sizing.
                 let id = UUID()
-                activeSurfaceID = id
-                activeAttachDeadline = nil
+                host.activeSurfaceID = id
+                host.activeAttachDeadline = nil
                 onSurfaceAttached(player, id, entity)
             }
         }
 
-        if let entity = lookaheadEntity, let attachedLookahead {
+        if let entity = host.lookaheadEntity, let attachedLookahead = host.attachedLookahead {
             if fit(entity: entity, content: content, geometry: geometry, depth: -2,
                    requiresReadyRendering: true),
-               fittedLookaheadID != attachedLookahead.reservationID {
+               host.fittedLookaheadID != attachedLookahead.reservationID {
                 if onLookaheadDidFit(attachedLookahead, entity) {
-                    fittedLookaheadID = attachedLookahead.reservationID
+                    host.fittedLookaheadID = attachedLookahead.reservationID
                 } else {
                     removeLookahead()
                 }
@@ -233,29 +238,29 @@ struct GallerySpatialVideoView: View {
     }
 
     private func removeLookahead() {
-        if let entity = lookaheadEntity {
-            if let attachedLookahead { onLookaheadDidDetach(attachedLookahead, entity) }
+        if let entity = host.lookaheadEntity {
+            if let attachedLookahead = host.attachedLookahead { onLookaheadDidDetach(attachedLookahead, entity) }
             entity.components.remove(VideoPlayerComponent.self)
             entity.removeFromParent()
         }
-        lookaheadEntity = nil
-        lookaheadPlayer = nil
-        attachedLookahead = nil
-        fittedLookaheadID = nil
+        host.lookaheadEntity = nil
+        host.lookaheadPlayer = nil
+        host.attachedLookahead = nil
+        host.fittedLookaheadID = nil
     }
 
     private func detachActive() {
-        if let activePlayer, let activeSurfaceID {
+        if let activePlayer = host.activePlayer, let activeSurfaceID = host.activeSurfaceID {
             onSurfaceDetached(activePlayer, activeSurfaceID)
         }
-        activeSurfaceID = nil
-        activeAttachDeadline = nil
-        if let activeEntity {
+        host.activeSurfaceID = nil
+        host.activeAttachDeadline = nil
+        if let activeEntity = host.activeEntity {
             activeEntity.components.remove(VideoPlayerComponent.self)
             activeEntity.removeFromParent()
         }
-        activeEntity = nil
-        activePlayer = nil
+        host.activeEntity = nil
+        host.activePlayer = nil
     }
 
     private func tearDown() {
