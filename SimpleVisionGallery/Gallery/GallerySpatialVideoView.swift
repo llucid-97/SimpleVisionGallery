@@ -129,6 +129,30 @@ struct GallerySpatialVideoView: View {
     }
 
     private func synchronize(content: RealityViewContent, geometry: GeometryProxy3D) {
+        // A reservation can change to the following item before SwiftUI runs
+        // this callback. First let the live current player take its fitted
+        // entity; only then may the newer reservation replace the old one.
+        if let player, let component, component.avPlayer === player {
+            guard isCurrentPlayer(player) else {
+                detachActive()
+                if host.lookaheadPlayer === player { removeLookahead() }
+                return
+            }
+            if !promoteLookahead(for: player), host.activePlayer !== player {
+                if host.lookaheadPlayer === player { removeLookahead() }
+                detachActive()
+                let entity = Entity()
+                entity.components.set(component)
+                applyOrientation(to: entity)
+                host.rootEntity.addChild(entity)
+                host.activeEntity = entity
+                host.activePlayer = player
+                host.activeAttachDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            }
+        } else {
+            detachActive()
+        }
+
         if let lookahead, lookahead.player !== player {
             if host.attachedLookahead?.matches(lookahead) != true {
                 removeLookahead()
@@ -148,40 +172,6 @@ struct GallerySpatialVideoView: View {
         } else if host.lookaheadEntity != nil,
                   host.lookaheadPlayer !== player {
             removeLookahead()
-        }
-
-        if let player, let component, component.avPlayer === player {
-            guard isCurrentPlayer(player) else {
-                detachActive()
-                if host.lookaheadPlayer === player { removeLookahead() }
-                return
-            }
-            if host.lookaheadPlayer === player, let promoted = host.lookaheadEntity,
-               promoted.parent === host.rootEntity,
-               promoted.components[VideoPlayerComponent.self]?.avPlayer === player {
-                detachActive()
-                host.activeEntity = promoted
-                host.activePlayer = player
-                host.lookaheadEntity = nil
-                host.lookaheadPlayer = nil
-                host.attachedLookahead = nil
-                host.fittedLookaheadID = nil
-                var position = promoted.position
-                position.z = 0
-                promoted.position = position
-            } else if host.activePlayer !== player {
-                if host.lookaheadPlayer === player { removeLookahead() }
-                detachActive()
-                let entity = Entity()
-                entity.components.set(component)
-                applyOrientation(to: entity)
-                host.rootEntity.addChild(entity)
-                host.activeEntity = entity
-                host.activePlayer = player
-                host.activeAttachDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-            }
-        } else {
-            detachActive()
         }
 
         if let entity = host.activeEntity {
@@ -218,6 +208,28 @@ struct GallerySpatialVideoView: View {
                 }
             }
         }
+    }
+
+    /// Transfer the live player's fitted entity before a later reservation can replace it.
+    @discardableResult
+    private func promoteLookahead(for player: AVPlayer) -> Bool {
+        guard isCurrentPlayer(player),
+              host.lookaheadPlayer === player,
+              let promoted = host.lookaheadEntity,
+              promoted.parent === host.rootEntity,
+              promoted.components[VideoPlayerComponent.self]?.avPlayer === player else { return false }
+
+        detachActive()
+        host.activeEntity = promoted
+        host.activePlayer = player
+        host.lookaheadEntity = nil
+        host.lookaheadPlayer = nil
+        host.attachedLookahead = nil
+        host.fittedLookaheadID = nil
+        var position = promoted.position
+        position.z = 0
+        promoted.position = position
+        return true
     }
 
     @discardableResult
