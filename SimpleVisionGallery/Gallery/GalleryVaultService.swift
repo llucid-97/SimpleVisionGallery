@@ -959,6 +959,17 @@ final class GalleryVaultService: ObservableObject {
 
     /// Only remove a queued ciphertext after its exact private record and files are verified durable.
     private func importQueuedShares(epoch: UUID) async throws {
+        storage.beginBatch()
+        let result: Result<Void, Error>
+        do { try await importQueuedSharesInBatch(epoch: epoch); result = .success(()) }
+        catch { result = .failure(error) }
+        let changedIDs = await storage.finishTransferBatch()
+        if changedIDs.isEmpty { publishIfCurrent(epoch) }
+        else { await publishQueuedIfCurrent(epoch, mutationIDs: changedIDs) }
+        try result.get()
+    }
+
+    private func importQueuedSharesInBatch(epoch: UUID) async throws {
         let session = try storage.intakeSession()
         let batches = try await Task.detached(priority: .utility) { try GalleryVaultInbox.batchFiles() }.value
         var failures = 0
