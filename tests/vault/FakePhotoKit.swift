@@ -191,7 +191,13 @@ nonisolated enum GalleryVaultTransferError: LocalizedError {
 }
 typealias PHPhotosError = Photos.PHPhotosError
 nonisolated let PHPhotosErrorDomain = Photos.PHPhotosErrorDomain
-nonisolated enum GalleryVaultStorageError: Error { case corruptRecord, corruptResource, incompleteItem }
+nonisolated enum GalleryVaultStorageError: Error { case corruptRecord, corruptResource, incompleteItem, duplicateItem }
+// The Photos-transfer fake still supplies a session for the real, empty intake queue.
+nonisolated final class GalleryVaultSession: @unchecked Sendable {
+    func withKey<T>(_ body: (SymmetricKey) throws -> T) throws -> T {
+        try body(SymmetricKey(data: Data(repeating: 0xB4, count: 32)))
+    }
+}
 nonisolated enum GalleryVaultPhotoLibrary {
     struct Prepared: @unchecked Sendable { let record: GalleryVaultRecord; let resources: [PHAssetResource] }
     static func requireFullAccess() throws {}
@@ -262,6 +268,17 @@ nonisolated final class GalleryVaultStagingItem: @unchecked Sendable {
         if lockAtUnlockReturn { GalleryVaultService.shared.lock() }
     }
     func lock() { generation = UUID(); isUnlocked = false; unreadableRecordCount = 0; cleanupWarning = simulatedCleanupFailure ? "Private media cleanup failed." : nil }
+    func intakeSession() throws -> GalleryVaultSession {
+        guard isUnlocked else { throw GalleryVaultTransferError.locked }
+        return GalleryVaultSession()
+    }
+    func publishIntakePublicKey() throws {
+        let key = try intakeSession().withKey { try GalleryVaultInbox.privateKey(vaultKey: $0) }
+        try GalleryVaultInbox.publishPublicKey(key.publicKey.rawRepresentation)
+    }
+    func commitIncoming(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem) async throws {
+        try commit(record, from: item)
+    }
     func beginBatch() {}
     func endBatch() { if lockAtEndBatch { lockAtEndBatch = false; GalleryVaultService.shared.lock() } }
     func record(id: UUID) -> GalleryVaultRecord? { durable[id] }

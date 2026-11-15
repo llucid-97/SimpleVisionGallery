@@ -55,9 +55,11 @@ Remember the last N successful Move destinations for Photos and vault albums, in
 
 ## Sharing preserves supplied media
 
-The incoming Share extension accepts supported photo and video representations and saves a copy to Photos without decoding or recompressing it. It uses a safe sender filename when available, leaves the source untouched and asks for Photos add permission before saving. Cancel dismisses promptly while staged files remain until an in-flight provider callback finishes. The existing Photos grid and viewer Share actions continue to export original resources.
+The incoming Share extension accepts supported photo and video representations and saves a copy to the chosen Photos or Private Vault destination without decoding or recompressing it. Vault-bound shares are encrypted on device, stay out of Photos, and are imported when the vault is unlocked; interruption, lock, and retries must not lose or duplicate them. It uses a safe sender filename when available, leaves the source untouched and requests Photos add permission only for the Photos destination. Cancel dismisses promptly while staged files remain until an in-flight provider callback finishes. The existing Photos grid and viewer Share actions continue to export original resources.
 
 `python3 tests/check_sharing_input.py` verifies concrete image-type selection, suggested and fallback filenames, temporary-provider callback lifetime, exact copied bytes, unsupported input and provider failures.
+
+`python3 tests/check_sharing_vault.py` protects the encrypted intake protocol: exact bytes, stable key derivation, wrong-key and key-rotation rejection, tamper detection, truncation, and trailing bytes. Native authentication and sandbox handoff are separate checks.
 
 ## Scripted transition coverage
 

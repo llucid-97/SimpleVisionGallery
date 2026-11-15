@@ -581,11 +581,32 @@ final class GalleryVaultStorage: ObservableObject {
         return item
     }
 
+    func intakeSession() throws -> GalleryVaultSession {
+        guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
+        return session
+    }
+
+    func publishIntakePublicKey() throws {
+        let session = try intakeSession()
+        let key = try session.withKey { try GalleryVaultInbox.privateKey(vaultKey: $0).publicKey.rawRepresentation }
+        try GalleryVaultInbox.publishPublicKey(key)
+    }
+
     /// Seal and atomically publish a verified staging item off the UI actor while retaining a revocable session.
     func commitTransfer(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem,
                         sourceAlbums: [GalleryVaultAlbum]? = nil) async throws {
+        try await commitTransfer(record, from: item, sourceAlbums: sourceAlbums, expectedState: .copiedAwaitingDeletion)
+    }
+
+    /// Incoming shares have no Photos item to delete; they enter as private items.
+    func commitIncoming(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem) async throws {
+        try await commitTransfer(record, from: item, sourceAlbums: nil, expectedState: .privateItem)
+    }
+
+    private func commitTransfer(_ record: GalleryVaultRecord, from item: GalleryVaultStagingItem,
+                                sourceAlbums: [GalleryVaultAlbum]?, expectedState: GalleryVaultRecord.State) async throws {
         guard let session, isUnlocked else { throw GalleryVaultStorageError.locked }
-        guard record.id == item.id, item.belongs(to: session), record.state == .copiedAwaitingDeletion,
+        guard record.id == item.id, item.belongs(to: session), record.state == expectedState,
               !record.resources.isEmpty, Set(record.resources.map(\.id)).count == record.resources.count,
               item.verifiedResources() == Set(record.resources.map(\.id)) else {
             throw GalleryVaultStorageError.incompleteItem

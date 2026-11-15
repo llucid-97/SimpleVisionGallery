@@ -4,10 +4,15 @@ import UIKit
 @MainActor
 final class GalleryShareExtensionViewController: UIViewController {
     private let status = UILabel()
+    private let destination = UISegmentedControl(items: ["Photos", "Private Vault"])
+    private let destinationDetail = UILabel()
+    private var vaultPublicKey: Data?
+    private var didSaveVault = false
     private let saveButton = UIButton(type: .system)
     private let cancelButton = UIButton(type: .system)
     private var staged: [StagedShare] = []
     private var stagingDirectory: URL?
+    private var stagingLease: FileHandle?
     private var isSaving = false
     private var isDismissed = false
     private var saveTask: Task<Void, Never>?
@@ -16,44 +21,81 @@ final class GalleryShareExtensionViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        view.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 24, leading: 24, bottom: 24, trailing: 24)
+        view.tintColor = UIColor(red: 1, green: 0.77, blue: 0.41, alpha: 1)
+        preferredContentSize = CGSize(width: 520, height: 400)
 
         let title = UILabel()
-        title.text = "Save to Simple Vision Gallery"
+        title.text = "Save to Gallery"
         title.font = .preferredFont(forTextStyle: .title2)
         title.adjustsFontForContentSizeCategory = true
         title.numberOfLines = 0
+        title.accessibilityTraits.insert(.header)
 
         status.text = "Preparing shared items…"
         status.font = .preferredFont(forTextStyle: .body)
         status.adjustsFontForContentSizeCategory = true
+        status.textColor = .secondaryLabel
         status.numberOfLines = 0
 
-        saveButton.setTitle("Save to Photos", for: .normal)
-        saveButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        let destinationLabel = UILabel()
+        destinationLabel.text = "Destination"
+        destinationLabel.font = .preferredFont(forTextStyle: .headline)
+        destinationLabel.adjustsFontForContentSizeCategory = true
+        destinationLabel.accessibilityTraits.insert(.header)
+        destination.selectedSegmentIndex = 0
+        destination.accessibilityIdentifier = "gallery-share-destination"
+        destination.addTarget(self, action: #selector(destinationChanged), for: .valueChanged)
+        destination.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        destinationDetail.font = .preferredFont(forTextStyle: .subheadline)
+        destinationDetail.adjustsFontForContentSizeCategory = true
+        destinationDetail.textColor = .secondaryLabel
+        destinationDetail.numberOfLines = 0
+        destinationDetail.isHidden = true
+
+        saveButton.configuration = .filled()
+        saveButton.configuration?.baseBackgroundColor = view.tintColor
+        saveButton.configuration?.baseForegroundColor = .black
         saveButton.addTarget(self, action: #selector(save), for: .touchUpInside)
         saveButton.isEnabled = false
-
         cancelButton.setTitle("Cancel", for: .normal)
         cancelButton.addTarget(self, action: #selector(cancel), for: .touchUpInside)
 
-        let buttons = UIStackView(arrangedSubviews: [saveButton, cancelButton])
+        let buttons = UIStackView(arrangedSubviews: [cancelButton, saveButton])
         buttons.axis = .horizontal
         buttons.spacing = 16
         buttons.distribution = .fillEqually
-        saveButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-        cancelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-        let stack = UIStackView(arrangedSubviews: [title, status, buttons])
+        saveButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        cancelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        let stack = UIStackView(arrangedSubviews: [title, status, destinationLabel, destination, destinationDetail, buttons])
         stack.axis = .vertical
-        stack.spacing = 20
+        stack.spacing = 16
+        stack.setCustomSpacing(28, after: status)
+        stack.setCustomSpacing(8, after: destinationLabel)
+        stack.setCustomSpacing(28, after: destinationDetail)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scroll)
+        scroll.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.layoutMarginsGuide.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: view.layoutMarginsGuide.trailingAnchor),
-            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 420)
+            scroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 28),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -28),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 28),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -28),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -56)
         ])
+        updateDestination()
+        Task {
+            vaultPublicKey = try? await Task.detached(priority: .utility) {
+                try GalleryVaultInbox.availablePublicKey()
+            }.value
+            guard !isDismissed else { return }
+            updateDestination()
+        }
 
         prepareTask = Task { await prepareSharedItems() }
     }
@@ -71,11 +113,12 @@ final class GalleryShareExtensionViewController: UIViewController {
             return
         }
         let providers = items.flatMap { $0.attachments ?? [] }
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GalleryIncoming-\(UUID().uuidString)", isDirectory: true)
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let (directory, lease) = try await Task.detached(priority: .utility) {
+                try GalleryShareInput.stagingDirectory()
+            }.value
             stagingDirectory = directory
+            stagingLease = lease
             var accepted: [StagedShare] = []
             for provider in providers {
                 guard let type = GalleryShareInput.preferredType(for: provider) else {
@@ -94,8 +137,8 @@ final class GalleryShareExtensionViewController: UIViewController {
                 return
             }
             staged = accepted
-            status.text = "\(itemCount(accepted.count)) ready. Choose Save to add copies to Photos."
-            saveButton.isEnabled = true
+            status.text = "\(itemCount(accepted.count)) ready"
+            updateDestination()
         } catch {
             cleanStaging()
             if Task.isCancelled {
@@ -107,11 +150,61 @@ final class GalleryShareExtensionViewController: UIViewController {
         prepareTask = nil
     }
 
+    @objc private func destinationChanged() { updateDestination() }
+
+    private func updateDestination() {
+        let vault = destination.selectedSegmentIndex == 1
+        saveButton.configuration?.title = vault ? "Save to Private Vault" : "Save to Photos"
+        destinationDetail.isHidden = !vault
+        destinationDetail.text = vaultPublicKey == nil
+            ? "Open Gallery and unlock Private Vault once to enable sharing to it. Then share these items again."
+            : "Encrypted on this device. Open Gallery and unlock Private Vault to finish importing."
+        saveButton.isEnabled = !staged.isEmpty && !isSaving && saveTask == nil && (!vault || vaultPublicKey != nil) && !didSaveVault
+    }
+
     @objc private func save() {
         guard !staged.isEmpty, !isSaving, saveTask == nil else { return }
         saveButton.isEnabled = false
-        status.text = "Requesting Photos permission…"
-        saveTask = Task { await saveToPhotos() }
+        destination.isEnabled = false
+        status.textColor = .secondaryLabel
+        if destination.selectedSegmentIndex == 1 {
+            guard vaultPublicKey != nil else { destination.isEnabled = true; updateDestination(); return }
+            isSaving = true
+            cancelButton.isEnabled = false
+            status.text = "Encrypting \(itemCount(staged.count)) for Private Vault…"
+            saveTask = Task { await saveToVault() }
+        } else {
+            status.text = "Requesting Photos permission…"
+            saveTask = Task { await saveToPhotos() }
+        }
+    }
+
+    private func saveToVault() async {
+        let inputs = staged.map { GalleryVaultInbox.Input(url: $0.url, filename: $0.filename, typeIdentifier: $0.type.identifier) }
+        do {
+            let synced = try await Task.detached(priority: .userInitiated) { try await GalleryVaultInbox.save(items: inputs) }.value
+            cleanStaging()
+            saveTask = nil
+            isSaving = false
+            didSaveVault = true
+            status.text = "Saved for Private Vault"
+            destination.isEnabled = false
+            destinationDetail.isHidden = false
+            destinationDetail.text = synced
+                ? "Open Gallery and unlock Private Vault to finish importing."
+                : "The files were encrypted, but the final storage sync was not confirmed. Keep the originals until Gallery finishes importing."
+            cancelButton.setTitle("Done", for: .normal)
+            cancelButton.isEnabled = true
+            saveButton.isHidden = true
+        } catch {
+            isSaving = false
+            saveTask = nil
+            destination.isEnabled = true
+            cancelButton.isEnabled = true
+            status.textColor = .systemRed
+            status.text = "Could not save for Private Vault: \(error.localizedDescription)"
+            updateDestination()
+        }
     }
 
     private func saveToPhotos() async {
@@ -129,7 +222,8 @@ final class GalleryShareExtensionViewController: UIViewController {
         guard authorization == .authorized || authorization == .limited else {
             saveTask = nil
             cancelButton.isEnabled = true
-            saveButton.isEnabled = true
+            destination.isEnabled = true
+            updateDestination()
             status.text = "Photos access was not granted. Allow adding photos in Settings, then try again."
             return
         }
@@ -158,13 +252,18 @@ final class GalleryShareExtensionViewController: UIViewController {
             isSaving = false
             saveTask = nil
             cancelButton.isEnabled = true
-            saveButton.isEnabled = true
+            destination.isEnabled = true
+            updateDestination()
             status.text = "Could not save the items to Photos: \(error.localizedDescription)"
         }
     }
 
     @objc private func cancel() {
         guard !isSaving else { return }
+        if didSaveVault {
+            extensionContext?.completeRequest(returningItems: nil)
+            return
+        }
         dismiss(cancelRequest: true)
     }
 
@@ -195,8 +294,15 @@ final class GalleryShareExtensionViewController: UIViewController {
 
     private func cleanStaging() {
         staged.removeAll()
-        if let stagingDirectory { try? FileManager.default.removeItem(at: stagingDirectory) }
+        if let stagingDirectory {
+            do {
+                try FileManager.default.removeItem(at: stagingDirectory)
+                try? FileManager.default.removeItem(at: GalleryLeasedStaging.marker(for: stagingDirectory))
+            } catch { } // Leave the marker so a later unlocked launch can retry cleanup.
+        }
         stagingDirectory = nil
+        try? stagingLease?.close()
+        stagingLease = nil
     }
 
 }

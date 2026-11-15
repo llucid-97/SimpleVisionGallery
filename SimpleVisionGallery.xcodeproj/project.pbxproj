@@ -7,52 +7,56 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0749F352CC7FC1C28FCA9416 /* GalleryViewerWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0614148535E81D8E23B48FDB /* GalleryViewerWindows.swift */; };
 		08AFE6534E2BA74872B30FFE /* GalleryShareExtensionViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB6942E601C58496F167B04 /* GalleryShareExtensionViewController.swift */; };
+		09DED5667E069E69C284F08C /* GalleryVaultStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE38EB3AB880501DE019C286 /* GalleryVaultStorage.swift */; };
 		1609E548F24D03DE6DE5BC81 /* GalleryCinemaDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = F51001D77F49DBBC9CABD947 /* GalleryCinemaDesign.swift */; };
-		19C3E9CDCF1B1DBB5BECB35A /* GalleryAlbumSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FE38F44101D7C25A7551345 /* GalleryAlbumSearch.swift */; };
-		2440D9467FDC752B5F2DD293 /* GalleryViewerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B060BF74FAB224A9E915D1E /* GalleryViewerStore.swift */; };
 		29E64478D7EBAFC8EAE3302E /* GalleryViewerBacking.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B5BEE90C7C17C3144A2A20E /* GalleryViewerBacking.swift */; };
-		2C40B779A4DF327D41222D60 /* GalleryViewerPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EAC331A25232048198DD530 /* GalleryViewerPreferences.swift */; };
-		2FEAA809275F95AE8A4CC7C8 /* GalleryAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 521A76D1C9035D980FC17DEC /* GalleryAboutView.swift */; };
+		2A3394FCEDA9B8089E609C46 /* GalleryLeasedStaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFD65CF1AE8993BEDEE717E1 /* GalleryLeasedStaging.swift */; };
 		33464AF0C1C77EB20D79FF10 /* GalleryDesignContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FDCA642BF4A5A5D4F76BCB5 /* GalleryDesignContext.swift */; };
-		335FF6B327426AA8E13FE32E /* GallerySpatialVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9161C33EA709F2324FE045C /* GallerySpatialVideoView.swift */; };
 		342D9F8D7D55588B58C55435 /* GalleryShareInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7A151A881130E5690614ED /* GalleryShareInput.swift */; };
 		36BDFA852176BD213FFE67A6 /* GalleryCaptureSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC8FFF8DCB70E9DEC6F768F8 /* GalleryCaptureSurface.swift */; };
-		37188A903CF89BAB9C5BF31C /* GalleryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED24C9F5802957F50BE301C /* GalleryView.swift */; };
-		39EC2E3E97A1DEE729B53D00 /* GalleryMoveHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF220AE0ED3F9EEA729494DB /* GalleryMoveHistory.swift */; };
-		3AB9552E786AF5A1E78D357E /* GallerySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583B65092D07EF5DA1478AD0 /* GallerySettingsView.swift */; };
+		397364EED4A3A204F059ABF9 /* GalleryVaultService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03FE1F5DE1BF5A4FEC05AC34 /* GalleryVaultService.swift */; };
+		39DF8FF656AA5E0951E31E66 /* GalleryVaultInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39D1BF628A1063AB154A9166 /* GalleryVaultInbox.swift */; };
+		3B11C20D00E77B77BD3B9015 /* GalleryQueuedPhotoDeletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 061A4A06A0C0C18CD0121BF6 /* GalleryQueuedPhotoDeletion.swift */; };
+		49A4CBFDDAA52874E9D4FD64 /* GalleryVisibilityPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BAB1E71D21710FCE07BCC3F /* GalleryVisibilityPreferences.swift */; };
 		4BC8B54A86C1FE4556D94CE7 /* GalleryLightTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCABD4883A31BFA6D6952690 /* GalleryLightTheme.swift */; };
+		4C453CE8DCA47CD4FA3FA07B /* GalleryMoveHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = D93BF64BEE08021E86ACDF46 /* GalleryMoveHistory.swift */; };
+		4D543736E6185739A583546B /* GalleryAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE1F221E7FD647782995778 /* GalleryAboutView.swift */; };
 		4F4A927341B6ACC9F4535C19 /* GalleryThemeSamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = E089CD3B612A9405577483C8 /* GalleryThemeSamples.swift */; };
 		5105608D35E9894E0810632E /* GalleryMediaGridLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB230BE8144576D3B7690E43 /* GalleryMediaGridLayout.swift */; };
 		5764123DEBD4FA011BEB799D /* GalleryThumbnailSizePopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = E108BE373AD34DDDB78D6FCA /* GalleryThumbnailSizePopover.swift */; };
+		59F788D3B361A549103EAD1D /* GalleryAlbumSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE57D94EB883C8AA1C7C4AD0 /* GalleryAlbumSearch.swift */; };
 		5E697600B5F9135DDCB6E235 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 425DC76BFD03AAE5DDEACFFF /* PrivacyInfo.xcprivacy */; };
-		5F2C198CE97C31CBA661806A /* GalleryVaultStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21D419AF0042D137D3FD994F /* GalleryVaultStorage.swift */; };
-		60D9AF1AB5831179DA2E4A2A /* GalleryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73F3275C94BF86DDA0E3C502 /* GalleryManager.swift */; };
-		6D8102F0FDFF9416F1991F28 /* GalleryVaultService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 600F1B4FB1A0AA07C9FCB477 /* GalleryVaultService.swift */; };
-		6F146309645D245DDC8F53A3 /* GalleryViewerMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C1D395DA5886CA943473854 /* GalleryViewerMedia.swift */; };
+		6206C5AF5AA67C261DE4B02B /* GalleryViewerPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F0EE2E914FECF48356D712E /* GalleryViewerPreferences.swift */; };
+		6F03180407849721AF5E56BD /* GalleryViewerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D5235B2493B878EFEB7EDD /* GalleryViewerStore.swift */; };
+		73DE64C49C868978C03E98D7 /* GalleryThumbnail.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0E59DBE9E45C4893A2CB16 /* GalleryThumbnail.swift */; };
+		73F63A48E85C1C0ADAC2B7AB /* GalleryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC19F213344665408E1F33E /* GalleryManager.swift */; };
+		76F82BEE1F82BB6A2AF22F45 /* GalleryDeleteQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2FDE9E7A4A180730AF2A26E /* GalleryDeleteQueue.swift */; };
+		781ACC3C51BC965C3B671862 /* GalleryViewerWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 199CF3CCE7C82A4059889D59 /* GalleryViewerWindows.swift */; };
 		7F088CE7A4CF20D082770FCA /* GalleryLightShaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = 031BC38E416CEA68806A9A07 /* GalleryLightShaders.metal */; };
-		90D1A8F7A3915EC497574229 /* GalleryVisibilityPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC8F866950CAFDB851D8B66F /* GalleryVisibilityPreferences.swift */; };
-		95EAF4645E1CD7568F002982 /* GalleryThumbnail.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24ED9326FD9E8200074BD4E9 /* GalleryThumbnail.swift */; };
-		98237573B83715285F8AEFA2 /* GalleryQueuedPhotoDeletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 463104F01CA40D6C3DAC24FC /* GalleryQueuedPhotoDeletion.swift */; };
-		9B92F89FE2ABFCC9D345B648 /* GalleryVaultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37E9EB2F0C01725BBDED86B9 /* GalleryVaultView.swift */; };
+		867073DAF66D892A4D88CCFD /* GalleryVaultModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF6150DC201579C32014ED20 /* GalleryVaultModels.swift */; };
+		9F3C7602E1671C9B2332DCD7 /* GalleryViewerMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = F61DA843727371701B77D3C8 /* GalleryViewerMedia.swift */; };
 		A00352857C2BA9EB93D34479 /* GalleryShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 9C21936B4D53C30AE3459E3B /* GalleryShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		AD5FD2BE568C9485A26F15AB /* GalleryVirtualLibraryIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3751DEA2F2365B048ADFA94C /* GalleryVirtualLibraryIndex.swift */; };
+		A2366FE123D64FB2D90B58B1 /* GalleryVirtualLibraryIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FCE44E1EAAA2673C22437EB /* GalleryVirtualLibraryIndex.swift */; };
+		A4B358F95CE2A8EA4BAC0804 /* GalleryMediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A4EB06EF0D41FF66545A250 /* GalleryMediaItem.swift */; };
+		ADF8012BDED4B65507F958C8 /* GalleryVaultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AFBCE679BD6FBD83A8188F7 /* GalleryVaultView.swift */; };
+		B014026A427ECEDCD2A821DE /* GalleryVaultInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39D1BF628A1063AB154A9166 /* GalleryVaultInbox.swift */; };
 		B122B61164371B153654BA0B /* GalleryMediaToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA1CE0FA4DACBB8674AF287 /* GalleryMediaToolbar.swift */; };
+		B1AABA172B5F28787A800D22 /* GallerySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFD7D1F67E271B69C5F3A7C1 /* GallerySettingsView.swift */; };
 		B57B21B5CA7E89791D244544 /* SimpleVisionGalleryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC727E97AFC386B880C62EB5 /* SimpleVisionGalleryApp.swift */; };
-		B7EA7FE0FAE9685E3628D10C /* GalleryVaultPhotoLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D6FA9D23D04E007086C161C /* GalleryVaultPhotoLibrary.swift */; };
-		BCC4F822F88FD5B18AAAF432 /* GalleryViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F35B5FCA3A5755AD193429D /* GalleryViewerView.swift */; };
-		C3D642E7A945D46563FAB036 /* GalleryVaultModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DD0523A80A0245F8B3FEA2B /* GalleryVaultModels.swift */; };
-		CEA70B77F47AA075A3EB305B /* GalleryDeleteQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16021F5C126422A6550EF680 /* GalleryDeleteQueue.swift */; };
+		BAA88399A0532BCF2B4A9AE6 /* GalleryLeasedStaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFD65CF1AE8993BEDEE717E1 /* GalleryLeasedStaging.swift */; };
+		BD425E106935DE8C9CAA02BA /* GalleryThumbnailDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C586F6666663409C7E9B81B0 /* GalleryThumbnailDelivery.swift */; };
 		D7D46C44EB3B44FD9E5EC048 /* GalleryAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDD5D3DFAB660942394B764D /* GalleryAppearance.swift */; };
+		D807DFBC255B92D2F16E4570 /* GalleryViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C711CA5C88A2E5276E07B2F /* GalleryViewerView.swift */; };
+		D831E6FD31A71580C086DE4E /* GalleryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 582B89A078D949F52E3D81E3 /* GalleryView.swift */; };
 		DF6BE50B69A9B6B6FAB4E58E /* GalleryDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E9DA221CDB824484CDE3DEA /* GalleryDesign.swift */; };
-		DFDE375080A78CCCC515B8C2 /* GalleryMediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFBF560A16CCB4FA12E0F890 /* GalleryMediaItem.swift */; };
 		E01E67E41BE8DDBF4A3C20AE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F20386C73BCE4ECFB9D4C029 /* Assets.xcassets */; };
 		E22CC5304481A7747536C405 /* GalleryCaptureFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD07BF4A9D2356E234D7D997 /* GalleryCaptureFixtures.swift */; };
+		E64771B7FC5F6C56AD056CDF /* GallerySpatialVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14951AF4A21C257C72441856 /* GallerySpatialVideoView.swift */; };
 		ECCC8F935833013ABC2E63F7 /* GalleryNativeCaptureViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC30CAD8A269CF0D80C2C8A6 /* GalleryNativeCaptureViewer.swift */; };
 		F00E86CF97859A6D821E32B1 /* GalleryHoverIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = F51E0AABEDDF3E6939C1F561 /* GalleryHoverIcon.swift */; };
-		F96FB16641FC5655FC4AB438 /* GalleryThumbnailDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B781F544AB9EDF7164A7619 /* GalleryThumbnailDelivery.swift */; };
-		FE93CB745E2756C11873BDA4 /* GalleryRecycleBin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12F0D3BB0C482C7DA7C806CD /* GalleryRecycleBin.swift */; };
+		F50D6BE9CBCFFBBEBA6C88DE /* GalleryRecycleBin.swift in Sources */ = {isa = PBXBuildFile; fileRef = D285F88370D4F786AF03B608 /* GalleryRecycleBin.swift */; };
+		F7C467E85F17FCD571A86562 /* GalleryVaultPhotoLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC9F022BC889583278E492AE /* GalleryVaultPhotoLibrary.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -81,85 +85,92 @@
 
 /* Begin PBXFileReference section */
 		031BC38E416CEA68806A9A07 /* GalleryLightShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = GalleryLightShaders.metal; sourceTree = "<group>"; };
-		0614148535E81D8E23B48FDB /* GalleryViewerWindows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerWindows.swift; sourceTree = "<group>"; };
+		03FE1F5DE1BF5A4FEC05AC34 /* GalleryVaultService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultService.swift; sourceTree = "<group>"; };
+		061A4A06A0C0C18CD0121BF6 /* GalleryQueuedPhotoDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryQueuedPhotoDeletion.swift; sourceTree = "<group>"; };
 		0724E220817D816AA86AD6F0 /* SimpleVisionGallery.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SimpleVisionGallery.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0B5BEE90C7C17C3144A2A20E /* GalleryViewerBacking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerBacking.swift; sourceTree = "<group>"; };
-		0EAC331A25232048198DD530 /* GalleryViewerPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerPreferences.swift; sourceTree = "<group>"; };
-		12F0D3BB0C482C7DA7C806CD /* GalleryRecycleBin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryRecycleBin.swift; sourceTree = "<group>"; };
-		16021F5C126422A6550EF680 /* GalleryDeleteQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryDeleteQueue.swift; sourceTree = "<group>"; };
+		14951AF4A21C257C72441856 /* GallerySpatialVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GallerySpatialVideoView.swift; sourceTree = "<group>"; };
+		199CF3CCE7C82A4059889D59 /* GalleryViewerWindows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerWindows.swift; sourceTree = "<group>"; };
+		1A0E59DBE9E45C4893A2CB16 /* GalleryThumbnail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryThumbnail.swift; sourceTree = "<group>"; };
+		1A4EB06EF0D41FF66545A250 /* GalleryMediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryMediaItem.swift; sourceTree = "<group>"; };
 		1E9DA221CDB824484CDE3DEA /* GalleryDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryDesign.swift; sourceTree = "<group>"; };
-		21D419AF0042D137D3FD994F /* GalleryVaultStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultStorage.swift; sourceTree = "<group>"; };
-		24ED9326FD9E8200074BD4E9 /* GalleryThumbnail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryThumbnail.swift; sourceTree = "<group>"; };
-		3751DEA2F2365B048ADFA94C /* GalleryVirtualLibraryIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVirtualLibraryIndex.swift; sourceTree = "<group>"; };
-		37E9EB2F0C01725BBDED86B9 /* GalleryVaultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultView.swift; sourceTree = "<group>"; };
+		2B485FECB295CF2FF947BAD5 /* SimpleVisionGallery.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SimpleVisionGallery.entitlements; sourceTree = "<group>"; };
+		303F1875668E5CAF0C2C1CF3 /* GalleryShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GalleryShareExtension.entitlements; sourceTree = "<group>"; };
+		31D5235B2493B878EFEB7EDD /* GalleryViewerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerStore.swift; sourceTree = "<group>"; };
+		39D1BF628A1063AB154A9166 /* GalleryVaultInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultInbox.swift; sourceTree = "<group>"; };
 		425DC76BFD03AAE5DDEACFFF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		463104F01CA40D6C3DAC24FC /* GalleryQueuedPhotoDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryQueuedPhotoDeletion.swift; sourceTree = "<group>"; };
-		4ED24C9F5802957F50BE301C /* GalleryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryView.swift; sourceTree = "<group>"; };
-		4F35B5FCA3A5755AD193429D /* GalleryViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerView.swift; sourceTree = "<group>"; };
-		521A76D1C9035D980FC17DEC /* GalleryAboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryAboutView.swift; sourceTree = "<group>"; };
-		583B65092D07EF5DA1478AD0 /* GallerySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GallerySettingsView.swift; sourceTree = "<group>"; };
+		4AFBCE679BD6FBD83A8188F7 /* GalleryVaultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultView.swift; sourceTree = "<group>"; };
+		582B89A078D949F52E3D81E3 /* GalleryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryView.swift; sourceTree = "<group>"; };
+		5BAB1E71D21710FCE07BCC3F /* GalleryVisibilityPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVisibilityPreferences.swift; sourceTree = "<group>"; };
 		5CB6942E601C58496F167B04 /* GalleryShareExtensionViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryShareExtensionViewController.swift; sourceTree = "<group>"; };
+		5EC19F213344665408E1F33E /* GalleryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryManager.swift; sourceTree = "<group>"; };
 		5FDCA642BF4A5A5D4F76BCB5 /* GalleryDesignContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryDesignContext.swift; sourceTree = "<group>"; };
-		5FE38F44101D7C25A7551345 /* GalleryAlbumSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryAlbumSearch.swift; sourceTree = "<group>"; };
-		600F1B4FB1A0AA07C9FCB477 /* GalleryVaultService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultService.swift; sourceTree = "<group>"; };
-		6B781F544AB9EDF7164A7619 /* GalleryThumbnailDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryThumbnailDelivery.swift; sourceTree = "<group>"; };
-		6C1D395DA5886CA943473854 /* GalleryViewerMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerMedia.swift; sourceTree = "<group>"; };
-		73F3275C94BF86DDA0E3C502 /* GalleryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryManager.swift; sourceTree = "<group>"; };
-		8B060BF74FAB224A9E915D1E /* GalleryViewerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerStore.swift; sourceTree = "<group>"; };
-		8D6FA9D23D04E007086C161C /* GalleryVaultPhotoLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultPhotoLibrary.swift; sourceTree = "<group>"; };
-		8DD0523A80A0245F8B3FEA2B /* GalleryVaultModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultModels.swift; sourceTree = "<group>"; };
+		6C711CA5C88A2E5276E07B2F /* GalleryViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerView.swift; sourceTree = "<group>"; };
+		6F0EE2E914FECF48356D712E /* GalleryViewerPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerPreferences.swift; sourceTree = "<group>"; };
+		6FCE44E1EAAA2673C22437EB /* GalleryVirtualLibraryIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVirtualLibraryIndex.swift; sourceTree = "<group>"; };
+		8EE1F221E7FD647782995778 /* GalleryAboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryAboutView.swift; sourceTree = "<group>"; };
 		9C21936B4D53C30AE3459E3B /* GalleryShareExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = GalleryShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AB230BE8144576D3B7690E43 /* GalleryMediaGridLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryMediaGridLayout.swift; sourceTree = "<group>"; };
 		AC30CAD8A269CF0D80C2C8A6 /* GalleryNativeCaptureViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryNativeCaptureViewer.swift; sourceTree = "<group>"; };
 		AF7A151A881130E5690614ED /* GalleryShareInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryShareInput.swift; sourceTree = "<group>"; };
-		AFBF560A16CCB4FA12E0F890 /* GalleryMediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryMediaItem.swift; sourceTree = "<group>"; };
 		BDD5D3DFAB660942394B764D /* GalleryAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryAppearance.swift; sourceTree = "<group>"; };
-		C9161C33EA709F2324FE045C /* GallerySpatialVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GallerySpatialVideoView.swift; sourceTree = "<group>"; };
+		BF6150DC201579C32014ED20 /* GalleryVaultModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultModels.swift; sourceTree = "<group>"; };
+		BFD65CF1AE8993BEDEE717E1 /* GalleryLeasedStaging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryLeasedStaging.swift; sourceTree = "<group>"; };
+		BFD7D1F67E271B69C5F3A7C1 /* GallerySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GallerySettingsView.swift; sourceTree = "<group>"; };
+		C586F6666663409C7E9B81B0 /* GalleryThumbnailDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryThumbnailDelivery.swift; sourceTree = "<group>"; };
 		CC8FFF8DCB70E9DEC6F768F8 /* GalleryCaptureSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryCaptureSurface.swift; sourceTree = "<group>"; };
 		CD07BF4A9D2356E234D7D997 /* GalleryCaptureFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryCaptureFixtures.swift; sourceTree = "<group>"; };
+		D285F88370D4F786AF03B608 /* GalleryRecycleBin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryRecycleBin.swift; sourceTree = "<group>"; };
+		D93BF64BEE08021E86ACDF46 /* GalleryMoveHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryMoveHistory.swift; sourceTree = "<group>"; };
 		DCABD4883A31BFA6D6952690 /* GalleryLightTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryLightTheme.swift; sourceTree = "<group>"; };
+		DE57D94EB883C8AA1C7C4AD0 /* GalleryAlbumSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryAlbumSearch.swift; sourceTree = "<group>"; };
 		DEA1CE0FA4DACBB8674AF287 /* GalleryMediaToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryMediaToolbar.swift; sourceTree = "<group>"; };
 		E089CD3B612A9405577483C8 /* GalleryThemeSamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryThemeSamples.swift; sourceTree = "<group>"; };
 		E108BE373AD34DDDB78D6FCA /* GalleryThumbnailSizePopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryThumbnailSizePopover.swift; sourceTree = "<group>"; };
+		E2FDE9E7A4A180730AF2A26E /* GalleryDeleteQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryDeleteQueue.swift; sourceTree = "<group>"; };
 		EC727E97AFC386B880C62EB5 /* SimpleVisionGalleryApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleVisionGalleryApp.swift; sourceTree = "<group>"; };
-		EF220AE0ED3F9EEA729494DB /* GalleryMoveHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryMoveHistory.swift; sourceTree = "<group>"; };
+		EE38EB3AB880501DE019C286 /* GalleryVaultStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultStorage.swift; sourceTree = "<group>"; };
 		F20386C73BCE4ECFB9D4C029 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F51001D77F49DBBC9CABD947 /* GalleryCinemaDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryCinemaDesign.swift; sourceTree = "<group>"; };
 		F51E0AABEDDF3E6939C1F561 /* GalleryHoverIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryHoverIcon.swift; sourceTree = "<group>"; };
-		FC8F866950CAFDB851D8B66F /* GalleryVisibilityPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVisibilityPreferences.swift; sourceTree = "<group>"; };
+		F61DA843727371701B77D3C8 /* GalleryViewerMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryViewerMedia.swift; sourceTree = "<group>"; };
+		FC9F022BC889583278E492AE /* GalleryVaultPhotoLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryVaultPhotoLibrary.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		20C18D1C79443308237BE1D2 /* Gallery */ = {
+		2E4528A7929DB0A7290C7E85 /* Gallery */ = {
 			isa = PBXGroup;
 			children = (
-				521A76D1C9035D980FC17DEC /* GalleryAboutView.swift */,
-				5FE38F44101D7C25A7551345 /* GalleryAlbumSearch.swift */,
-				16021F5C126422A6550EF680 /* GalleryDeleteQueue.swift */,
-				73F3275C94BF86DDA0E3C502 /* GalleryManager.swift */,
-				AFBF560A16CCB4FA12E0F890 /* GalleryMediaItem.swift */,
-				EF220AE0ED3F9EEA729494DB /* GalleryMoveHistory.swift */,
-				463104F01CA40D6C3DAC24FC /* GalleryQueuedPhotoDeletion.swift */,
-				12F0D3BB0C482C7DA7C806CD /* GalleryRecycleBin.swift */,
-				583B65092D07EF5DA1478AD0 /* GallerySettingsView.swift */,
-				C9161C33EA709F2324FE045C /* GallerySpatialVideoView.swift */,
-				24ED9326FD9E8200074BD4E9 /* GalleryThumbnail.swift */,
-				6B781F544AB9EDF7164A7619 /* GalleryThumbnailDelivery.swift */,
-				8DD0523A80A0245F8B3FEA2B /* GalleryVaultModels.swift */,
-				8D6FA9D23D04E007086C161C /* GalleryVaultPhotoLibrary.swift */,
-				600F1B4FB1A0AA07C9FCB477 /* GalleryVaultService.swift */,
-				21D419AF0042D137D3FD994F /* GalleryVaultStorage.swift */,
-				37E9EB2F0C01725BBDED86B9 /* GalleryVaultView.swift */,
-				4ED24C9F5802957F50BE301C /* GalleryView.swift */,
-				6C1D395DA5886CA943473854 /* GalleryViewerMedia.swift */,
-				0EAC331A25232048198DD530 /* GalleryViewerPreferences.swift */,
-				8B060BF74FAB224A9E915D1E /* GalleryViewerStore.swift */,
-				4F35B5FCA3A5755AD193429D /* GalleryViewerView.swift */,
-				0614148535E81D8E23B48FDB /* GalleryViewerWindows.swift */,
-				3751DEA2F2365B048ADFA94C /* GalleryVirtualLibraryIndex.swift */,
-				FC8F866950CAFDB851D8B66F /* GalleryVisibilityPreferences.swift */,
+				8EE1F221E7FD647782995778 /* GalleryAboutView.swift */,
+				DE57D94EB883C8AA1C7C4AD0 /* GalleryAlbumSearch.swift */,
+				E2FDE9E7A4A180730AF2A26E /* GalleryDeleteQueue.swift */,
+				BFD65CF1AE8993BEDEE717E1 /* GalleryLeasedStaging.swift */,
+				5EC19F213344665408E1F33E /* GalleryManager.swift */,
+				1A4EB06EF0D41FF66545A250 /* GalleryMediaItem.swift */,
+				D93BF64BEE08021E86ACDF46 /* GalleryMoveHistory.swift */,
+				061A4A06A0C0C18CD0121BF6 /* GalleryQueuedPhotoDeletion.swift */,
+				D285F88370D4F786AF03B608 /* GalleryRecycleBin.swift */,
+				BFD7D1F67E271B69C5F3A7C1 /* GallerySettingsView.swift */,
+				14951AF4A21C257C72441856 /* GallerySpatialVideoView.swift */,
+				1A0E59DBE9E45C4893A2CB16 /* GalleryThumbnail.swift */,
+				C586F6666663409C7E9B81B0 /* GalleryThumbnailDelivery.swift */,
+				39D1BF628A1063AB154A9166 /* GalleryVaultInbox.swift */,
+				BF6150DC201579C32014ED20 /* GalleryVaultModels.swift */,
+				FC9F022BC889583278E492AE /* GalleryVaultPhotoLibrary.swift */,
+				03FE1F5DE1BF5A4FEC05AC34 /* GalleryVaultService.swift */,
+				EE38EB3AB880501DE019C286 /* GalleryVaultStorage.swift */,
+				4AFBCE679BD6FBD83A8188F7 /* GalleryVaultView.swift */,
+				582B89A078D949F52E3D81E3 /* GalleryView.swift */,
+				F61DA843727371701B77D3C8 /* GalleryViewerMedia.swift */,
+				6F0EE2E914FECF48356D712E /* GalleryViewerPreferences.swift */,
+				31D5235B2493B878EFEB7EDD /* GalleryViewerStore.swift */,
+				6C711CA5C88A2E5276E07B2F /* GalleryViewerView.swift */,
+				199CF3CCE7C82A4059889D59 /* GalleryViewerWindows.swift */,
+				6FCE44E1EAAA2673C22437EB /* GalleryVirtualLibraryIndex.swift */,
+				5BAB1E71D21710FCE07BCC3F /* GalleryVisibilityPreferences.swift */,
 			);
-			path = Gallery;
+			name = Gallery;
+			path = SimpleVisionGallery/Gallery;
 			sourceTree = "<group>";
 		};
 		3C94E3FDAEF3386D3EE18EE0 /* Design */ = {
@@ -189,9 +200,10 @@
 			children = (
 				F20386C73BCE4ECFB9D4C029 /* Assets.xcassets */,
 				425DC76BFD03AAE5DDEACFFF /* PrivacyInfo.xcprivacy */,
+				2B485FECB295CF2FF947BAD5 /* SimpleVisionGallery.entitlements */,
 				EC727E97AFC386B880C62EB5 /* SimpleVisionGalleryApp.swift */,
 				3C94E3FDAEF3386D3EE18EE0 /* Design */,
-				20C18D1C79443308237BE1D2 /* Gallery */,
+				2E4528A7929DB0A7290C7E85 /* Gallery */,
 			);
 			path = SimpleVisionGallery;
 			sourceTree = "<group>";
@@ -208,6 +220,7 @@
 		BE40B3DD0EDC93C12AC8B63B = {
 			isa = PBXGroup;
 			children = (
+				2E4528A7929DB0A7290C7E85 /* Gallery */,
 				C652AED856EFC1CDEDB3EDA9 /* GalleryShareExtension */,
 				5CE2D47EC4EB6279EAF985F9 /* SimpleVisionGallery */,
 				5EA54001B29C0EB9551CC796 /* Products */,
@@ -217,6 +230,7 @@
 		C652AED856EFC1CDEDB3EDA9 /* GalleryShareExtension */ = {
 			isa = PBXGroup;
 			children = (
+				303F1875668E5CAF0C2C1CF3 /* GalleryShareExtension.entitlements */,
 				5CB6942E601C58496F167B04 /* GalleryShareExtensionViewController.swift */,
 				AF7A151A881130E5690614ED /* GalleryShareInput.swift */,
 			);
@@ -317,46 +331,48 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2FEAA809275F95AE8A4CC7C8 /* GalleryAboutView.swift in Sources */,
-				19C3E9CDCF1B1DBB5BECB35A /* GalleryAlbumSearch.swift in Sources */,
+				4D543736E6185739A583546B /* GalleryAboutView.swift in Sources */,
+				59F788D3B361A549103EAD1D /* GalleryAlbumSearch.swift in Sources */,
 				D7D46C44EB3B44FD9E5EC048 /* GalleryAppearance.swift in Sources */,
 				E22CC5304481A7747536C405 /* GalleryCaptureFixtures.swift in Sources */,
 				36BDFA852176BD213FFE67A6 /* GalleryCaptureSurface.swift in Sources */,
 				1609E548F24D03DE6DE5BC81 /* GalleryCinemaDesign.swift in Sources */,
-				CEA70B77F47AA075A3EB305B /* GalleryDeleteQueue.swift in Sources */,
+				76F82BEE1F82BB6A2AF22F45 /* GalleryDeleteQueue.swift in Sources */,
 				DF6BE50B69A9B6B6FAB4E58E /* GalleryDesign.swift in Sources */,
 				33464AF0C1C77EB20D79FF10 /* GalleryDesignContext.swift in Sources */,
 				F00E86CF97859A6D821E32B1 /* GalleryHoverIcon.swift in Sources */,
+				BAA88399A0532BCF2B4A9AE6 /* GalleryLeasedStaging.swift in Sources */,
 				7F088CE7A4CF20D082770FCA /* GalleryLightShaders.metal in Sources */,
 				4BC8B54A86C1FE4556D94CE7 /* GalleryLightTheme.swift in Sources */,
-				60D9AF1AB5831179DA2E4A2A /* GalleryManager.swift in Sources */,
+				73F63A48E85C1C0ADAC2B7AB /* GalleryManager.swift in Sources */,
 				5105608D35E9894E0810632E /* GalleryMediaGridLayout.swift in Sources */,
-				DFDE375080A78CCCC515B8C2 /* GalleryMediaItem.swift in Sources */,
+				A4B358F95CE2A8EA4BAC0804 /* GalleryMediaItem.swift in Sources */,
 				B122B61164371B153654BA0B /* GalleryMediaToolbar.swift in Sources */,
-				39EC2E3E97A1DEE729B53D00 /* GalleryMoveHistory.swift in Sources */,
+				4C453CE8DCA47CD4FA3FA07B /* GalleryMoveHistory.swift in Sources */,
 				ECCC8F935833013ABC2E63F7 /* GalleryNativeCaptureViewer.swift in Sources */,
-				98237573B83715285F8AEFA2 /* GalleryQueuedPhotoDeletion.swift in Sources */,
-				FE93CB745E2756C11873BDA4 /* GalleryRecycleBin.swift in Sources */,
-				3AB9552E786AF5A1E78D357E /* GallerySettingsView.swift in Sources */,
-				335FF6B327426AA8E13FE32E /* GallerySpatialVideoView.swift in Sources */,
+				3B11C20D00E77B77BD3B9015 /* GalleryQueuedPhotoDeletion.swift in Sources */,
+				F50D6BE9CBCFFBBEBA6C88DE /* GalleryRecycleBin.swift in Sources */,
+				B1AABA172B5F28787A800D22 /* GallerySettingsView.swift in Sources */,
+				E64771B7FC5F6C56AD056CDF /* GallerySpatialVideoView.swift in Sources */,
 				4F4A927341B6ACC9F4535C19 /* GalleryThemeSamples.swift in Sources */,
-				95EAF4645E1CD7568F002982 /* GalleryThumbnail.swift in Sources */,
-				F96FB16641FC5655FC4AB438 /* GalleryThumbnailDelivery.swift in Sources */,
+				73DE64C49C868978C03E98D7 /* GalleryThumbnail.swift in Sources */,
+				BD425E106935DE8C9CAA02BA /* GalleryThumbnailDelivery.swift in Sources */,
 				5764123DEBD4FA011BEB799D /* GalleryThumbnailSizePopover.swift in Sources */,
-				C3D642E7A945D46563FAB036 /* GalleryVaultModels.swift in Sources */,
-				B7EA7FE0FAE9685E3628D10C /* GalleryVaultPhotoLibrary.swift in Sources */,
-				6D8102F0FDFF9416F1991F28 /* GalleryVaultService.swift in Sources */,
-				5F2C198CE97C31CBA661806A /* GalleryVaultStorage.swift in Sources */,
-				9B92F89FE2ABFCC9D345B648 /* GalleryVaultView.swift in Sources */,
-				37188A903CF89BAB9C5BF31C /* GalleryView.swift in Sources */,
+				39DF8FF656AA5E0951E31E66 /* GalleryVaultInbox.swift in Sources */,
+				867073DAF66D892A4D88CCFD /* GalleryVaultModels.swift in Sources */,
+				F7C467E85F17FCD571A86562 /* GalleryVaultPhotoLibrary.swift in Sources */,
+				397364EED4A3A204F059ABF9 /* GalleryVaultService.swift in Sources */,
+				09DED5667E069E69C284F08C /* GalleryVaultStorage.swift in Sources */,
+				ADF8012BDED4B65507F958C8 /* GalleryVaultView.swift in Sources */,
+				D831E6FD31A71580C086DE4E /* GalleryView.swift in Sources */,
 				29E64478D7EBAFC8EAE3302E /* GalleryViewerBacking.swift in Sources */,
-				6F146309645D245DDC8F53A3 /* GalleryViewerMedia.swift in Sources */,
-				2C40B779A4DF327D41222D60 /* GalleryViewerPreferences.swift in Sources */,
-				2440D9467FDC752B5F2DD293 /* GalleryViewerStore.swift in Sources */,
-				BCC4F822F88FD5B18AAAF432 /* GalleryViewerView.swift in Sources */,
-				0749F352CC7FC1C28FCA9416 /* GalleryViewerWindows.swift in Sources */,
-				AD5FD2BE568C9485A26F15AB /* GalleryVirtualLibraryIndex.swift in Sources */,
-				90D1A8F7A3915EC497574229 /* GalleryVisibilityPreferences.swift in Sources */,
+				9F3C7602E1671C9B2332DCD7 /* GalleryViewerMedia.swift in Sources */,
+				6206C5AF5AA67C261DE4B02B /* GalleryViewerPreferences.swift in Sources */,
+				6F03180407849721AF5E56BD /* GalleryViewerStore.swift in Sources */,
+				D807DFBC255B92D2F16E4570 /* GalleryViewerView.swift in Sources */,
+				781ACC3C51BC965C3B671862 /* GalleryViewerWindows.swift in Sources */,
+				A2366FE123D64FB2D90B58B1 /* GalleryVirtualLibraryIndex.swift in Sources */,
+				49A4CBFDDAA52874E9D4FD64 /* GalleryVisibilityPreferences.swift in Sources */,
 				B57B21B5CA7E89791D244544 /* SimpleVisionGalleryApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -365,8 +381,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2A3394FCEDA9B8089E609C46 /* GalleryLeasedStaging.swift in Sources */,
 				08AFE6534E2BA74872B30FFE /* GalleryShareExtensionViewController.swift in Sources */,
 				342D9F8D7D55588B58C55435 /* GalleryShareInput.swift in Sources */,
+				B014026A427ECEDCD2A821DE /* GalleryVaultInbox.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -512,8 +530,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = GalleryShareExtension/GalleryShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.0.16;
+				CURRENT_PROJECT_VERSION = 1.0.17;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = GalleryShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -521,7 +540,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.16;
+				MARKETING_VERSION = 1.0.17;
 				PRODUCT_BUNDLE_IDENTIFIER = com.llucid.simplevisiongallery.share;
 				PRODUCT_NAME = GalleryShareExtension;
 				SDKROOT = xros;
@@ -535,15 +554,16 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = SimpleVisionGallery/SimpleVisionGallery.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.0.16;
+				CURRENT_PROJECT_VERSION = 1.0.17;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SimpleVisionGallery/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.16;
+				MARKETING_VERSION = 1.0.17;
 				PRODUCT_BUNDLE_IDENTIFIER = com.llucid.simplevisiongallery;
 				PRODUCT_NAME = SimpleVisionGallery;
 				SDKROOT = xros;
@@ -557,8 +577,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = GalleryShareExtension/GalleryShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.0.16;
+				CURRENT_PROJECT_VERSION = 1.0.17;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = GalleryShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -566,7 +587,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.16;
+				MARKETING_VERSION = 1.0.17;
 				PRODUCT_BUNDLE_IDENTIFIER = com.llucid.simplevisiongallery.share;
 				PRODUCT_NAME = GalleryShareExtension;
 				SDKROOT = xros;
@@ -580,15 +601,16 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = SimpleVisionGallery/SimpleVisionGallery.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.0.16;
+				CURRENT_PROJECT_VERSION = 1.0.17;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SimpleVisionGallery/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.16;
+				MARKETING_VERSION = 1.0.17;
 				PRODUCT_BUNDLE_IDENTIFIER = com.llucid.simplevisiongallery;
 				PRODUCT_NAME = SimpleVisionGallery;
 				SDKROOT = xros;

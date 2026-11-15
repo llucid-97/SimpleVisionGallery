@@ -11,7 +11,7 @@ harness = root / "tests/sharing/ProviderHarness.swift"
 with tempfile.TemporaryDirectory(prefix="gallery-share-") as directory:
     binary = Path(directory) / "ProviderHarness"
     subprocess.run(
-        ["swiftc", "-swift-version", "5", "-parse-as-library", str(source), str(harness), "-o", str(binary)],
+        ["swiftc", "-swift-version", "5", "-parse-as-library", str(source), str(root / "SimpleVisionGallery/Gallery/GalleryLeasedStaging.swift"), str(harness), "-o", str(binary)],
         cwd=root,
         check=True,
     )

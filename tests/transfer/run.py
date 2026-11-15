@@ -146,6 +146,8 @@ nonisolated struct GalleryVaultMutationResult: Sendable {
         "6",
         "-parse-as-library",
         str(generated),
+        str(ROOT / "SimpleVisionGallery/Gallery/GalleryVaultInbox.swift"),
+        str(ROOT / "SimpleVisionGallery/Gallery/GalleryLeasedStaging.swift"),
         "-o",
         str(executable),
     ]

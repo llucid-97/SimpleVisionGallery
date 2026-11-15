@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import UniformTypeIdentifiers
 
@@ -36,12 +37,42 @@ enum GalleryShareInput {
                         name = proposedName
                     }
                     let destination = directory.appendingPathComponent(UUID().uuidString + "-" + name)
-                    try FileManager.default.copyItem(at: source, to: destination)
+                    try copyProtected(source, to: destination)
                     continuation.resume(returning: StagedShare(url: destination, type: type, filename: name))
                 } catch {
                     continuation.resume(throwing: error)
                 }
             }
+        }
+    }
+
+    nonisolated static func stagingDirectory(in root: URL = FileManager.default.temporaryDirectory) throws -> (URL, FileHandle) {
+        let staging = try GalleryLeasedStaging.create(in: root, prefix: "GalleryIncoming-")
+        return (staging.directory, staging.lease)
+    }
+
+    nonisolated static func removeAbandonedStaging(in root: URL) throws {
+        try GalleryLeasedStaging.removeAbandoned(in: root, prefix: "GalleryIncoming-")
+    }
+
+    nonisolated private static func copyProtected(_ source: URL, to destination: URL) throws {
+        let descriptor = open(destination.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        let output = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? output.close() }
+        do {
+            // Protect the file before writing any supplied media bytes.
+            #if os(visionOS)
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: destination.path)
+            #endif
+            let input = try FileHandle(forReadingFrom: source)
+            defer { try? input.close() }
+            while let bytes = try input.read(upToCount: 1024 * 1024), !bytes.isEmpty {
+                try output.write(contentsOf: bytes)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
         }
     }
 
