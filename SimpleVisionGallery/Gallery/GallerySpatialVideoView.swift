@@ -129,10 +129,14 @@ struct GallerySpatialVideoView: View {
             }
         }
         .task(id: surfaceTaskID) {
+            // Transport controls belong to this player, while the host itself
+            // survives navigation. Do not carry a drag-in-progress into the
+            // next player's controls or pin its time display to the old value.
+            isScrubbing = false
+            position = 0
+            duration = 0
+            isPlaying = false
             guard let player else {
-                position = 0
-                duration = 0
-                isPlaying = false
                 return
             }
             let fallbackDeadline = ContinuousClock.now.advanced(by: .seconds(2))
@@ -339,7 +343,13 @@ struct GallerySpatialVideoView: View {
             .accessibilityLabel("Skip ahead ten seconds")
             .accessibilityIdentifier("gallery-spatial-video-forward")
 
-            Slider(value: $position, in: 0...max(duration, 1)) { editing in
+            Slider(value: Binding(
+                get: { position },
+                set: { value in
+                    guard isCurrentPlayer(player) else { return }
+                    position = value
+                }), in: 0...max(duration, 1)) { editing in
+                guard isCurrentPlayer(player) else { return }
                 isScrubbing = editing
                 if !editing { seek(to: position, player: player) }
             }
@@ -358,6 +368,7 @@ struct GallerySpatialVideoView: View {
     }
 
     private func togglePlayback(_ player: AVPlayer) {
+        guard isCurrentPlayer(player) else { return }
         let shouldPlay = player.timeControlStatus == .paused && player.rate == 0
         if shouldPlay, duration > 0, position >= duration - 0.1 { seek(to: 0, player: player) }
         onPlaybackRequest(shouldPlay, player)
@@ -365,7 +376,7 @@ struct GallerySpatialVideoView: View {
     }
 
     private func seek(to seconds: Double, player: AVPlayer) {
-        guard duration > 0 else { return }
+        guard isCurrentPlayer(player), duration > 0 else { return }
         position = min(max(seconds, 0), duration)
         player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero)
