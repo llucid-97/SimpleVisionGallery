@@ -5,13 +5,37 @@ These are the Gallery behaviors we protect on every release. They apply to Photo
 
 ## Fast browsing stays fast
 
-Navigating to locally available, prepared media should show it on the next frame, with no repeat fetch, decrypt, decode or scene generation. Aim for less than 50 ms from the navigation action to the next visible frame; report samples and worst cases, not just an average. This is a user-visible result: a cache hit followed by a blocked render thread fails too.
+Navigating to locally available, prepared media must reuse that work, with no repeat fetch, decrypt, decode or scene generation. For warm video, maintain the accepted roughly 50–100 ms first-visible-frame baseline below. Less than 50 ms remains a stretch goal, not a release requirement for video. Prepared still images and mutation action handling retain their existing under-50 ms aims. Report samples and worst cases, not just an average: a cache hit followed by a blocked render thread fails too.
 
 Keep ahead/behind preparation working across navigation, shuffle, album changes, move, delete, restore, bin actions, settings changes and multiple windows. Unrelated mutations must not discard prepared next items or block rendering. A same-byte membership change must not force decoding again. Shared work must survive one window cancelling while another still needs it. Closed windows must give back their cache share.
 
 Video lookahead uses one global speculative player across Photos and vault items. Prepare only the next video at full quality; rely on existing library metadata for later videos until they become next. Wait for both the item and player to become ready, preroll at rate 1 while paused and muted, and let the first foreground window take that player and item. Other windows create independent players over the shared asset and lease. A short forward-buffer duration is only an AVFoundation hint, not a RAM cap; restore normal adaptive buffering on foreground handoff. Keep this decoder slot separate from the 20-item/80-million-pixel still-image cache and the existing vault plaintext disk lease. Cancel stale warm work and release its player on close, lock, Photos revocation or memory warning.
 
 Cold media, network downloads, scene generation and intentional privacy invalidation can take time. Label those cases separately; they are not excuses to call a warm miss a pass. Vault lock and revoked Photos access must clear protected content immediately. Unlock rebuilds safe demand and prepares again. Keep preparation bounded: 20 results, 80 million pixels and two preparation jobs shared across windows. Do not gain speed by growing unbounded caches or storing vault plaintext outside leases.
+
+
+### Accepted warm-video performance baseline
+
+Gershoma accepted build `3ca9061078dcf1fb8a1223104ceff07ffefed7ad` ([PR #30](https://github.com/llucid-97/SimpleVisionGallery/pull/30)) on Pali on 15 November 2026 as fast enough. Preserve that experience in future updates. The headset acceptance is a user judgment; no numeric headset latency was measured.
+
+| Measurement | Accepted reference |
+| --- | --- |
+| Navigation action → first visible video pixels, warm Simulator sample | 48.68–99.23 ms; median 75.96 ms; 10 transitions |
+| First warm transition in that run | 76.19 ms; initial cold open excluded |
+| Practical target for comparable warm-video checks | Roughly 50–100 ms, aiming for 100 ms or less |
+
+The ten visible-frame upper bounds were `76.19, 75.73, 82.40, 84.47, 64.16, 48.68, 73.02, 99.23, 70.18, 97.24` ms. They came from the production viewer's navigation/load/cache path over generated encrypted vault records: alternating eight-second, 1920×1080, 30 fps mono videos, using the spatial-video Simulator preview, Xcode 27.0 and visionOS 26.1 Simulator. The same warmed player and fitted native entity reached the foreground in every transition. Video-to-video reuse was measured; image-to-video timing was not established by this run.
+
+The measurement used visible source pixels and ScreenCaptureKit display timestamps on the same verified host clock. Each sample is an upper bound with a 16.67–21.08 ms last-negative/first-positive frame gap. An earlier candidate run had a 156 ms first warm sample. These results are a realistic reference, not a guarantee that every transition is under 100 ms.
+
+For changes affecting loading, playback, preparation or window lifecycle:
+
+- Compare at least ten warm transitions, including the first warm transition, against the accepted build under matched fixtures, build configuration, machine, capture method and workload. Keep cold, network and privacy-invalidated cases separate. Test the affected Photos/vault, mixed-media and multi-window transitions as well; the measured vault sample does not prove those timings.
+- Measure navigation → visible pixels. Player readiness, attachment, playback-clock progress and cache hits are diagnostic values, not substitutes. Never subtract marker or capture latency to claim the target.
+- Report every sample, median, maximum, frame gaps, source revision and tested states. Investigate repeatable moves beyond roughly 100 ms, a consistent slowdown against the matched baseline, or newly visible stalls. Preserve isolated outliers and repeat the comparison before blaming a code change; do not turn one noisy sample into a universal pass or failure.
+- Reviewers must record that comparison or explain why a change cannot affect this path. Keep the existing image, mutation, privacy and memory contracts. Do not trade full quality, spatial playback, correct item identity or bounded resources for a timing score.
+
+The video host stays mounted across consecutive videos and unmounts for images: overlapping native RealityViews hid photos in the generated control, and opacity did not fix it. Preserve photo visibility when changing this arrangement. Actual spatial appearance, memory behavior and headset responsiveness still require the owner's test when affected; Simulator mono results do not establish them.
 
 ## Move feels as immediate as Delete
 
