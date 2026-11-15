@@ -611,25 +611,29 @@ private struct GalleryViewerPane: View {
     @ViewBuilder
     private func mediaStage(height: CGFloat) -> some View {
         ZStack {
-            GallerySpatialVideoView(
-                player: media.isSpatialVideo ? media.player : nil,
-                component: media.isSpatialVideo ? media.spatialVideoComponent : nil,
-                currentCovered: mediaSurfaceCovered,
-                lookahead: media.spatialVideoLookahead,
-                isCurrentPlayer: media.ownsSpatialVideoSurface,
-                onLookaheadDidAttach: media.spatialVideoLookaheadDidAttach,
-                onLookaheadDidFit: media.spatialVideoLookaheadDidFit,
-                onLookaheadDidDetach: { [weak media] lookahead, entity in
-                    media?.spatialVideoLookaheadDidDetach(lookahead, entity: entity)
-                },
-                onSurfaceAttached: media.videoSurfaceDidAttach,
-                onSurfaceDetached: media.videoSurfaceDidDetach,
-                onPlaybackRequest: media.requestVideoPlayback,
-                registerHostCleanup: media.registerSpatialVideoHost,
-                unregisterHostCleanup: media.unregisterSpatialVideoHost,
-                initialYawDegrees: Float(backingYaw), initialPitchDegrees: Float(backingPitch))
-                .allowsHitTesting(!mediaSurfaceCovered && media.isSpatialVideo && media.player != nil)
-                .accessibilityHidden(!(media.isSpatialVideo && media.player != nil))
+            // Two overlapping RealityViews hide native photos on visionOS.
+            // Keep the video host stable across videos, and unmount it for images.
+            if session.currentItem?.mediaType == .video {
+                GallerySpatialVideoView(
+                    player: media.isSpatialVideo ? media.player : nil,
+                    component: media.isSpatialVideo ? media.spatialVideoComponent : nil,
+                    currentCovered: mediaSurfaceCovered,
+                    lookahead: media.spatialVideoLookahead,
+                    isCurrentPlayer: media.ownsSpatialVideoSurface,
+                    onLookaheadDidAttach: media.spatialVideoLookaheadDidAttach,
+                    onLookaheadDidFit: media.spatialVideoLookaheadDidFit,
+                    onLookaheadDidDetach: { [weak media] lookahead, entity in
+                        media?.spatialVideoLookaheadDidDetach(lookahead, entity: entity)
+                    },
+                    onSurfaceAttached: media.videoSurfaceDidAttach,
+                    onSurfaceDetached: media.videoSurfaceDidDetach,
+                    onPlaybackRequest: media.requestVideoPlayback,
+                    registerHostCleanup: media.registerSpatialVideoHost,
+                    unregisterHostCleanup: media.unregisterSpatialVideoHost,
+                    initialYawDegrees: Float(backingYaw), initialPitchDegrees: Float(backingPitch))
+                    .allowsHitTesting(!mediaSurfaceCovered && media.isSpatialVideo && media.player != nil)
+                    .accessibilityHidden(!(media.isSpatialVideo && media.player != nil))
+            }
 
             mediaStageContent(height: height)
         }
