@@ -99,6 +99,7 @@ final class GalleryVaultService: ObservableObject {
     private var cancelPreparation: (() -> Void)?
     private var activeStream: GalleryVaultPhotoStream?
     private var protectedDataObserver: NSObjectProtocol?
+    private var needsIntakeOnActivation = false
     private init() {
         protectedDataObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main
@@ -111,6 +112,7 @@ final class GalleryVaultService: ObservableObject {
         guard !isBusy else { throw GalleryVaultTransferError.busy }
         guard !isUnlocked else { return }
         isBusy = true
+        wantsCancel = false
         error = nil
         let attemptEpoch = authEpoch
         var unlockedEpoch: UUID?
@@ -126,6 +128,15 @@ final class GalleryVaultService: ObservableObject {
             // with full library access, and never delete an existing source here.
             recoverAlbumDeletion()
             let unreadablePending = !needsAlbumDeletionReview ? try await reconcilePendingAfterUnlock() : 0
+            guard isCurrent(epoch), storage.isUnlocked else { throw GalleryVaultTransferError.locked }
+            if !needsAlbumDeletionReview {
+                do {
+                    try storage.publishIntakePublicKey()
+                    try await importQueuedShares(epoch: epoch)
+                } catch {
+                    if isCurrent(epoch) { self.error = "Shared items are waiting for Private Vault: \(error.localizedDescription)" }
+                }
+            }
             guard isCurrent(epoch), storage.isUnlocked else { throw GalleryVaultTransferError.locked }
             records = storage.records
             unreadableRecordCount = storage.unreadableRecordCount + unreadablePending
@@ -147,6 +158,7 @@ final class GalleryVaultService: ObservableObject {
 
     func lock() {
         wantsCancel = true
+        needsIntakeOnActivation = false
         wakeOperationWaiters()
         activeStream?.cancel()
         cancelPreparation?()
@@ -923,6 +935,108 @@ final class GalleryVaultService: ObservableObject {
         NotificationCenter.default.post(name: .galleryAlbumWasDeleted, object: nil, userInfo: ["albumID": intent.plan.albumID])
     }
 
+    /// A share can arrive while this vault remains unlocked in a background scene.
+    func receiveSharedItemsOnActivation() {
+        guard isUnlocked else { return }
+        needsIntakeOnActivation = true
+        if !isBusy { Task { await importSharedItemsIfNeeded() } }
+    }
+
+    private func importSharedItemsIfNeeded() async {
+        guard needsIntakeOnActivation, isUnlocked, !isBusy, !needsAlbumDeletionReview else { return }
+        needsIntakeOnActivation = false
+        let epoch = authEpoch
+        wantsCancel = false
+        isBusy = true
+        defer { publishIfCurrent(epoch); endOperation() }
+        do {
+            try storage.publishIntakePublicKey()
+            try await importQueuedShares(epoch: epoch)
+        } catch {
+            if isCurrent(epoch) { self.error = "Shared items are waiting for Private Vault: \(error.localizedDescription)" }
+        }
+    }
+
+    /// Only remove a queued ciphertext after its exact private record and files are verified durable.
+    private func importQueuedShares(epoch: UUID) async throws {
+        storage.beginBatch()
+        let result: Result<Void, Error>
+        do { try await importQueuedSharesInBatch(epoch: epoch); result = .success(()) }
+        catch { result = .failure(error) }
+        let changedIDs = await storage.finishTransferBatch()
+        if changedIDs.isEmpty { publishIfCurrent(epoch) }
+        else { await publishQueuedIfCurrent(epoch, mutationIDs: changedIDs) }
+        try result.get()
+    }
+
+    private func importQueuedSharesInBatch(epoch: UUID) async throws {
+        let session = try storage.intakeSession()
+        let batches = try await Task.detached(priority: .utility) { try GalleryVaultInbox.batchFiles() }.value
+        var failures = 0
+        var firstFailure = ""
+        for batch in batches {
+            for url in batch {
+                guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.locked }
+                do {
+                guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else {
+                    throw GalleryVaultInbox.InboxError.damaged
+                }
+                let source = "share:" + id.uuidString
+                if let existing = storage.record(id: id) {
+                    guard existing.sourceIdentifier == source, existing.state == .privateItem else {
+                        throw GalleryVaultStorageError.duplicateItem
+                    }
+                } else {
+                    let item = try await storage.createItemForTransfer(id: id)
+                    do {
+                        let info = try await Task.detached(priority: .utility) {
+                            var metadata: GalleryVaultInbox.Metadata?
+                            let writer = try item.writer(resourceID: id)
+                            try GalleryVaultInbox.read(url, privateKey: {
+                                try session.withKey { try GalleryVaultInbox.privateKey(vaultKey: $0) }
+                            }, metadata: { metadata = $0 }, append: { try writer.append($0) })
+                            try writer.finish()
+                            guard let metadata else { throw GalleryVaultInbox.InboxError.damaged }
+                            return metadata
+                        }.value
+                        guard isCurrent(epoch), !wantsCancel else { throw GalleryVaultTransferError.locked }
+                        let type = UTType(info.typeIdentifier)
+                        let isMovie = type?.conforms(to: .movie) == true
+                        let descriptor = GalleryVaultResource(id: id,
+                            type: isMovie ? PHAssetResourceType.video.rawValue : PHAssetResourceType.photo.rawValue,
+                            filename: info.filename, uniformTypeIdentifier: info.typeIdentifier)
+                        let record = GalleryVaultRecord(id: id, sourceIdentifier: source, filename: info.filename,
+                            mediaType: isMovie ? PHAssetMediaType.video.rawValue : PHAssetMediaType.image.rawValue,
+                            mediaSubtypes: 0, pixelWidth: info.width, pixelHeight: info.height, duration: info.duration,
+                            creationDate: nil, modificationDate: nil, latitude: nil, longitude: nil,
+                            isFavorite: false, albums: [], resources: [descriptor], state: .privateItem, restoredIdentifier: nil)
+                        try await storage.commitIncoming(record, from: item)
+                    } catch {
+                        await Task.detached { item.discard() }.value
+                        throw error
+                    }
+                }
+                let verified = try await storage.verifyCommitted(id: id)
+                guard isCurrent(epoch), verified.sourceIdentifier == source, verified.state == .privateItem else {
+                    throw GalleryVaultStorageError.incompleteItem
+                }
+                try await Task.detached(priority: .utility) {
+                    try FileManager.default.removeItem(at: url)
+                    let parent = url.deletingLastPathComponent()
+                    if (try? FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty) == true {
+                        try? FileManager.default.removeItem(at: parent)
+                    }
+                }.value
+                } catch {
+                    guard isCurrent(epoch), !wantsCancel, !(error is CancellationError) else { throw error }
+                    failures += 1
+                    if firstFailure.isEmpty { firstFailure = error.localizedDescription }
+                }
+            }
+        }
+        if failures > 0 { throw GalleryVaultInbox.InboxError.importFailures(failures, firstFailure) }
+    }
+
     private func beginOperation(requiresPhotoAccess: Bool = true) throws {
         guard isUnlocked else { throw GalleryVaultTransferError.locked }
         guard !isBusy else { throw GalleryVaultTransferError.busy }
@@ -937,6 +1051,7 @@ final class GalleryVaultService: ObservableObject {
         activeStream = nil
         isBusy = false
         wakeOperationWaiters()
+        if needsIntakeOnActivation && isUnlocked { Task { await importSharedItemsIfNeeded() } }
     }
     private func isCurrent(_ epoch: UUID) -> Bool { isUnlocked && authEpoch == epoch }
     /// Prepare one shared value before publication; a stale generation must never reveal data after lock.

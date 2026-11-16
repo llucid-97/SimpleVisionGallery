@@ -48,10 +48,21 @@ with tempfile.TemporaryDirectory(prefix="gallery-vault-transfer-") as temp:
     extracted.write_text(body)
     fake = path / "FakePhotoKit.swift"
     fake.write_text(fake_source)
+    # Isolate the actual intake implementation from the user's App Group in this fake-Photos test.
+    inbox_source = (repo / "SimpleVisionGallery/Gallery/GalleryVaultInbox.swift").read_text()
+    start = inbox_source.index("    static func container() throws -> URL {")
+    end = inbox_source.index("    static func privateKey(", start)
+    inbox_source = inbox_source[:start] + f'''    static func container() throws -> URL {{
+        URL(fileURLWithPath: "{path / 'inbox'}", isDirectory: true)
+    }}
+
+''' + inbox_source[end:]
+    inbox = path / "GalleryVaultInbox.swift"
+    inbox.write_text(inbox_source)
     binary = path / "transfer-test"
     subprocess.run([
         "swiftc", "-swift-version", "5", "-default-isolation", "MainActor",
         str(fake), str(repo / "SimpleVisionGallery/Gallery/GalleryVaultModels.swift"),
-        str(extracted), str(HERE / "vault/TransferHarness.swift"), "-o", str(binary),
+        str(extracted), str(inbox), str(repo / "SimpleVisionGallery/Gallery/GalleryLeasedStaging.swift"), str(HERE / "vault/TransferHarness.swift"), "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary)], check=True)

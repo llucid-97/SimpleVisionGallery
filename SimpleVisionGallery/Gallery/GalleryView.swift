@@ -153,7 +153,10 @@ struct GalleryView: View {
             }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
-            if phase == .active { Task { await manager.refreshPhotoAuthorization() } }
+            if phase == .active {
+                vault.receiveSharedItemsOnActivation()
+                Task { await manager.refreshPhotoAuthorization() }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .galleryPhotosAccessDidRevoke)) { _ in
             sharing.tearDown()
